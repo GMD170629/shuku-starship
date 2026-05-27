@@ -1,6 +1,7 @@
 FROM node:20-alpine AS base
 WORKDIR /app
-RUN corepack enable
+RUN apk add --no-cache libc6-compat openssl \
+  && corepack enable
 
 COPY package.json pnpm-workspace.yaml turbo.json ./
 COPY apps/web/package.json apps/web/package.json
@@ -13,8 +14,10 @@ COPY workers/scan-worker/package.json workers/scan-worker/package.json
 RUN pnpm install
 
 COPY . .
+RUN pnpm --filter @shuku/database prisma:generate \
+  && pnpm --filter @shuku/web build
+
 WORKDIR /app/apps/web
-RUN pnpm build
 
 EXPOSE 3000
 CMD ["pnpm", "start"]

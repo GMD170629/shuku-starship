@@ -8,6 +8,9 @@
     "build": "turbo run build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
+    "db:migrate": "pnpm --filter @shuku/database prisma:push",
+    "db:seed": "pnpm --filter @shuku/web exec tsx ../../scripts/seed.ts",
+    "db:seed:demo": "DEMO_MODE=true pnpm --filter @shuku/web exec tsx ../../scripts/demo/seed-demo.ts",
     "acceptance": "node scripts/acceptance-check.mjs"
   },
   "devDependencies": {

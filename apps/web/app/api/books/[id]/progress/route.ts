@@ -40,3 +40,7 @@ export async function PUT(request: Request, { params }: { params: { id: string }
   });
   return ok({ progress });
 }
+
+export async function POST(request: Request, context: { params: { id: string } }) {
+  return PUT(request, context);
+}

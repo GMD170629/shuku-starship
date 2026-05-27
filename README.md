@@ -1,6 +1,6 @@
 # 书库星舰（shuku-starship）
 
-NAS 自托管读物管理系统 MVP。当前版本覆盖登录、书库路径配置、目录扫描、读物浏览、受控文件访问、TXT/PDF/图片漫画阅读和阅读进度保存。
+NAS 自托管读物管理系统。当前版本面向真实 NAS / 家庭服务器部署，覆盖登录、书库路径配置、目录扫描、读物浏览、受控文件访问、TXT/PDF/图片漫画阅读和阅读进度保存。
 
 ## 技术栈
 
@@ -26,12 +26,16 @@ cp .env.example .env
 ```
 
 本地默认账号由 `ADMIN_EMAIL` 和 `ADMIN_PASSWORD` 控制；未设置时使用 `admin@example.com` / `starshipnas`。
+默认 `DEMO_MODE=false`，页面和 API 不会加载示例读物。数据库为空时会显示空状态。
 
 3. 启动 MySQL 和 Redis，并同步 Prisma schema：
 
 ```bash
-pnpm --filter @shuku/database prisma:push
+pnpm db:migrate
+pnpm db:seed
 ```
+
+`pnpm db:seed` 只创建管理员用户和基础系统设置，不创建示例读物。
 
 4. 启动 Web 和 Worker：
 
@@ -51,7 +55,7 @@ pnpm --filter @shuku/scan-worker dev
 5. 打开详情页并进入 `/reader/:id` 阅读。
 6. 阅读器会通过 `/api/files/:fileId` 流式访问文件，并通过进度 API 节流保存当前位置。
 
-## 测试数据
+## 测试文件
 
 仓库内置 `test-data/library`，包含：
 
@@ -60,6 +64,15 @@ pnpm --filter @shuku/scan-worker dev
 - 图片漫画目录：`test-data/library/comics/starship-pages`
 
 Docker 中会挂载为 `/books`，可在设置页直接保存 `/books` 后扫描。
+
+## Demo 数据隔离
+
+生产部署不要运行 demo seed。真实数据来自扫描任务写入数据库。
+
+- 默认：`DEMO_MODE=false`、`NEXT_PUBLIC_DEMO_MODE=false`
+- 基础 seed：`pnpm db:seed`，只创建管理员用户和基础系统设置
+- 演示 seed：`DEMO_MODE=true pnpm db:seed:demo`
+- Demo 文件位置：`docs/demo/`、`scripts/demo/`、`packages/shared/demo/`
 
 ## 验收
 
@@ -81,7 +94,7 @@ docker compose up --build
 
 - `mysql`：MySQL 8.4
 - `redis`：Redis 7
-- `web`：Next.js Web/API，启动前执行 `prisma db push`
+- `web`：Next.js Web/API，启动前执行 Prisma schema 同步和生产启动检查
 - `scan-worker`：BullMQ 扫描 Worker
 
 默认访问：
@@ -129,6 +142,7 @@ docker compose -f docker-compose.prod.yml up -d --build
 ```
 
 默认访问 <http://localhost:3000>，健康检查为 <http://localhost:3000/api/health>。
+生产启动会检查 `DATABASE_URL`、`REDIS_URL`、`SESSION_SECRET`、`BOOKS_ROOT`、`BOOKS_ROOT` 可读性和 storage 可写性。缺少关键环境变量会启动失败；数据库为空不会报错，页面显示空状态。
 
 生产持久化目录：
 
@@ -141,3 +155,5 @@ docker compose -f docker-compose.prod.yml up -d --build
 - `./books`：宿主机或 NAS 书库目录，挂载到容器内 `/books`
 
 重启容器不会清空 MySQL、Redis、封面、索引或扫描用临时目录。替换 NAS 书库目录后，只要 `./books` 指向真实目录且当前 `PUID` / `PGID` 可读，就可以在设置页保存 `/books` 并发起扫描。
+
+更多部署说明见 `docs/DEPLOYMENT.md`。

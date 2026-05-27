@@ -16,9 +16,13 @@ export type BookView = {
   tags: string[];
   added: string;
   lastRead: string;
+  lastReadAt: string | null;
   chapter: string;
+  chapterCount: number | null;
+  pageCount: number | null;
   desc: string;
   path: string;
+  fileHash: string;
   gradient: string;
   coverStatus: string;
   coverUrl: string;
@@ -83,10 +87,14 @@ export function toBookView(
     ignored: book.hidden,
     tags: parseTags(book.tags),
     added: book.createdAt.toISOString().slice(0, 10),
+    lastReadAt: progress?.updatedAt.toISOString() ?? null,
     lastRead: progress?.updatedAt.toISOString().slice(0, 10) ?? '尚未阅读',
     chapter: progress?.page ? `第 ${progress.page} 页` : '未开始',
+    chapterCount: book.chapterCount,
+    pageCount: book.pageCount,
     desc: book.description ?? '暂无简介，可在详情页补充元数据。',
     path: book.sourcePath,
+    fileHash: book.sourceHash,
     gradient: gradients[Math.abs(hashCode(book.id)) % gradients.length],
     coverStatus: book.coverStatus,
     coverUrl: `/api/books/${book.id}/cover?size=medium`,

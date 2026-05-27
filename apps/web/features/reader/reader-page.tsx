@@ -17,10 +17,6 @@ type ProgressPayload = {
   extra: string;
 };
 
-function fileUrl(fileId: string) {
-  return `/api/files/${fileId}`;
-}
-
 function archivePageUrl(bookId: string, pageIndex: number) {
   return `/api/books/${bookId}/pages/${pageIndex}`;
 }
@@ -49,9 +45,9 @@ export function ReaderPage({ bookId }: { bookId: string }) {
   const firstFile = book?.files[0];
   const readerType = useMemo(() => {
     if (!book) return 'unknown';
-    if (book.format === 'TXT') return 'txt';
-    if (book.format === 'PDF') return 'pdf';
-    if (book.format === '漫画' || book.format === '图片') return 'comic';
+    if (book.formatValue === 'TXT' || book.formatValue === 'EPUB') return 'txt';
+    if (book.formatValue === 'PDF') return 'pdf';
+    if (book.formatValue === 'COMIC' || book.formatValue === 'IMAGE') return 'comic';
     return 'txt';
   }, [book]);
   const archiveComic = readerType === 'comic' && book?.files.length === 1 && isArchiveComicFile(firstFile);
@@ -78,15 +74,18 @@ export function ReaderPage({ bookId }: { bookId: string }) {
   }, [bookId]);
 
   useEffect(() => {
-    if (readerType !== 'txt' || !firstFile) return;
-    fetch(fileUrl(firstFile.id))
+    if (readerType !== 'txt' || !book) return;
+    fetch(`/api/books/${book.id}/content`)
       .then((response) => {
         if (!response.ok) throw new Error('TXT 文件加载失败');
-        return response.text();
+        return response.json() as Promise<{ ok: boolean; data?: { content: string }; error?: { message: string } }>;
       })
-      .then(setText)
+      .then((payload) => {
+        if (!payload.ok || !payload.data) throw new Error(payload.error?.message ?? 'TXT 文件加载失败');
+        setText(payload.data.content);
+      })
       .catch((reason) => setError(reason instanceof Error ? reason.message : 'TXT 文件加载失败'));
-  }, [readerType, firstFile]);
+  }, [readerType, book]);
 
   useEffect(() => {
     if (!book || readerType !== 'comic' || !archiveComic) return;
@@ -108,7 +107,7 @@ export function ReaderPage({ bookId }: { bookId: string }) {
     if (!book) return;
     const timer = window.setTimeout(() => {
       fetch(`/api/books/${book.id}/progress`, {
-        method: 'PUT',
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           readerType,
@@ -171,16 +170,19 @@ export function ReaderPage({ bookId }: { bookId: string }) {
               <pre className="whitespace-pre-wrap break-words font-sans">{text || 'TXT 内容为空或正在加载...'}</pre>
             </article>
           ) : null}
-          {readerType === 'pdf' && currentFile ? (
-            <iframe title={book.title} src={`${fileUrl(currentFile.id)}#page=${page}&zoom=${Math.round(zoom * 100)}`} className="h-[calc(100vh-12rem)] w-full rounded-2xl border border-white/10 bg-white" />
+          {readerType === 'pdf' ? (
+            <iframe title={book.title} src={`/api/books/${book.id}/file#page=${page}&zoom=${Math.round(zoom * 100)}`} className="h-[calc(100vh-12rem)] w-full rounded-2xl border border-white/10 bg-white" />
           ) : null}
           {readerType === 'comic' && archiveComic && archivePageCount === null ? (
             <div className="text-slate-300">正在建立漫画页面索引...</div>
           ) : null}
           {readerType === 'comic' && currentFile && (!archiveComic || archivePageCount !== null) ? (
             <div className="flex w-full justify-center">
-              <img src={archiveComic ? archivePageUrl(book.id, page) : fileUrl(currentFile.id)} alt={`${book.title} 第 ${page} 页`} className="max-h-none max-w-full rounded-2xl shadow-2xl" style={{ transform: `scale(${zoom})`, transformOrigin: 'top center' }} />
+              <img src={archiveComic ? archivePageUrl(book.id, page) : archivePageUrl(book.id, page)} alt={`${book.title} 第 ${page} 页`} className="max-h-none max-w-full rounded-2xl shadow-2xl" style={{ transform: `scale(${zoom})`, transformOrigin: 'top center' }} />
             </div>
+          ) : null}
+          {readerType === 'unknown' ? (
+            <div className="rounded-3xl bg-white/10 p-8 text-slate-200">该读物没有可读内容，或文件格式暂不支持。</div>
           ) : null}
         </div>
       </div>

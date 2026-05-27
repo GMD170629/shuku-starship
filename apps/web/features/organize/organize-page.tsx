@@ -1,19 +1,21 @@
 'use client';
 
 import { CheckCircle2, Copy, FileText, RefreshCw, Tags, X } from 'lucide-react';
+import { useEffect, useState } from 'react';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
 import { PageTitle } from '../../components/ui/page-title';
+import type { BookView } from '../../lib/books';
 
-function MetaForm() {
-  const fields = [
-    ['标题', '星屑魔女与机械书库'],
-    ['作者', '青木遥'],
-    ['类型', '漫画'],
-    ['标签', '科幻, 冒险, 连载中'],
-    ['目标书架', '漫画收藏']
-  ];
+function MetaForm({ book }: { book: BookView | null }) {
+  const fields = book ? [
+    ['标题', book.title],
+    ['作者', book.author === '未知作者' ? '' : book.author],
+    ['类型', book.format],
+    ['标签', book.tags.join(', ')],
+    ['源路径', book.path]
+  ] : [];
 
   return (
     <div className="mt-5 space-y-4">
@@ -28,7 +30,20 @@ function MetaForm() {
 }
 
 export function OrganizePage() {
-  const files = ['unknown_2026_0519.cbz', 'docker-home-server-v2.pdf', 'archive_volume_03.zip', 'scan_technical_notes.epub', 'duplicate_manga_12.cbz'];
+  const [books, setBooks] = useState<BookView[]>([]);
+  const [selected, setSelected] = useState<BookView | null>(null);
+
+  useEffect(() => {
+    fetch('/api/books?visibility=all&pageSize=30&sort=created')
+      .then((response) => response.json())
+      .then((payload) => {
+        if (!payload.ok) return;
+        const nextBooks = payload.data.books ?? [];
+        setBooks(nextBooks);
+        setSelected(nextBooks[0] ?? null);
+      })
+      .catch(() => undefined);
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -41,12 +56,13 @@ export function OrganizePage() {
             ))}
           </div>
           <div className="mt-3 space-y-2">
-            {files.map((file, index) => (
-              <div key={file} className={cn('rounded-2xl border p-3 text-sm', index === 0 ? 'border-blue-200 bg-blue-50' : 'border-slate-200 bg-white')}>
-                <div className="font-medium">{file}</div>
-                <div className="mt-1 text-xs text-slate-500">{['等待处理', '识别失败', '疑似重复', '缺少封面', '已识别'][index]}</div>
+            {books.map((book) => (
+              <div key={book.id} onClick={() => setSelected(book)} className={cn('rounded-2xl border p-3 text-sm', selected?.id === book.id ? 'border-blue-200 bg-blue-50' : 'border-slate-200 bg-white')}>
+                <div className="font-medium">{book.title}</div>
+                <div className="mt-1 text-xs text-slate-500">{book.ignored ? '已忽略' : book.coverStatus === 'FAILED' ? '缺少封面' : '来自扫描'}</div>
               </div>
             ))}
+            {books.length === 0 ? <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">暂无待整理读物。</div> : null}
           </div>
         </div>
         <div className="col-span-5 rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
@@ -54,14 +70,14 @@ export function OrganizePage() {
           <div className="mt-5 flex h-[580px] items-center justify-center rounded-3xl bg-slate-100">
             <div className="w-64 rounded-[28px] bg-gradient-to-br from-slate-400 to-slate-700 p-8 text-white shadow-xl">
               <FileText size={42} />
-              <div className="mt-20 text-2xl font-semibold">未知读物</div>
-              <div className="mt-2 text-sm text-white/70">CBZ · 326MB · 284 pages</div>
+              <div className="mt-20 text-2xl font-semibold">{selected?.title ?? '暂无读物'}</div>
+              <div className="mt-2 text-sm text-white/70">{selected ? `${selected.format} · ${selected.size}` : '请先扫描真实目录'}</div>
             </div>
           </div>
         </div>
         <div className="col-span-4 rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
           <h2 className="font-semibold">元数据编辑</h2>
-          <MetaForm />
+          <MetaForm book={selected} />
           <div className="mt-6 grid grid-cols-2 gap-3">
             <Button icon={CheckCircle2}>保存识别</Button>
             <Button variant="secondary" icon={Copy}>合并分卷</Button>

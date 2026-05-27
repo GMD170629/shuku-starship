@@ -1,8 +1,10 @@
 import { extname } from 'node:path';
+import { stat } from 'node:fs/promises';
 import { PathSecurityError } from '@shuku/scanner/path-security-service';
 import { requireUser } from '../../../../../../lib/auth';
 import { ensureArchiveIndex, streamArchivePageResponse } from '../../../../../../lib/archive-index';
 import { FileAccessService, fileSecurityStatus } from '../../../../../../lib/file-access-service';
+import { mimeTypeForPath, streamFileResponse } from '../../../../../../lib/file-response';
 import { fail } from '../../../../../../lib/http';
 import { prisma } from '../../../../../../lib/prisma';
 
@@ -28,7 +30,30 @@ export async function GET(request: Request, { params }: { params: { id: string; 
   if (!book || !book.libraryPath?.enabled) return fail('读物不存在或无权访问', 404);
 
   const archiveFile = book.files.length === 1 && isArchiveFile(book.files[0].path, book.files[0].mimeType) ? book.files[0] : null;
-  if (!archiveFile) return fail('读物不是单文件漫画压缩包', 400);
+  if (!archiveFile) {
+    const imageFiles = book.files.filter((file) => file.kind === 'IMAGE' || file.mimeType.startsWith('image/'));
+    const file = imageFiles[pageIndex - 1];
+    if (!file) return fail('图片页面不存在', 404);
+    try {
+      const validation = await new FileAccessService().validateReadableFile(file.path, book.libraryPath.rootPath);
+      const fileStat = await stat(validation.realPath).catch(() => null);
+      if (!fileStat?.isFile()) return fail('图片页面不可读', 404);
+      return streamFileResponse({
+        request,
+        userId: user.id,
+        route: '/api/books/[id]/pages/[pageIndex]',
+        bookId: book.id,
+        fileId: file.id,
+        path: validation.realPath,
+        stat: fileStat,
+        mimeType: file.mimeType || mimeTypeForPath(validation.realPath),
+        downloadName: validation.realPath.split('/').at(-1) ?? 'page'
+      });
+    } catch (error) {
+      if (error instanceof PathSecurityError) return fail(error.message, fileSecurityStatus(error));
+      throw error;
+    }
+  }
 
   let validation;
   try {

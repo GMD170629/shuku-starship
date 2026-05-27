@@ -1,52 +1,59 @@
 'use client';
 
 import { MoreHorizontal, Plus } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
 import { Cover } from '../../components/book/cover';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
 import { PageTitle } from '../../components/ui/page-title';
-import { books, shelves } from '../../data/mock-books';
+import type { BookView } from '../../lib/books';
+
+const shelfDefs = [
+  { name: '正在阅读', match: (book: BookView) => book.statusValue === 'READING' || book.progress > 0 },
+  { name: '想看', match: (book: BookView) => book.statusValue === 'WANT' },
+  { name: '已完成', match: (book: BookView) => book.statusValue === 'FINISHED' || book.progress >= 99 },
+  { name: '最近添加', match: () => true }
+];
 
 export function ShelvesPage() {
+  const [books, setBooks] = useState<BookView[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('/api/books?pageSize=60')
+      .then((response) => response.json())
+      .then((payload) => payload.ok && setBooks(payload.data.books ?? []))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const shelves = useMemo(() => shelfDefs.map((shelf) => ({ ...shelf, books: books.filter(shelf.match).slice(0, 4), count: books.filter(shelf.match).length })), [books]);
+
   return (
     <div className="space-y-6">
       <PageTitle title="书架" desc="按收藏、阅读状态和主题组织你的私人读物。" action={<Button icon={Plus}>创建书架</Button>} />
       <div className="flex gap-2">
-        {['全部', '想看', '在读', '已读', '搁置', '收藏'].map((item, index) => (
-          <button
-            key={item}
-            className={cn(
-              'rounded-full border px-4 py-2 text-sm',
-              index === 0 ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-600'
-            )}
-          >
-            {item}
-          </button>
+        {['全部', '想看', '在读', '已读', '收藏'].map((item, index) => (
+          <button key={item} className={cn('rounded-full border px-4 py-2 text-sm', index === 0 ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-600')}>{item}</button>
         ))}
       </div>
-      <div className="grid grid-cols-4 gap-5">
-        {shelves.map((shelf) => (
+      {loading ? <div className="rounded-3xl bg-white p-6 text-sm text-slate-500">正在读取书架...</div> : null}
+      {!loading && books.length === 0 ? <div className="rounded-3xl bg-white p-6 text-sm text-slate-500">暂无读物，请先在系统设置中添加书库路径，然后启动扫描。</div> : null}
+      <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
+        {books.length > 0 ? shelves.map((shelf) => (
           <div key={shelf.name} className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">
             <div className="flex h-32 items-end gap-2 rounded-3xl bg-slate-50 p-4">
-              {shelf.ids.map((id, index) => {
-                const book = books.find((item) => item.id === id) ?? books[0];
-                return <Cover key={`${id}-${index}`} book={book} className="h-24 w-16 rotate-[-3deg]" small />;
-              })}
+              {shelf.books.map((book, index) => <Cover key={`${book.id}-${index}`} book={book} className="h-24 w-16 rotate-[-3deg]" small />)}
+              {shelf.books.length === 0 ? <span className="text-sm text-slate-400">暂无读物</span> : null}
             </div>
             <div className="mt-4 flex items-start justify-between">
-              <div>
-                <div className="font-semibold">{shelf.name}</div>
-                <div className="mt-1 text-sm text-slate-500">{shelf.count} 本 · 更新 {shelf.updated}</div>
-              </div>
+              <div><div className="font-semibold">{shelf.name}</div><div className="mt-1 text-sm text-slate-500">{shelf.count} 本 · 来自数据库</div></div>
               <MoreHorizontal size={18} className="text-slate-400" />
             </div>
           </div>
-        ))}
+        )) : null}
       </div>
-      <div className="hidden">
-        <Badge>保留徽标样式</Badge>
-      </div>
+      <div className="hidden"><Badge>保留徽标样式</Badge></div>
     </div>
   );
 }

@@ -25,7 +25,17 @@ export async function GET(_request: Request, { params }: { params: { id: string 
   if (!book || !book.libraryPath?.enabled) return fail('读物不存在或无权访问', 404);
 
   const archiveFile = book.files.length === 1 && isArchiveFile(book.files[0].path, book.files[0].mimeType) ? book.files[0] : null;
-  if (!archiveFile) return fail('读物不是单文件漫画压缩包', 400);
+  if (!archiveFile) {
+    const imageFiles = book.files.filter((file) => file.kind === 'IMAGE' || file.mimeType.startsWith('image/'));
+    if (imageFiles.length === 0) return fail('读物没有图片页面', 400);
+    return ok({
+      pageCount: imageFiles.length,
+      pages: imageFiles.map((page, index) => ({
+        pageIndex: index + 1,
+        mimeType: page.mimeType
+      }))
+    });
+  }
 
   let validation;
   try {

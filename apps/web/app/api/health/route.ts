@@ -1,13 +1,12 @@
 import { NextResponse } from 'next/server';
 import { BackupService } from '../../../lib/backup-service';
+import { runSystemHealthChecks } from '../../../lib/system-health';
 
 export const runtime = 'nodejs';
 
 BackupService.startAutomaticScheduler();
 
 export async function GET() {
-  return NextResponse.json({
-    status: 'ok',
-    service: 'shuku-starship'
-  });
+  const health = await runSystemHealthChecks();
+  return NextResponse.json({ service: 'shuku-starship', ...health }, { status: health.status === 'ok' ? 200 : 503 });
 }

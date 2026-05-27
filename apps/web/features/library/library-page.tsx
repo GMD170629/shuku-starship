@@ -189,7 +189,13 @@ export function LibraryPage() {
       {loading ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取书库...</div> : null}
       {error ? <div className="rounded-3xl border border-red-100 bg-red-50 p-8 text-sm text-red-700">{error}</div> : null}
       {!loading && !error && books.length === 0 ? (
-        <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">还没有读物。请先在设置中添加书库路径，然后创建扫描任务。</div>
+        <div className="rounded-3xl border border-slate-200 bg-white p-8">
+          <div className="text-sm text-slate-500">暂无读物，请先在系统设置中添加书库路径，然后启动扫描。</div>
+          <div className="mt-5 flex flex-wrap gap-3">
+            <Button icon={Plus} onClick={() => router.push('/settings')}>去添加书库路径</Button>
+            <Button variant="secondary" icon={RefreshCw} onClick={() => router.push('/scan-tasks')}>开始扫描</Button>
+          </div>
+        </div>
       ) : null}
       {!loading && !error && books.length > 0 ? (
         view === 'grid' ? (

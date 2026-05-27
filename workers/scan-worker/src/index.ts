@@ -1,9 +1,24 @@
 import { Worker } from 'bullmq';
 import { Redis } from 'ioredis';
-import { rm, writeFile } from 'node:fs/promises';
+import { access, rm, stat, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
 import { recoverStaleRunningScanTasks, scanNas } from '@shuku/scanner';
 
 const readyFile = '/tmp/scan-worker-ready';
+
+async function startupCheck() {
+  for (const name of ['DATABASE_URL', 'REDIS_URL', 'SESSION_SECRET', 'BOOKS_ROOT']) {
+    if (!process.env[name]) throw new Error(`[scan-worker] missing required env ${name}`);
+  }
+  const booksRoot = process.env.BOOKS_ROOT;
+  if (booksRoot) {
+    const rootStat = await stat(booksRoot);
+    if (!rootStat.isDirectory()) throw new Error(`[scan-worker] BOOKS_ROOT is not a directory: ${booksRoot}`);
+    await access(booksRoot, constants.R_OK);
+  }
+}
+
+await startupCheck();
 const connection = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379', {
   maxRetriesPerRequest: null
 });

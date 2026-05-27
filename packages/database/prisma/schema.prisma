@@ -198,3 +198,10 @@ model ReadingProgress {
   @@unique([userId, bookId])
   @@index([bookId])
 }
+
+model SystemSetting {
+  key       String   @id
+  value     String   @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}

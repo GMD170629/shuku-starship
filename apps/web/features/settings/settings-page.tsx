@@ -41,8 +41,11 @@ export function SettingsPage() {
   const [active, setActive] = useState('书库路径');
   const [paths, setPaths] = useState<LibraryPath[]>([]);
   const [backups, setBackups] = useState<BackupItem[]>([]);
-  const [name, setName] = useState('测试书库');
-  const [rootPath, setRootPath] = useState('/tmp/shuku-starship-library');
+  const [health, setHealth] = useState<{ status: string; checks: Array<{ name: string; status: string; message: string }> } | null>(null);
+  const [summary, setSummary] = useState<{ latestSyncAt: string | null } | null>(null);
+  const [settings, setSettings] = useState({ systemName: '书库星舰', theme: 'system', language: 'zh-CN', timezone: 'Asia/Shanghai' });
+  const [name, setName] = useState('我的书库');
+  const [rootPath, setRootPath] = useState('/books');
   const [ignorePatterns, setIgnorePatterns] = useState('*.tmp\n*.part\n*.download');
   const [ignoreHidden, setIgnoreHidden] = useState(true);
   const [message, setMessage] = useState('');
@@ -66,6 +69,9 @@ export function SettingsPage() {
   useEffect(() => {
     loadPaths();
     loadBackups();
+    fetch('/api/system/health').then((response) => response.json()).then((payload) => payload.ok && setHealth(payload.data)).catch(() => undefined);
+    fetch('/api/dashboard/summary').then((response) => response.json()).then((payload) => payload.ok && setSummary(payload.data)).catch(() => undefined);
+    fetch('/api/system-settings').then((response) => response.json()).then((payload) => payload.ok && setSettings((current) => ({ ...current, ...payload.data.settings }))).catch(() => undefined);
   }, []);
 
   async function savePath(event: FormEvent<HTMLFormElement>) {
@@ -179,9 +185,22 @@ export function SettingsPage() {
     await loadBackups();
   }
 
+  async function saveSettings() {
+    setError('');
+    setMessage('');
+    const response = await fetch('/api/system-settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings)
+    });
+    const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
+    if (!payload.ok) setError(payload.error?.message ?? '保存设置失败');
+    else setMessage('系统设置已保存');
+  }
+
   return (
     <div className="space-y-6">
-      <PageTitle title="系统设置" desc="配置系统、书库路径、扫描规则、同步、安全和备份。" action={<Button icon={CheckCircle2}>保存设置</Button>} />
+      <PageTitle title="系统设置" desc="配置系统、书库路径、扫描规则、同步、安全和备份。" action={<Button icon={CheckCircle2} onClick={saveSettings}>保存设置</Button>} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
         <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm lg:col-span-3">
           {groups.map((group) => (
@@ -197,7 +216,30 @@ export function SettingsPage() {
         </div>
         <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm lg:col-span-9">
           <h1 className="text-xl font-semibold">{active}</h1>
-          {active === '书库路径' ? (
+          {active === '基础设置' ? (
+            <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2">
+              <label className="text-sm text-slate-600">
+                系统名称
+                <input value={settings.systemName} onChange={(event) => setSettings({ ...settings, systemName: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none" />
+              </label>
+              <label className="text-sm text-slate-600">
+                主题
+                <select value={settings.theme} onChange={(event) => setSettings({ ...settings, theme: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-slate-900 outline-none">
+                  <option value="system">跟随系统</option>
+                  <option value="light">浅色</option>
+                  <option value="dark">深色</option>
+                </select>
+              </label>
+              <label className="text-sm text-slate-600">
+                语言
+                <input value={settings.language} onChange={(event) => setSettings({ ...settings, language: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none" />
+              </label>
+              <label className="text-sm text-slate-600">
+                时区
+                <input value={settings.timezone} onChange={(event) => setSettings({ ...settings, timezone: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none" />
+              </label>
+            </div>
+          ) : active === '书库路径' ? (
             <div className="mt-6 space-y-5">
               <form onSubmit={savePath} className="grid grid-cols-1 gap-4 rounded-3xl border border-slate-200 bg-slate-50 p-5 md:grid-cols-12">
                 <label className="md:col-span-4">
@@ -260,7 +302,7 @@ export function SettingsPage() {
                 <div>
                   <div className="font-semibold">备份范围</div>
                   <div className="mt-1 text-sm leading-6 text-slate-500">数据库数据、读物元数据、标签、阅读进度、书库路径配置和封面缓存索引。原始读物文件不会写入备份。</div>
-                  <div className="mt-2 text-xs text-slate-500">自动备份每天凌晨 3 点执行，保留最近 7 个自动备份。</div>
+                  <div className="mt-2 text-xs text-slate-500">自动备份未配置；当前仅显示真实备份文件。</div>
                 </div>
                 <Button icon={Save} onClick={createBackup} disabled={backupBusy === 'create'}>{backupBusy === 'create' ? '创建中' : '立即备份'}</Button>
               </div>
@@ -299,10 +341,10 @@ export function SettingsPage() {
           ) : (
             <div className="mt-6 grid grid-cols-1 gap-5 md:grid-cols-2">
               {[
-                { icon: RefreshCw, title: '自动扫描', desc: 'MVP 使用手动触发扫描。' },
-                { icon: Database, title: '元数据来源', desc: '本地文件名 + 内置识别规则 + 手动编辑。' },
-                { icon: Smartphone, title: '多端同步', desc: '阅读进度采用最后写入优先策略。' },
-                { icon: KeyRound, title: 'API Token', desc: '当前通过 Web 会话保护 API。' }
+                { icon: RefreshCw, title: '自动扫描', desc: paths.some((path) => path.scanPolicy !== 'manual') ? '已启用自动扫描策略。' : '未配置自动扫描。' },
+                { icon: Database, title: 'NAS 连接状态', desc: health?.checks.find((check) => check.name === 'booksRootReadable')?.message ?? '待检测' },
+                { icon: Smartphone, title: '多端同步', desc: summary?.latestSyncAt ? `最近进度更新 ${new Date(summary.latestSyncAt).toLocaleString()}` : '暂无阅读进度同步' },
+                { icon: KeyRound, title: 'API Token', desc: '尚未启用 API Token。' }
               ].map(({ icon: Icon, title, desc }) => (
                 <div key={title} className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
                   <div className="flex gap-3">

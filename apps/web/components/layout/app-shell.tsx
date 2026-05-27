@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import type { ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Badge } from '../ui/badge';
 import { cn } from '../ui/cn';
 import { Progress } from '../ui/progress';
@@ -43,9 +43,34 @@ function isActive(pathname: string, href: string) {
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const [summary, setSummary] = useState<{ storageUsedBytes: number; latestSyncAt: string | null } | null>(null);
+  const [status, setStatus] = useState<{ status: string; checks: Array<{ name: string; status: string; message: string }> } | null>(null);
+  const [scan, setScan] = useState<{ progress: number } | null>(null);
   const isReader = pathname.startsWith('/reader/');
   const isLogin = pathname === '/login';
   const isMobilePreview = pathname === '/mobile-preview';
+
+  useEffect(() => {
+    if (isReader || isLogin || isMobilePreview) return;
+    let active = true;
+    Promise.all([
+      fetch('/api/dashboard/summary').then((response) => response.json()).catch(() => null),
+      fetch('/api/system/health').then((response) => response.json()).catch(() => null),
+      fetch('/api/dashboard/system-status').then((response) => response.json()).catch(() => null)
+    ]).then(([summaryPayload, healthPayload, systemPayload]) => {
+      if (!active) return;
+      if (summaryPayload?.ok) setSummary(summaryPayload.data);
+      if (healthPayload?.ok) setStatus(healthPayload.data);
+      if (systemPayload?.ok) setScan(systemPayload.data.currentRunningScanTask);
+    });
+    return () => {
+      active = false;
+    };
+  }, [isLogin, isMobilePreview, isReader, pathname]);
+
+  const storage = summary?.storageUsedBytes ?? 0;
+  const storageLabel = storage > 0 ? `${(storage / 1024 / 1024 / 1024).toFixed(1)} GB` : '0 B';
+  const healthOk = status?.status === 'ok';
 
   if (isReader || isLogin || isMobilePreview) {
     return <>{children}</>;
@@ -80,16 +105,16 @@ export function AppShell({ children }: { children: ReactNode }) {
         </nav>
         <div className="absolute inset-x-4 bottom-5 rounded-3xl border border-slate-200 bg-slate-50 p-4">
           <div className="flex items-center gap-2 text-sm font-medium text-slate-800">
-            <Server size={16} /> NAS 服务在线
+            <Server size={16} /> {healthOk ? '服务可用' : '待检测'}
           </div>
           <div className="mt-3 space-y-2 text-xs text-slate-500">
             <div className="flex justify-between">
               <span>存储占用</span>
-              <span>2.8TB / 8TB</span>
+              <span>{storageLabel}</span>
             </div>
-            <Progress value={35} />
-            <div className="flex items-center gap-1 text-emerald-600">
-              <CheckCircle2 size={13} /> 已同步 · 2 分钟前
+            <Progress value={0} />
+            <div className={cn('flex items-center gap-1', summary?.latestSyncAt ? 'text-emerald-600' : 'text-slate-500')}>
+              <CheckCircle2 size={13} /> {summary?.latestSyncAt ? `进度更新 · ${new Date(summary.latestSyncAt).toLocaleString()}` : '暂无同步'}
             </div>
           </div>
         </div>
@@ -103,11 +128,11 @@ export function AppShell({ children }: { children: ReactNode }) {
           <div className="flex items-center gap-3">
             <Badge tone="green">
               <CheckCircle2 size={13} className="mr-1" />
-              已同步
+              {summary?.latestSyncAt ? '有进度' : '暂无同步'}
             </Badge>
-            <Badge tone="amber">
+            <Badge tone={scan ? 'amber' : 'green'}>
               <RefreshCw size={13} className="mr-1 animate-spin" />
-              扫描 76%
+              {scan ? `扫描 ${scan.progress}%` : '暂无扫描'}
             </Badge>
             <div className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-900 text-white">
               <User size={18} />

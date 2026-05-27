@@ -47,6 +47,8 @@ services:
       REDIS_URL: ${REDIS_URL:?set REDIS_URL}
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET}
       BOOKS_ROOT: ${BOOKS_ROOT:?set BOOKS_ROOT}
+      DEMO_MODE: ${DEMO_MODE:-false}
+      NEXT_PUBLIC_DEMO_MODE: ${NEXT_PUBLIC_DEMO_MODE:-false}
       STORAGE_ROOT: /app/storage
       PORT: 3000
       HOSTNAME: 0.0.0.0
@@ -86,6 +88,7 @@ services:
       REDIS_URL: ${REDIS_URL:?set REDIS_URL}
       SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET}
       BOOKS_ROOT: ${BOOKS_ROOT:?set BOOKS_ROOT}
+      DEMO_MODE: ${DEMO_MODE:-false}
       STORAGE_ROOT: /app/storage
     volumes:
       - ./data/storage:/app/storage

@@ -1,57 +1,104 @@
 'use client';
 
-import { AlertTriangle, BookOpen, CheckCircle2, Eye, FileText, HardDrive, Library, RefreshCw, Server, UploadCloud } from 'lucide-react';
+import { AlertTriangle, BookOpen, CheckCircle2, Eye, FileText, HardDrive, Library, RefreshCw, Server, Settings, UploadCloud } from 'lucide-react';
 import { useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
 import { BookCard } from '../../components/book/book-card';
 import { Cover } from '../../components/book/cover';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { Progress } from '../../components/ui/progress';
 import { StatCard } from '../../components/ui/stat-card';
-import { books, type Book } from '../../data/mock-books';
+import type { BookView } from '../../lib/books';
 
-function MiniMetric({ value, label }: { value: string; label: string }) {
-  return (
-    <div className="rounded-2xl bg-slate-50 p-3">
-      <div className="font-semibold text-slate-950">{value}</div>
-      <div className="mt-1 text-xs text-slate-500">{label}</div>
-    </div>
-  );
+type Summary = {
+  totalBooks: number;
+  comicBooks: number;
+  novelBooks: number;
+  pdfBooks: number;
+  documentBooks: number;
+  storageUsedBytes: number;
+  libraryPathCount: number;
+  lastScanAt: string | null;
+  latestSyncAt: string | null;
+};
+type ContinueItem = { book: BookView; progress: number; lastReadAt: string; chapter: string | null; position: string } | null;
+type SystemStatus = {
+  database: { status: string; message: string };
+  redis: { status: string; message: string };
+  worker: { status: string; message: string };
+  currentRunningScanTask: { progress: number; libraryPath?: { rootPath: string }; status: string } | null;
+  latestScanTask: { status: string; progress: number; finishedAt?: string | null } | null;
+  errorFileCount: number;
+  booksRootReadable: { status: string; message: string };
+  storageWritable: { status: string; message: string };
+};
+
+function formatBytes(bytes: number) {
+  if (!bytes) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+  return `${(bytes / 1024 ** index).toFixed(index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
-function StatusRow({ icon: Icon, label, value, tone }: { icon: typeof Server; label: string; value: string; tone: 'green' | 'amber' | 'red' }) {
+function tone(status?: string): 'green' | 'amber' | 'red' {
+  if (status === 'ok') return 'green';
+  if (status === 'error') return 'red';
+  return 'amber';
+}
+
+function StatusRow({ icon: Icon, label, value, status }: { icon: typeof Server; label: string; value: string; status?: string }) {
   return (
-    <div className="flex items-center justify-between">
+    <div className="flex items-center justify-between gap-3">
       <div className="flex items-center gap-2 text-slate-600">
         <Icon size={16} />
         {label}
       </div>
-      <Badge tone={tone}>{value}</Badge>
+      <Badge tone={tone(status)}>{value}</Badge>
     </div>
   );
 }
 
-function ReadingRow({ book }: { book: Book }) {
-  return (
-    <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
-      <div className="flex items-center gap-3">
-        <Cover book={book} className="h-20 w-14" small />
-        <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-semibold">{book.title}</div>
-          <div className="mt-1 text-xs text-slate-500">{book.chapter}</div>
-          <div className="mt-3">
-            <Progress value={book.progress} />
-          </div>
-        </div>
-        <span className="text-xs font-medium text-slate-500">{book.progress}%</span>
-      </div>
-    </div>
-  );
+async function api<T>(path: string): Promise<T> {
+  const response = await fetch(path);
+  const payload = (await response.json()) as { ok: boolean; data?: T; error?: { message: string } };
+  if (!payload.ok || !payload.data) throw new Error(payload.error?.message ?? '读取数据失败');
+  return payload.data;
 }
 
 export function DashboardPage() {
   const router = useRouter();
-  const current = books[0];
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const [continueItem, setContinueItem] = useState<ContinueItem>(null);
+  const [recentBooks, setRecentBooks] = useState<BookView[]>([]);
+  const [status, setStatus] = useState<SystemStatus | null>(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    Promise.all([
+      api<Summary>('/api/dashboard/summary'),
+      api<{ item: ContinueItem }>('/api/dashboard/continue-reading'),
+      api<{ books: BookView[] }>('/api/dashboard/recent-books?limit=4'),
+      api<SystemStatus>('/api/dashboard/system-status')
+    ])
+      .then(([nextSummary, nextContinue, nextRecent, nextStatus]) => {
+        if (!active) return;
+        setSummary(nextSummary);
+        setContinueItem(nextContinue.item);
+        setRecentBooks(nextRecent.books);
+        setStatus(nextStatus);
+        setError('');
+      })
+      .catch((reason) => active && setError(reason instanceof Error ? reason.message : '读取 Dashboard 失败'))
+      .finally(() => active && setLoading(false));
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const scan = status?.currentRunningScanTask;
 
   return (
     <div className="space-y-8">
@@ -60,84 +107,80 @@ export function DashboardPage() {
           <h1 className="text-3xl font-semibold tracking-tight">首页</h1>
           <p className="mt-2 text-slate-500">快速了解书库状态，并继续上次阅读。</p>
         </div>
-        <Button variant="secondary" icon={UploadCloud}>导入读物</Button>
+        <Button variant="secondary" icon={UploadCloud} onClick={() => router.push('/settings')}>导入读物</Button>
       </div>
-      <section className="grid grid-cols-12 gap-6">
-        <div className="col-span-7 rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">继续阅读</h2>
-            <Badge tone="green">已同步到手机</Badge>
-          </div>
-          <div className="mt-5 flex gap-5">
-            <Cover book={current} className="h-52 w-36 shrink-0" />
-            <div className="flex-1 py-2">
-              <div className="text-2xl font-semibold tracking-tight">《{current.title}》</div>
-              <div className="mt-2 text-sm text-slate-500">第 12 话 · 进度 68% · 最近阅读 今天 09:42</div>
-              <p className="mt-5 max-w-xl text-sm leading-7 text-slate-600">
-                上次在 Web 阅读器停留于第 18 页，移动端已同步同一进度。可继续阅读或打开详情查看章节列表。
-              </p>
-              <div className="mt-6">
-                <Progress value={68} />
+      {loading ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取真实书库状态...</div> : null}
+      {error ? <div className="rounded-3xl border border-red-100 bg-red-50 p-8 text-sm text-red-700">{error}</div> : null}
+      {!loading && !error ? (
+        <>
+          <section className="grid grid-cols-1 gap-6 xl:grid-cols-12">
+            <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm xl:col-span-7">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">继续阅读</h2>
+                <Badge tone={summary?.latestSyncAt ? 'green' : 'amber'}>{summary?.latestSyncAt ? '有阅读进度' : '暂无同步'}</Badge>
               </div>
-              <div className="mt-6 flex gap-3">
-                <Button icon={BookOpen} onClick={() => router.push(`/reader/${current.id}`)}>继续阅读</Button>
-                <Button variant="secondary" icon={Eye} onClick={() => router.push(`/books/${current.id}`)}>查看详情</Button>
+              {continueItem ? (
+                <div className="mt-5 flex flex-col gap-5 md:flex-row">
+                  <Cover book={continueItem.book} className="h-52 w-36 shrink-0" />
+                  <div className="flex-1 py-2">
+                    <div className="text-2xl font-semibold tracking-tight">《{continueItem.book.title}》</div>
+                    <div className="mt-2 text-sm text-slate-500">{continueItem.chapter ?? continueItem.book.chapter} · 进度 {Math.round(continueItem.progress)}% · 最近阅读 {new Date(continueItem.lastReadAt).toLocaleString()}</div>
+                    <div className="mt-6">
+                      <Progress value={continueItem.progress} />
+                    </div>
+                    <div className="mt-6 flex gap-3">
+                      <Button icon={BookOpen} onClick={() => router.push(`/reader/${continueItem.book.id}`)}>继续阅读</Button>
+                      <Button variant="secondary" icon={Eye} onClick={() => router.push(`/books/${continueItem.book.id}`)}>查看详情</Button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-5 rounded-3xl bg-slate-50 p-8 text-sm text-slate-500">暂无继续阅读。打开任意读物后，这里会显示最近阅读进度。</div>
+              )}
+            </div>
+            <div className="grid grid-cols-2 gap-4 xl:col-span-5">
+              <StatCard icon={Library} label="总读物" value={String(summary?.totalBooks ?? 0)} hint="全部" />
+              <StatCard icon={BookOpen} label="漫画" value={String(summary?.comicBooks ?? 0)} hint="COMIC" tone="green" />
+              <StatCard icon={FileText} label="小说" value={String(summary?.novelBooks ?? 0)} hint="TXT/EPUB" tone="amber" />
+              <StatCard icon={HardDrive} label="存储占用" value={formatBytes(summary?.storageUsedBytes ?? 0)} hint={`${summary?.libraryPathCount ?? 0} 个路径`} tone="slate" />
+            </div>
+          </section>
+          <section className="grid grid-cols-1 gap-6 xl:grid-cols-12">
+            <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm xl:col-span-8">
+              <div className="flex items-center justify-between">
+                <h2 className="text-lg font-semibold">最近新增</h2>
+                <button onClick={() => router.push('/library')} className="text-sm text-blue-600">查看全部</button>
+              </div>
+              {recentBooks.length > 0 ? (
+                <div className="mt-5 grid grid-cols-2 gap-4 md:grid-cols-4">
+                  {recentBooks.map((book) => <BookCard key={book.id} book={book} compact onClick={() => router.push(`/books/${book.id}`)} />)}
+                </div>
+              ) : (
+                <div className="mt-5 rounded-3xl bg-slate-50 p-8 text-sm text-slate-500">暂无读物，请先在系统设置中添加书库路径，然后启动扫描。</div>
+              )}
+            </div>
+            <div className="space-y-6 xl:col-span-4">
+              <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+                <h2 className="text-lg font-semibold">系统状态</h2>
+                <div className="mt-5 space-y-4 text-sm">
+                  <StatusRow icon={Server} label="数据库" value={status?.database.message ?? '待检测'} status={status?.database.status} />
+                  <StatusRow icon={Server} label="Redis" value={status?.redis.message ?? '待检测'} status={status?.redis.status} />
+                  <StatusRow icon={RefreshCw} label="当前扫描" value={scan ? `${scan.libraryPath?.rootPath ?? '扫描中'} · ${scan.progress}%` : '暂无扫描任务'} status={scan ? 'unknown' : 'ok'} />
+                  <StatusRow icon={AlertTriangle} label="错误文件" value={`${status?.errorFileCount ?? 0} 个`} status={(status?.errorFileCount ?? 0) > 0 ? 'error' : 'ok'} />
+                  <StatusRow icon={CheckCircle2} label="存储写入" value={status?.storageWritable.message ?? '待检测'} status={status?.storageWritable.status} />
+                </div>
+              </div>
+              <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
+                <h2 className="text-lg font-semibold">真实数据时间</h2>
+                <div className="mt-4 space-y-3 text-sm text-slate-600">
+                  <div>最近扫描：{summary?.lastScanAt ? new Date(summary.lastScanAt).toLocaleString() : '暂无'}</div>
+                  <div>最近进度：{summary?.latestSyncAt ? new Date(summary.latestSyncAt).toLocaleString() : '暂无'}</div>
+                </div>
               </div>
             </div>
-          </div>
-        </div>
-        <div className="col-span-5 grid grid-cols-2 gap-4">
-          <StatCard icon={Library} label="总读物" value="1286" hint="全部" />
-          <StatCard icon={BookOpen} label="漫画" value="842" hint="CBZ/CBR" tone="green" />
-          <StatCard icon={FileText} label="小说" value="276" hint="EPUB/TXT" tone="amber" />
-          <StatCard icon={HardDrive} label="存储占用" value="2.8TB" hint="/ 8TB" tone="slate" />
-        </div>
-      </section>
-      <section className="grid grid-cols-12 gap-6">
-        <div className="col-span-8 rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-semibold">最近新增</h2>
-            <button onClick={() => router.push('/library')} className="text-sm text-blue-600">查看全部</button>
-          </div>
-          <div className="mt-5 grid grid-cols-4 gap-4">
-            {books.slice(0, 4).map((book) => (
-              <BookCard key={book.id} book={book} compact onClick={() => router.push(`/books/${book.id}`)} />
-            ))}
-          </div>
-        </div>
-        <div className="col-span-4 space-y-6">
-          <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-            <h2 className="text-lg font-semibold">系统状态</h2>
-            <div className="mt-5 space-y-4 text-sm">
-              <StatusRow icon={Server} label="NAS 连接" value="正常" tone="green" />
-              <StatusRow icon={RefreshCw} label="当前扫描" value="/books/manga · 76%" tone="amber" />
-              <StatusRow icon={CheckCircle2} label="同步状态" value="已同步" tone="green" />
-              <StatusRow icon={AlertTriangle} label="错误文件" value="7 个" tone="red" />
-            </div>
-          </div>
-          <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-            <h2 className="text-lg font-semibold">阅读统计摘要</h2>
-            <div className="mt-5 grid grid-cols-3 gap-3 text-center">
-              <MiniMetric value="8.5h" label="本周" />
-              <MiniMetric value="12" label="本月完成" />
-              <MiniMetric value="14" label="连续天数" />
-            </div>
-            <div className="mt-4 flex flex-wrap gap-2">
-              <Badge>NAS</Badge>
-              <Badge>技术资料</Badge>
-              <Badge>漫画</Badge>
-            </div>
-          </div>
-        </div>
-      </section>
-      <section className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-lg font-semibold">正在阅读</h2>
-        <div className="mt-4 grid grid-cols-3 gap-4">
-          {books.filter((book) => book.status === '在读').slice(0, 3).map((book) => (
-            <ReadingRow key={book.id} book={book} />
-          ))}
-        </div>
-      </section>
+          </section>
+        </>
+      ) : null}
     </div>
   );
 }

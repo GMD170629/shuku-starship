@@ -37,6 +37,10 @@ type ScanTask = {
 type ScanLog = { id: string; level: string; message: string; createdAt: string };
 type LogsPayload = { logs: ScanLog[]; page: number; pageSize: number; total: number; totalPages: number };
 
+function statusLabel(status: ScanTask['status']) {
+  return status === 'COMPLETED' ? 'FINISHED' : status;
+}
+
 export function ScanTasksPage() {
   const [paths, setPaths] = useState<LibraryPath[]>([]);
   const [selectedPath, setSelectedPath] = useState('');
@@ -65,7 +69,7 @@ export function ScanTasksPage() {
 
   useEffect(() => {
     load();
-    const timer = window.setInterval(load, 4000);
+    const timer = window.setInterval(load, 2000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -94,6 +98,10 @@ export function ScanTasksPage() {
 
   async function createTask(dryRun = false) {
     setError('');
+    if (!selectedPath) {
+      setError('暂无启用的书库路径，请先添加路径。');
+      return;
+    }
     const response = await fetch('/api/scan-tasks', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -139,7 +147,7 @@ export function ScanTasksPage() {
       <PageTitle
         title="扫描任务"
         desc="查看 NAS 书库扫描任务、实时进度、日志和错误。"
-        action={<div className="flex flex-wrap gap-3"><select value={selectedPath} onChange={(event) => setSelectedPath(event.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm">{paths.map((path) => <option key={path.id} value={path.id}>{path.name}</option>)}</select><Button icon={PlusCircle} onClick={() => createTask(false)}>开始扫描</Button><Button variant="secondary" icon={FileText} onClick={() => createTask(true)}>Dry run</Button></div>}
+        action={<div className="flex flex-wrap gap-3"><select value={selectedPath} onChange={(event) => setSelectedPath(event.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm"><option value="">选择书库路径</option>{paths.map((path) => <option key={path.id} value={path.id}>{path.name}</option>)}</select><Button disabled={paths.length === 0} icon={PlusCircle} onClick={() => createTask(false)}>开始扫描</Button><Button disabled={paths.length === 0} variant="secondary" icon={FileText} onClick={() => createTask(true)}>Dry run</Button></div>}
       />
       {error ? <div className="rounded-3xl border border-red-100 bg-red-50 p-5 text-sm text-red-700">{error}</div> : null}
       <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
@@ -155,7 +163,7 @@ export function ScanTasksPage() {
               </div>
               <div className="flex flex-wrap gap-2">
                 {activeTask.mode === 'DRY_RUN' ? <Badge tone="amber">DRY RUN</Badge> : null}
-                <Badge tone={activeTask.status === 'COMPLETED' ? 'green' : activeTask.status === 'FAILED' ? 'red' : 'amber'}>{activeTask.status}</Badge>
+                <Badge tone={activeTask.status === 'COMPLETED' ? 'green' : activeTask.status === 'FAILED' ? 'red' : 'amber'}>{statusLabel(activeTask.status)}</Badge>
                 {['RUNNING', 'QUEUED', 'WAITING_RESUME'].includes(activeTask.status) ? <Button variant="secondary" icon={Ban} onClick={() => cancelTask(activeTask)}>取消</Button> : null}
               </div>
             </div>
@@ -165,7 +173,7 @@ export function ScanTasksPage() {
             </div>
           </>
         ) : (
-          <div className="text-sm text-slate-500">暂无扫描任务。请先在设置中保存书库路径。</div>
+          <div className="text-sm text-slate-500">暂无扫描任务，请先添加书库路径后开始扫描。</div>
         )}
       </div>
       <div className="grid grid-cols-1 gap-4 md:grid-cols-5">
@@ -237,7 +245,7 @@ export function ScanTasksPage() {
           {tasks.map((task) => (
             <div key={task.id} className="mt-4 rounded-2xl bg-slate-50 p-4 text-sm">
               <div className="font-medium">{new Date(task.createdAt).toLocaleString()} · {task.libraryPath.name}</div>
-              <div className="mt-1 text-xs text-slate-500">{task.mode === 'DRY_RUN' ? 'DRY RUN · ' : ''}{task.status} · 新增 {task.createdCount} · 错误 {task.errorCount}</div>
+              <div className="mt-1 text-xs text-slate-500">{task.mode === 'DRY_RUN' ? 'DRY RUN · ' : ''}{statusLabel(task.status)} · 新增 {task.createdCount} · 错误 {task.errorCount}</div>
             </div>
           ))}
           <Button variant="secondary" icon={RotateCcw} className="mt-5 w-full" onClick={load}>刷新任务</Button>

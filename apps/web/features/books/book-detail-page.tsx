@@ -178,10 +178,12 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
             <h2 className="font-semibold">文件信息</h2>
             <Info label="源路径" value={book.path} />
             <Info label="文件大小" value={book.size} />
+            <Info label="文件哈希" value={book.fileHash} />
             <Info label="资源数量" value={`${book.files.length} 个文件`} />
+            <Info label="页数 / 章节" value={`${book.pageCount ?? '未知'} / ${book.chapterCount ?? '未知'}`} />
             <Info label="添加时间" value={book.added} />
             <Info label="最后阅读" value={book.lastRead} />
-            <Info label="同步状态" value="已同步" green />
+            <Info label="同步状态" value={book.lastReadAt ? '有阅读进度' : '暂无阅读进度'} green={Boolean(book.lastReadAt)} />
           </div>
         </div>
       </div>
@@ -235,7 +237,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
         <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm lg:col-span-8">
           <h2 className="text-lg font-semibold">章节 / 页面资源</h2>
           <div className="mt-4 divide-y divide-slate-100">
-            {book.files.map((file, index) => (
+            {book.files.length > 0 ? book.files.map((file, index) => (
               <button key={file.id} onClick={() => router.push(`/reader/${book.id}`)} className="flex w-full items-center justify-between py-4 text-left hover:bg-slate-50">
                 <div>
                   <div className="font-medium">{file.path.split('/').at(-1)}</div>
@@ -246,7 +248,11 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
                   <ChevronRight size={16} className="text-slate-400" />
                 </div>
               </button>
-            ))}
+            )) : (
+              <div className="py-4 text-sm text-slate-500">
+                {book.formatValue === 'PDF' ? 'PDF 文档' : book.formatValue === 'TXT' ? '全文阅读' : book.formatValue === 'COMIC' || book.formatValue === 'IMAGE' ? '图片页' : '暂无章节信息'}
+              </div>
+            )}
           </div>
         </div>
         <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm lg:col-span-4">
