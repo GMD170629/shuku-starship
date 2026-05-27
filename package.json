@@ -1,0 +1,15 @@
+{
+  "name": "shuku-starship",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@9.12.2",
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "turbo": "^2.1.3"
+  }
+}
