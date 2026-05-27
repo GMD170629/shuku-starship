@@ -1,0 +1,48 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: shuku-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: shuku_starship
+      MYSQL_USER: shuku
+      MYSQL_PASSWORD: shuku
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+  redis:
+    image: redis:7-alpine
+    container_name: shuku-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    container_name: shuku-web
+    depends_on:
+      - mysql
+      - redis
+    environment:
+      DATABASE_URL: mysql://shuku:shuku@mysql:3306/shuku_starship
+      REDIS_URL: redis://redis:6379
+    ports:
+      - "3000:3000"
+
+  scan-worker:
+    build:
+      context: .
+      dockerfile: workers/scan-worker/Dockerfile
+    container_name: shuku-scan-worker
+    depends_on:
+      - redis
+    environment:
+      REDIS_URL: redis://redis:6379
+
+volumes:
+  mysql_data:
