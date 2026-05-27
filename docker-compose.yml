@@ -31,8 +31,18 @@ services:
     environment:
       DATABASE_URL: mysql://shuku:shuku@mysql:3306/shuku_starship
       REDIS_URL: redis://redis:6379
+      BOOKS_ROOT: /books
+      STORAGE_ROOT: /app/storage
+      FILE_STREAMS_PER_USER: 4
+      SLOW_FILE_REQUEST_MS: 1500
+      ADMIN_EMAIL: admin@example.com
+      ADMIN_PASSWORD: starshipnas
     ports:
       - "3000:3000"
+    volumes:
+      - ./test-data/library:/books:ro
+      - ./storage:/app/storage
+    command: sh -c "pnpm --filter @shuku/database prisma:push && pnpm start"
 
   scan-worker:
     build:
@@ -40,9 +50,16 @@ services:
       dockerfile: workers/scan-worker/Dockerfile
     container_name: shuku-scan-worker
     depends_on:
+      - mysql
       - redis
     environment:
+      DATABASE_URL: mysql://shuku:shuku@mysql:3306/shuku_starship
       REDIS_URL: redis://redis:6379
+      BOOKS_ROOT: /books
+      STORAGE_ROOT: /app/storage
+    volumes:
+      - ./test-data/library:/books:ro
+      - ./storage:/app/storage
 
 volumes:
   mysql_data:

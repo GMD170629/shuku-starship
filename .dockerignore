@@ -1,0 +1,15 @@
+node_modules
+**/node_modules
+.next
+**/.next
+dist
+**/dist
+.git
+.env
+.env.production
+data
+storage
+books
+.pnpm-store
+npm-debug.log*
+pnpm-debug.log*

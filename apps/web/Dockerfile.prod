@@ -1,0 +1,41 @@
+FROM node:20-alpine AS deps
+WORKDIR /app
+RUN apk add --no-cache libc6-compat openssl \
+  && corepack enable
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
+COPY apps/web/package.json apps/web/package.json
+COPY packages/database/package.json packages/database/package.json
+COPY packages/shared/package.json packages/shared/package.json
+COPY packages/ui/package.json packages/ui/package.json
+COPY packages/scanner/package.json packages/scanner/package.json
+COPY packages/reader-core/package.json packages/reader-core/package.json
+COPY workers/scan-worker/package.json workers/scan-worker/package.json
+RUN pnpm install --frozen-lockfile
+
+FROM deps AS builder
+COPY . .
+RUN pnpm --filter @shuku/database prisma:generate \
+  && pnpm --filter @shuku/web build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production \
+  NEXT_TELEMETRY_DISABLED=1 \
+  HOSTNAME=0.0.0.0 \
+  PORT=3000
+
+RUN apk add --no-cache libc6-compat openssl \
+  && corepack enable
+
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml /app/turbo.json ./
+COPY --from=builder /app/scripts/require-env.sh ./scripts/require-env.sh
+COPY --from=builder /app/packages/database ./packages/database
+COPY --from=builder /app/apps/web/.next/standalone ./
+COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
+RUN chmod +x ./scripts/require-env.sh \
+  && mkdir -p /app/storage/covers /app/storage/indexes /app/storage/temp /app/storage/logs /books
+
+EXPOSE 3000
+CMD ["node", "apps/web/server.js"]

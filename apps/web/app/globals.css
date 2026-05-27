@@ -1,7 +1,13 @@
+@import '../styles/theme.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 body {
-  @apply bg-slate-950 text-slate-100;
+  @apply bg-[#F6F7F9] text-slate-950 antialiased;
+}
+
+* {
+  box-sizing: border-box;
 }

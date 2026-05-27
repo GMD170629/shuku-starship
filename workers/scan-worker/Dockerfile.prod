@@ -1,0 +1,35 @@
+FROM node:20-alpine AS deps
+WORKDIR /app
+RUN apk add --no-cache libc6-compat openssl \
+  && corepack enable
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
+COPY workers/scan-worker/package.json workers/scan-worker/package.json
+COPY packages/database/package.json packages/database/package.json
+COPY packages/scanner/package.json packages/scanner/package.json
+RUN pnpm install --frozen-lockfile
+
+FROM deps AS builder
+COPY scripts ./scripts
+COPY packages ./packages
+COPY workers/scan-worker ./workers/scan-worker
+RUN pnpm --filter @shuku/database prisma:generate \
+  && pnpm --filter @shuku/scanner build \
+  && pnpm --filter @shuku/scan-worker build
+
+FROM node:20-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+
+RUN apk add --no-cache libc6-compat openssl \
+  && corepack enable
+
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml /app/turbo.json ./
+COPY --from=builder /app/scripts/require-env.sh ./scripts/require-env.sh
+COPY --from=builder /app/packages ./packages
+COPY --from=builder /app/workers/scan-worker ./workers/scan-worker
+RUN chmod +x ./scripts/require-env.sh \
+  && mkdir -p /app/storage/covers /app/storage/indexes /app/storage/temp /app/storage/logs /books
+
+CMD ["pnpm", "--filter", "@shuku/scan-worker", "start"]

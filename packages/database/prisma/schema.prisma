@@ -7,10 +7,194 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model LibraryItem {
+enum ReadingFormat {
+  TXT
+  PDF
+  IMAGE
+  COMIC
+  EPUB
+  UNKNOWN
+}
+
+enum ScanTaskStatus {
+  QUEUED
+  RUNNING
+  WAITING_RESUME
+  COMPLETED
+  FAILED
+  CANCELED
+}
+
+enum ReadingStatus {
+  WANT
+  READING
+  FINISHED
+}
+
+enum FileHashStatus {
+  FULL
+  PARTIAL_PENDING
+  FAILED
+}
+
+enum CoverStatus {
+  PENDING
+  READY
+  FAILED
+}
+
+enum ScanTaskMode {
+  NORMAL
+  DRY_RUN
+}
+
+model User {
+  id           String            @id @default(cuid())
+  email        String            @unique
+  name         String
+  passwordHash String
+  role         String            @default("admin")
+  sessions     Session[]
+  progresses   ReadingProgress[]
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+}
+
+model Session {
   id        String   @id @default(cuid())
-  title     String
-  kind      String
+  tokenHash String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model LibraryPath {
+  id          String     @id @default(cuid())
+  name        String
+  rootPath    String     @unique
+  enabled     Boolean    @default(true)
+  scanPolicy  String     @default("manual")
+  ignorePatterns String?  @db.Text
+  ignoreHidden Boolean    @default(true)
+  description String?
+  books       Book[]
+  scanTasks   ScanTask[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+}
+
+model Book {
+  id            String            @id @default(cuid())
+  libraryPathId String?
+  libraryPath   LibraryPath?      @relation(fields: [libraryPathId], references: [id], onDelete: SetNull)
+  title         String
+  author        String?
+  description   String?           @db.Text
+  format        ReadingFormat
+  status        ReadingStatus     @default(WANT)
+  tags          String            @db.Text
+  coverPath     String?
+  coverStatus   CoverStatus       @default(PENDING)
+  hidden        Boolean           @default(false)
+  sourcePath    String
+  sourceHash    String            @unique
+  sizeBytes     BigInt            @default(0)
+  pageCount     Int?
+  chapterCount  Int?
+  files         BookFile[]
+  progresses    ReadingProgress[]
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([format])
+  @@index([title])
+  @@index([hidden])
+}
+
+model BookFile {
+  id           String         @id @default(cuid())
+  bookId       String
+  book         Book           @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  path         String
+  filePathHash String?        @unique
+  fingerprint  String?
+  fullHash     String?
+  hashStatus   FileHashStatus @default(FAILED)
+  mtimeMs      BigInt         @default(0)
+  kind         ReadingFormat
+  mimeType     String
+  sizeBytes    BigInt         @default(0)
+  sortOrder    Int            @default(0)
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@unique([bookId, path])
+  @@index([bookId, sortOrder])
+  @@index([fingerprint])
+  @@index([fullHash])
+  @@index([sizeBytes, mtimeMs])
+}
+
+model ScanTask {
+  id            String         @id @default(cuid())
+  libraryPathId String
+  libraryPath   LibraryPath    @relation(fields: [libraryPathId], references: [id], onDelete: Cascade)
+  status        ScanTaskStatus @default(QUEUED)
+  mode          ScanTaskMode   @default(NORMAL)
+  runningLockKey String?       @unique
+  progress      Int            @default(0)
+  scannedCount  Int            @default(0)
+  processedCount Int           @default(0)
+  totalCount    Int            @default(0)
+  totalFiles    Int            @default(0)
+  processedFiles Int           @default(0)
+  createdCount  Int            @default(0)
+  updatedCount  Int            @default(0)
+  skippedCount  Int            @default(0)
+  errorCount    Int            @default(0)
+  duplicateCount Int           @default(0)
+  heartbeatAt   DateTime?
+  lastScannedPath String?
+  duration      Int            @default(0)
+  errorSummary  String?        @db.Text
+  message       String?
+  startedAt     DateTime?
+  finishedAt    DateTime?
+  logs          ScanLog[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([libraryPathId, status])
+  @@index([status, heartbeatAt])
+}
+
+model ScanLog {
+  id         String   @id @default(cuid())
+  scanTaskId String
+  scanTask   ScanTask @relation(fields: [scanTaskId], references: [id], onDelete: Cascade)
+  level      String   @default("info")
+  message    String   @db.Text
+  createdAt  DateTime @default(now())
+
+  @@index([scanTaskId, createdAt])
+}
+
+model ReadingProgress {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bookId     String
+  book       Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  readerType String
+  position   String   @default("0")
+  page       Int?
+  percent    Float    @default(0)
+  extra      String   @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([userId, bookId])
+  @@index([bookId])
 }

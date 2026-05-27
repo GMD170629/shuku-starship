@@ -1,0 +1,102 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: shuku-prod-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-shuku_starship}
+      MYSQL_USER: ${MYSQL_USER:-shuku}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD}
+    volumes:
+      - ./data/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: shuku-prod-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile.prod
+    container_name: shuku-prod-web
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      REDIS_URL: ${REDIS_URL:?set REDIS_URL}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET}
+      BOOKS_ROOT: ${BOOKS_ROOT:?set BOOKS_ROOT}
+      STORAGE_ROOT: /app/storage
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
+    ports:
+      - "${WEB_PORT:-3000}:3000"
+    volumes:
+      - ./data/storage:/app/storage
+      - ./books:/books:ro
+    command: >
+      sh -c "./scripts/require-env.sh DATABASE_URL REDIS_URL SESSION_SECRET BOOKS_ROOT
+      && mkdir -p /app/storage/covers /app/storage/indexes /app/storage/temp /app/storage/logs
+      && pnpm --filter @shuku/database exec prisma db push --skip-generate
+      && node apps/web/server.js"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  scan-worker:
+    build:
+      context: .
+      dockerfile: workers/scan-worker/Dockerfile.prod
+    container_name: shuku-prod-scan-worker
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
+      REDIS_URL: ${REDIS_URL:?set REDIS_URL}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET}
+      BOOKS_ROOT: ${BOOKS_ROOT:?set BOOKS_ROOT}
+      STORAGE_ROOT: /app/storage
+    volumes:
+      - ./data/storage:/app/storage
+      - ./books:/books:ro
+    command: >
+      sh -c "./scripts/require-env.sh DATABASE_URL REDIS_URL SESSION_SECRET BOOKS_ROOT
+      && mkdir -p /app/storage/covers /app/storage/indexes /app/storage/temp /app/storage/logs
+      && pnpm --filter @shuku/scan-worker start"
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/scan-worker-ready"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
