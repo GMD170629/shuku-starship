@@ -12,11 +12,12 @@ export async function GET(_request: Request, { params }: { params: { id: string 
     include: {
       files: { orderBy: { sortOrder: 'asc' } },
       libraryPath: true,
-      progresses: { where: { userId: user.id }, take: 1 }
+      progresses: { where: { userId: user.id }, take: 1 },
+      chapters: { orderBy: { sortOrder: 'asc' } }
     }
   });
   if (!book) return fail('读物不存在或无权访问', 404);
-  return ok({ book: toBookView(book) });
+  return ok({ book: toBookView(book), metadata: { language: book.language, publisher: book.publisher, publishedAt: book.publishedAt, identifier: book.identifier, isbn: book.isbn, importStatus: book.importStatus, importError: book.importError }, chapters: book.chapters });
 }
 
 export async function PATCH(request: Request, { params }: { params: { id: string } }) {
@@ -58,7 +59,8 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     include: {
       files: { orderBy: { sortOrder: 'asc' } },
       libraryPath: true,
-      progresses: { where: { userId: user.id }, take: 1 }
+      progresses: { where: { userId: user.id }, take: 1 },
+      chapters: { orderBy: { sortOrder: 'asc' } }
     }
   });
   if (!book) return fail('读物不存在或无权访问', 404);
