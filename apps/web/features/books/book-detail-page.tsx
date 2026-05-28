@@ -35,11 +35,16 @@ const statusOptions = [
   { value: 'FINISHED', label: '已读' }
 ];
 
+type ReadingUnitView = { id: string; unitType: string; title: string; href: string; mediaType?: string | null; sortOrder: number; size?: string | number | null };
+type DetailMetadata = { language?: string | null; publisher?: string | null; publishedAt?: string | null; isbn?: string | null; items?: Array<{ source: string; metadataJson: unknown }> };
+
 export function BookDetailPage({ bookId }: { bookId: string }) {
   const router = useRouter();
   const [book, setBook] = useState<BookView | null>(null);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [metadata, setMetadata] = useState<DetailMetadata | null>(null);
+  const [readingUnits, setReadingUnits] = useState<ReadingUnitView[]>([]);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [coverBust, setCoverBust] = useState(0);
@@ -54,11 +59,13 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
 
   const loadBook = useCallback(() => {
     fetch(`/api/books/${bookId}`)
-      .then((response) => response.json() as Promise<{ ok: boolean; data?: { book: BookView }; error?: { message: string } }>)
+      .then((response) => response.json() as Promise<{ ok: boolean; data?: { book: BookView; metadata?: DetailMetadata; readingUnits?: ReadingUnitView[] }; error?: { message: string } }>)
       .then((payload) => {
         if (!payload.ok) throw new Error(payload.error?.message ?? '读取读物失败');
         const nextBook = payload.data?.book ?? null;
         setBook(nextBook);
+        setMetadata(payload.data?.metadata ?? null);
+        setReadingUnits(payload.data?.readingUnits ?? []);
         if (nextBook) {
           setForm({
             title: nextBook.title,
@@ -172,7 +179,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
               {book.ignored ? <Badge tone="amber">已忽略</Badge> : null}
             </div>
             <h1 className="mt-4 text-3xl font-semibold tracking-tight">《{book.title}》</h1>
-            <p className="mt-2 text-slate-500">{book.author} · {book.type} · {book.format}</p>
+            <p className="mt-2 text-slate-500">{book.author} · {book.type === 'comic' ? '漫画' : '电子书'} · {book.format}</p>
             <p className="mt-6 max-w-2xl text-sm leading-7 text-slate-600">{book.desc}</p>
             <div className="mt-6 rounded-3xl bg-slate-50 p-4">
               <div className="flex justify-between text-sm">
@@ -196,7 +203,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
             <Info label="文件大小" value={book.size} />
             <Info label="文件哈希" value={book.fileHash} />
             <Info label="资源数量" value={`${book.files.length} 个文件`} />
-            <Info label="页数 / 章节" value={`${book.pageCount ?? '未知'} / ${book.chapterCount ?? '未知'}`} />
+            <Info label={book.type === 'comic' ? '页数' : '章节数'} value={`${book.totalUnits || '未知'}`} />
             <Info label="添加时间" value={book.added} />
             <Info label="最后阅读" value={book.lastRead} />
             <Info label="同步状态" value={book.lastReadAt ? '有阅读进度' : '暂无阅读进度'} green={Boolean(book.lastReadAt)} />
@@ -240,29 +247,42 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
       ) : null}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
         <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm lg:col-span-8">
-          <h2 className="text-lg font-semibold">章节 / 页面资源</h2>
+          <h2 className="text-lg font-semibold">{book.type === 'comic' ? '漫画页面' : '章节列表'}</h2>
           <div className="mt-4 divide-y divide-slate-100">
-            {book.files.length > 0 ? book.files.map((file, index) => (
-              <button key={file.id} onClick={() => router.push(`/reader/${book.id}`)} className="flex w-full items-center justify-between py-4 text-left hover:bg-slate-50">
+            {readingUnits.length > 0 ? readingUnits.slice(0, 80).map((unit) => (
+              <button key={unit.id} onClick={() => router.push(`/reader/${book.id}`)} className="flex w-full items-center justify-between py-4 text-left hover:bg-slate-50">
                 <div>
-                  <div className="font-medium">{file.path.split('/').at(-1)}</div>
-                  <div className="mt-1 text-xs text-slate-500">{file.mimeType} · {file.size}</div>
+                  <div className="font-medium">{unit.title}</div>
+                  <div className="mt-1 text-xs text-slate-500">{unit.unitType === 'page' ? '漫画页' : '章节'} · {unit.mediaType ?? unit.href}</div>
                 </div>
-                <div className="flex items-center gap-2">
-                  {index === 0 ? <Badge tone="blue">阅读入口</Badge> : null}
-                  <ChevronRight size={16} className="text-slate-400" />
-                </div>
+                <ChevronRight size={16} className="text-slate-400" />
               </button>
             )) : (
-              <div className="py-4 text-sm text-slate-500">
-                {book.formatValue === 'PDF' ? 'PDF 文档' : book.formatValue === 'TXT' || book.formatValue === 'EPUB' ? '全文阅读' : book.formatValue === 'COMIC' || book.formatValue === 'IMAGE' ? '图片页' : '暂无章节信息'}
-              </div>
+              <button onClick={() => router.push(`/reader/${book.id}`)} className="flex w-full items-center justify-between py-4 text-left hover:bg-slate-50">
+                <div className="text-sm text-slate-500">开始阅读</div>
+                <ChevronRight size={16} className="text-slate-400" />
+              </button>
             )}
+            {readingUnits.length > 80 ? <div className="py-4 text-sm text-slate-500">还有 {readingUnits.length - 80} 项未展开，进入阅读器可继续阅读。</div> : null}
           </div>
         </div>
         <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm lg:col-span-4">
-          <h2 className="text-lg font-semibold">阅读状态</h2>
+          <h2 className="text-lg font-semibold">{book.type === 'comic' ? '漫画信息' : '出版信息'}</h2>
           <div className="mt-4 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">{book.status} · {book.progress}%</div>
+          {book.type === 'ebook' ? (
+            <>
+              <Info label="ISBN" value={metadata?.isbn ?? '未知'} />
+              <Info label="出版社" value={metadata?.publisher ?? '未知'} />
+              <Info label="语言" value={metadata?.language ?? '未知'} />
+            </>
+          ) : (
+            <>
+              <Info label="系列" value={String((metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.Series ?? (metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.series ?? '未知')} />
+              <Info label="卷数" value={String((metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.Volume ?? (metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.volume ?? '未知')} />
+              <Info label="页数" value={`${book.totalUnits || '未知'}`} />
+              <Info label="标签" value={book.tags.join(', ') || '无'} />
+            </>
+          )}
         </div>
       </div>
     </div>

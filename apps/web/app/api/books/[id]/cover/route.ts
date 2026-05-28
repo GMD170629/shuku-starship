@@ -10,7 +10,13 @@ import { prisma } from '../../../../../lib/prisma';
 const coverSizes = new Set<CoverSize>(['small', 'medium', 'large']);
 
 function coverContentType(path: string) {
-  return extname(path).toLowerCase() === '.svg' ? 'image/svg+xml; charset=utf-8' : 'image/webp';
+  const ext = extname(path).toLowerCase();
+  if (ext === '.svg') return 'image/svg+xml; charset=utf-8';
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg';
+  if (ext === '.png') return 'image/png';
+  if (ext === '.webp') return 'image/webp';
+  if (ext === '.gif') return 'image/gif';
+  return 'application/octet-stream';
 }
 
 async function readableCoverPath(bookId: string, size: CoverSize) {
@@ -26,13 +32,15 @@ export async function GET(request: Request, { params }: { params: { id: string }
   if (!coverSizes.has(requestedSize as CoverSize)) return fail('封面尺寸不正确', 400);
   const size = requestedSize as CoverSize;
 
-  let cover = await readableCoverPath(params.id, size);
+  const book = await prisma.book.findFirst({
+    where: { id: params.id, hidden: false },
+    include: { files: { orderBy: { sortOrder: 'asc' } } }
+  });
+  if (!book) return fail('读物不存在或无权访问', 404);
+
+  let cover = book.coverPath ? await stat(book.coverPath).then((fileStat) => fileStat.isFile() ? { path: book.coverPath as string, size: fileStat.size } : null).catch(() => null) : null;
+  if (!cover) cover = await readableCoverPath(params.id, size);
   if (!cover) {
-    const book = await prisma.book.findFirst({
-      where: { id: params.id, hidden: false },
-      include: { files: { orderBy: { sortOrder: 'asc' } } }
-    });
-    if (!book) return fail('读物不存在或无权访问', 404);
     await CoverService.ensureBookCover(book);
     cover = await readableCoverPath(params.id, size);
   }

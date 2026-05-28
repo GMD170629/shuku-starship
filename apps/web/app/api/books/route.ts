@@ -10,8 +10,9 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const page = Math.max(1, Number(url.searchParams.get('page') ?? 1));
   const pageSize = Math.min(60, Math.max(1, Number(url.searchParams.get('pageSize') ?? 24)));
-  const search = url.searchParams.get('search')?.trim();
+  const search = (url.searchParams.get('search') ?? url.searchParams.get('keyword'))?.trim();
   const format = url.searchParams.get('format')?.trim();
+  const type = url.searchParams.get('type')?.trim();
   const sort = url.searchParams.get('sort') ?? 'updated';
   const visibility = url.searchParams.get('visibility') ?? 'active';
 
@@ -26,9 +27,20 @@ export async function GET(request: Request) {
       { sourcePath: { contains: search } }
     ];
   }
+  if (type === 'ebook') where.format = { in: ['EPUB'] };
+  if (type === 'comic') where.format = 'COMIC';
   if (format && format !== '全部') {
-    const parsedFormat = parseReadingFormat(format);
-    if (parsedFormat) where.format = parsedFormat;
+    const normalized = format.trim().toLowerCase();
+    if (normalized === 'cbz') {
+      where.format = 'COMIC';
+      where.sourcePath = { endsWith: '.cbz' };
+    } else if (normalized === 'zip') {
+      where.format = 'COMIC';
+      where.sourcePath = { endsWith: '.zip' };
+    } else {
+      const parsedFormat = parseReadingFormat(format);
+      if (parsedFormat) where.format = parsedFormat;
+    }
   }
 
   const orderBy: Prisma.BookOrderByWithRelationInput =

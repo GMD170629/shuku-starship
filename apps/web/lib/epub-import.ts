@@ -74,6 +74,7 @@ export async function importEpubBook(filePath: string): Promise<ImportBookResult
   const fileStat = await stat(filePath);
   const book = await prisma.book.create({ data: { title: metadata.title, author: metadata.author, description: metadata.description, format: 'EPUB', tags: '[]', sourcePath: filePath, sourceHash: `manual-${Date.now()}-${Math.random()}`, sizeBytes: BigInt(fileStat.size), chapterCount: metadata.chapterCount, language: metadata.language, publisher: metadata.publisher, publishedAt: metadata.publishedAt, identifier: metadata.identifier, isbn: metadata.isbn, importStatus: 'PARSING' } });
   let coverUrl = DEFAULT_COVER;
+  let extractedCoverPath: string | null = null;
   try {
     if (metadata.coverPath) {
       const opfDir = dirname(metadata.opfPath);
@@ -81,18 +82,21 @@ export async function importEpubBook(filePath: string): Promise<ImportBookResult
       const ext = extname(metadata.coverPath) || '.jpg';
       const out = resolve(STORAGE_ROOT, 'books', book.id, `cover${ext}`);
       await extractEpubCover(filePath, rel, out);
+      extractedCoverPath = out;
       coverUrl = `/storage/books/${book.id}/cover${ext}`;
       await prisma.book.update({ where: { id: book.id }, data: { coverPath: out, coverStatus: 'READY' } });
     }
     await prisma.$transaction([
       prisma.bookChapter.createMany({ data: metadata.chapters.map((c) => ({ bookId: book.id, title: c.title, href: c.href, mediaType: c.mediaType ?? null, sortOrder: c.sortOrder })) }),
-      prisma.bookMetadata.create({ data: { bookId: book.id, source: 'epub.opf', rawJson: JSON.stringify(metadata.rawMetadata) } }),
+      prisma.readingUnit.createMany({ data: metadata.chapters.map((c) => ({ bookId: book.id, unitType: 'chapter', title: c.title, href: c.href, filePath: null, mediaType: c.mediaType ?? null, sortOrder: c.sortOrder, metadataJson: JSON.stringify({ idref: c.idref }) })) }),
+      ...(coverUrl !== DEFAULT_COVER && extractedCoverPath ? [prisma.bookAsset.create({ data: { bookId: book.id, assetType: 'cover', filePath: extractedCoverPath, url: coverUrl, mediaType: metadata.coverMediaType ?? null, sortOrder: 0 } })] : []),
+      prisma.bookMetadata.create({ data: { bookId: book.id, source: 'epub_opf', rawJson: JSON.stringify(metadata.rawMetadata) } }),
       prisma.bookFile.create({ data: { bookId: book.id, path: filePath, kind: 'EPUB', mimeType: 'application/epub+zip', sortOrder: 0, sizeBytes: BigInt(fileStat.size), mtimeMs: BigInt(Math.trunc(fileStat.mtimeMs)), hashStatus: 'FAILED' } }),
       prisma.book.update({ where: { id: book.id }, data: { importStatus: 'COMPLETED' } })
     ]);
     return { bookId: book.id, title: metadata.title, chapterCount: metadata.chapterCount, coverUrl, importStatus: 'completed' };
   } catch (error) {
-    if (book.coverPath) await unlink(book.coverPath).catch(()=>{});
+    if (extractedCoverPath) await unlink(extractedCoverPath).catch(()=>{});
     await prisma.book.update({ where: { id: book.id }, data: { importStatus: 'FAILED', importError: error instanceof Error ? error.message : String(error) } });
     throw error;
   }

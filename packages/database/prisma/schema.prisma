@@ -120,6 +120,8 @@ model Book {
   importError   String? @db.Text
   files         BookFile[]
   chapters      BookChapter[]
+  readingUnits  ReadingUnit[]
+  assets        BookAsset[]
   metadataItems BookMetadata[]
   progresses    ReadingProgress[]
   createdAt     DateTime          @default(now())
@@ -248,4 +250,44 @@ model BookMetadata {
   updatedAt DateTime @updatedAt
 
   @@index([bookId])
+}
+
+model ReadingUnit {
+  id           String   @id @default(cuid())
+  bookId       String
+  book         Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  unitType     String
+  title        String
+  href         String
+  filePath     String?
+  mediaType    String?
+  sortOrder    Int
+  width        Int?
+  height       Int?
+  size         BigInt?
+  metadataJson String   @db.Text
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([bookId, sortOrder])
+  @@index([bookId, unitType])
+}
+
+model BookAsset {
+  id        String   @id @default(cuid())
+  bookId    String
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  assetType String
+  filePath  String
+  url       String?
+  mediaType String?
+  width     Int?
+  height    Int?
+  size      BigInt?
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([bookId, assetType])
+  @@index([bookId, sortOrder])
 }

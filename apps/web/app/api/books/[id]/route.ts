@@ -13,11 +13,37 @@ export async function GET(_request: Request, { params }: { params: { id: string 
       files: { orderBy: { sortOrder: 'asc' } },
       libraryPath: true,
       progresses: { where: { userId: user.id }, take: 1 },
-      chapters: { orderBy: { sortOrder: 'asc' } }
+      chapters: { orderBy: { sortOrder: 'asc' } },
+      readingUnits: { orderBy: { sortOrder: 'asc' } },
+      metadataItems: { orderBy: { createdAt: 'desc' } }
     }
   });
   if (!book) return fail('读物不存在或无权访问', 404);
-  return ok({ book: toBookView(book), metadata: { language: book.language, publisher: book.publisher, publishedAt: book.publishedAt, identifier: book.identifier, isbn: book.isbn, importStatus: book.importStatus, importError: book.importError }, chapters: book.chapters });
+  const metadataItems = book.metadataItems.map((item) => ({ id: item.id, source: item.source, metadataJson: safeJson(item.rawJson), createdAt: item.createdAt }));
+  return ok({
+    book: toBookView(book),
+    metadata: {
+      language: book.language,
+      publisher: book.publisher,
+      publishedAt: book.publishedAt,
+      identifier: book.identifier,
+      isbn: book.isbn,
+      importStatus: book.importStatus,
+      importError: book.importError,
+      items: metadataItems
+    },
+    totalUnits: book.format === 'COMIC' || book.format === 'IMAGE' ? (book.pageCount ?? book.readingUnits.length) : (book.chapterCount ?? book.readingUnits.length),
+    chapters: book.chapters,
+    readingUnits: book.readingUnits.length ? book.readingUnits.map(serializeReadingUnit) : book.chapters.map((chapter) => ({ ...chapter, unitType: 'chapter' }))
+  });
+}
+
+function serializeReadingUnit(unit: { size?: bigint | null; metadataJson?: string } & Record<string, unknown>) {
+  return { ...unit, size: unit.size ? Number(unit.size) : null, metadataJson: unit.metadataJson ? safeJson(unit.metadataJson) : {} };
+}
+
+function safeJson(value: string) {
+  try { return JSON.parse(value); } catch { return value; }
 }
 
 export async function PATCH(request: Request, { params }: { params: { id: string } }) {
@@ -60,7 +86,9 @@ export async function PATCH(request: Request, { params }: { params: { id: string
       files: { orderBy: { sortOrder: 'asc' } },
       libraryPath: true,
       progresses: { where: { userId: user.id }, take: 1 },
-      chapters: { orderBy: { sortOrder: 'asc' } }
+      chapters: { orderBy: { sortOrder: 'asc' } },
+      readingUnits: { orderBy: { sortOrder: 'asc' } },
+      metadataItems: { orderBy: { createdAt: 'desc' } }
     }
   });
   if (!book) return fail('读物不存在或无权访问', 404);

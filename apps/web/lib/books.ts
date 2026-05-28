@@ -6,7 +6,7 @@ export type BookView = {
   libraryPathId: string | null;
   title: string;
   author: string;
-  type: string;
+  type: 'ebook' | 'comic';
   formatValue: ReadingFormat;
   format: string;
   size: string;
@@ -27,6 +27,9 @@ export type BookView = {
   gradient: string;
   coverStatus: string;
   coverUrl: string;
+  totalUnits: number;
+  readingProgress: number;
+  importStatus: string;
   files: Array<{
     id: string;
     path: string;
@@ -65,6 +68,20 @@ export function formatLabel(format: ReadingFormat) {
   return formatLabels[format] ?? '未知';
 }
 
+function publicFormat(book: Book) {
+  if (book.format === 'COMIC') {
+    const ext = book.sourcePath.split('.').pop()?.toLowerCase();
+    if (ext === 'cbz') return 'CBZ';
+    if (ext === 'zip') return 'ZIP';
+    return '漫画';
+  }
+  return formatLabel(book.format);
+}
+
+function publicType(format: ReadingFormat): 'ebook' | 'comic' {
+  return format === 'COMIC' || format === 'IMAGE' ? 'comic' : 'ebook';
+}
+
 export function toBookView(
   book: Book & {
     files?: BookFile[];
@@ -79,9 +96,9 @@ export function toBookView(
     libraryPathId: book.libraryPathId,
     title: book.title,
     author: book.author ?? '未知作者',
-    type: formatLabel(book.format),
+    type: publicType(book.format),
     formatValue: book.format,
-    format: formatLabel(book.format),
+    format: publicFormat(book),
     size: formatBytes(book.sizeBytes),
     progress: percent,
     statusValue: book.status,
@@ -100,6 +117,9 @@ export function toBookView(
     gradient: gradients[Math.abs(hashCode(book.id)) % gradients.length],
     coverStatus: book.coverStatus,
     coverUrl: `/api/books/${book.id}/cover?size=medium`,
+    totalUnits: book.format === 'COMIC' || book.format === 'IMAGE' ? (book.pageCount ?? 0) : (book.chapterCount ?? 0),
+    readingProgress: percent,
+    importStatus: book.importStatus,
     files: (book.files ?? []).map((file) => ({
       id: file.id,
       path: file.path,
