@@ -15,6 +15,7 @@
     "@shuku/database": "workspace:*",
     "@shuku/scanner": "workspace:*",
     "bullmq": "^5.12.15",
+    "epubjs": "^0.3.93",
     "framer-motion": "^11.3.24",
     "ioredis": "^5.4.1",
     "lucide-react": "^0.451.0",

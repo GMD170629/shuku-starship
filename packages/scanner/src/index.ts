@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { open, readdir, stat } from 'node:fs/promises';
-import { basename, dirname, extname, join, relative, sep } from 'node:path';
+import { basename, extname, join, relative, sep } from 'node:path';
 import ignore from 'ignore';
 import { prisma } from '@shuku/database';
 import type { Book, BookFile, ReadingFormat, ScanTask } from '@prisma/client';
@@ -48,6 +48,12 @@ type WalkResult = {
   errors: Array<{ path: string; error: unknown }>;
 };
 
+type CandidateBuildOptions = {
+  ignorePatterns?: string | null;
+  ignoreHidden: boolean;
+  minFileSizeBytes?: number | null;
+};
+
 type ScanCounters = {
   createdCount: number;
   updatedCount: number;
@@ -78,6 +84,10 @@ function partialHashChunkBytes() {
   return Number(process.env.SCAN_PARTIAL_HASH_CHUNK_BYTES ?? 1024 * 1024);
 }
 
+function normalizeMinFileSizeBytes(value?: number | null) {
+  return Number.isFinite(value) && Number(value) > 0 ? Math.trunc(Number(value)) : 0;
+}
+
 const defaultIgnorePatterns = [
   '.DS_Store',
   'Thumbs.db',
@@ -87,7 +97,30 @@ const defaultIgnorePatterns = [
   '\\#recycle/**',
   '*.tmp',
   '*.part',
-  '*.download'
+  '*.download',
+  '*.nfo',
+  '*.url',
+  '*.html',
+  '*.htm',
+  '*.opf',
+  '*.log',
+  '__MACOSX',
+  '__MACOSX/**',
+  'cover.*',
+  'Cover.*',
+  'COVER.*',
+  'folder.*',
+  'Folder.*',
+  'FOLDER.*',
+  'poster.*',
+  'Poster.*',
+  'POSTER.*',
+  'thumbnail.*',
+  'Thumbnail.*',
+  'THUMBNAIL.*',
+  'thumb.*',
+  'Thumb.*',
+  'THUMB.*'
 ];
 
 const fileTypes: Record<string, { format: ReadingFormat; mimeType: string }> = {
@@ -96,16 +129,10 @@ const fileTypes: Record<string, { format: ReadingFormat; mimeType: string }> = {
   '.markdown': { format: 'TXT', mimeType: 'text/markdown; charset=utf-8' },
   '.pdf': { format: 'PDF', mimeType: 'application/pdf' },
   '.epub': { format: 'EPUB', mimeType: 'application/epub+zip' },
-  '.png': { format: 'IMAGE', mimeType: 'image/png' },
-  '.jpg': { format: 'IMAGE', mimeType: 'image/jpeg' },
-  '.jpeg': { format: 'IMAGE', mimeType: 'image/jpeg' },
-  '.webp': { format: 'IMAGE', mimeType: 'image/webp' },
-  '.gif': { format: 'IMAGE', mimeType: 'image/gif' },
   '.cbz': { format: 'COMIC', mimeType: 'application/vnd.comicbook+zip' },
   '.zip': { format: 'COMIC', mimeType: 'application/zip' }
 };
 
-const imageExts = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif']);
 const zipExts = new Set(['.zip', '.cbz']);
 
 function sha256(input: string | Buffer) {
@@ -297,48 +324,30 @@ async function buildSingleFileCandidate(filePath: string, type: { format: Readin
   };
 }
 
-async function buildImageGroupCandidate(directory: string, group: string[]): Promise<Candidate> {
-  const sorted = group.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
-  const files = await Promise.all(
-    sorted.map((filePath, index) => {
-      const ext = extname(filePath).toLowerCase();
-      return candidateFile(filePath, { format: 'IMAGE', mimeType: fileTypes[ext]?.mimeType ?? 'application/octet-stream' }, index);
-    })
-  );
-  const parsed = splitAuthorTitle(basename(directory));
-  return {
-    title: parsed.title,
-    author: parsed.author,
-    format: 'COMIC',
-    sourcePath: directory,
-    sourceHash: aggregateSourceHash(files),
-    sizeBytes: files.reduce((total, item) => total + item.sizeBytes, 0n),
-    pageCount: sorted.length,
-    files
-  };
-}
-
 export async function buildCandidates(
   rootPath: string,
-  options: { ignorePatterns?: string | null; ignoreHidden: boolean }
+  options: CandidateBuildOptions
 ): Promise<{ candidates: Candidate[]; skipped: number; errors: Array<{ path: string; error: unknown }>; totalFiles: number }> {
   const walk = await walkFiles(rootPath, options);
   const candidates: Candidate[] = [];
   const errors = [...walk.errors];
   let skipped = walk.skipped;
-  const imageGroups = new Map<string, string[]>();
+  const minFileSizeBytes = normalizeMinFileSizeBytes(options.minFileSizeBytes);
 
   for (const filePath of walk.files) {
-    const ext = extname(filePath).toLowerCase();
-    const type = fileTypes[ext];
-    if (!type) {
-      skipped += 1;
+    try {
+      const fileStat = await stat(filePath);
+      if (fileStat.size < minFileSizeBytes) {
+        skipped += 1;
+        continue;
+      }
+    } catch (error) {
+      errors.push({ path: filePath, error });
       continue;
     }
-    if (imageExts.has(ext)) {
-      const group = imageGroups.get(dirname(filePath)) ?? [];
-      group.push(filePath);
-      imageGroups.set(dirname(filePath), group);
+    const type = fileTypes[extname(filePath).toLowerCase()];
+    if (!type) {
+      skipped += 1;
       continue;
     }
     try {
@@ -348,33 +357,20 @@ export async function buildCandidates(
     }
   }
 
-  for (const [directory, group] of imageGroups.entries()) {
-    try {
-      if (group.length === 1) {
-        const filePath = group[0];
-        const ext = extname(filePath).toLowerCase();
-        candidates.push(await buildSingleFileCandidate(filePath, { format: 'IMAGE', mimeType: fileTypes[ext]?.mimeType ?? 'application/octet-stream' }));
-      } else {
-        candidates.push(await buildImageGroupCandidate(directory, group));
-      }
-    } catch (error) {
-      errors.push({ path: directory, error });
-    }
-  }
-
   return { candidates, skipped, errors, totalFiles: walk.files.length };
 }
 
 async function buildCandidatesForPaths(
   rootPath: string,
   paths: string[],
-  options: { ignorePatterns?: string | null; ignoreHidden: boolean }
+  options: CandidateBuildOptions
 ): Promise<{ candidates: Candidate[]; skipped: number; errors: Array<{ path: string; error: unknown }>; totalFiles: number }> {
   const candidates: Candidate[] = [];
   const errors: Array<{ path: string; error: unknown }> = [];
   let skipped = 0;
   let totalFiles = 0;
   const seen = new Set<string>();
+  const minFileSizeBytes = normalizeMinFileSizeBytes(options.minFileSizeBytes);
 
   for (const path of paths) {
     if (seen.has(path)) continue;
@@ -399,6 +395,10 @@ async function buildCandidatesForPaths(
         continue;
       }
       totalFiles += 1;
+      if (entry.size < minFileSizeBytes) {
+        skipped += 1;
+        continue;
+      }
       const ext = extname(path).toLowerCase();
       const type = fileTypes[ext];
       if (!type) {
@@ -674,7 +674,8 @@ export async function scanNas(target: ScanTarget) {
   try {
     const options = {
       ignorePatterns: task.libraryPath.ignorePatterns,
-      ignoreHidden: task.libraryPath.ignoreHidden
+      ignoreHidden: task.libraryPath.ignoreHidden,
+      minFileSizeBytes: task.libraryPath.minFileSizeBytes
     };
     const { candidates, skipped, errors, totalFiles } = target.failedPaths?.length
       ? await buildCandidatesForPaths(secureRoot.realPath, target.failedPaths, options)

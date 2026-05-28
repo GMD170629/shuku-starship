@@ -12,7 +12,7 @@ export async function GET(_request: Request, { params }: { params: { id: string 
     include: { libraryPath: true, files: { orderBy: { sortOrder: 'asc' } } }
   });
   if (!book || !book.libraryPath?.enabled) return fail('读物不存在或无权访问', 404);
-  if (!['TXT', 'EPUB'].includes(book.format)) return fail('该读物不是文本内容', 400);
+  if (book.format !== 'TXT') return fail('该读物不是 TXT 文本内容', 400);
   const file = book.files.find((item) => item.kind === 'TXT') ?? book.files[0];
   if (!file) return fail('读物没有可读取的文件', 404);
 

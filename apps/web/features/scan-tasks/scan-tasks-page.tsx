@@ -7,6 +7,7 @@ import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
 import { PageTitle } from '../../components/ui/page-title';
 import { Progress } from '../../components/ui/progress';
+import { Select } from '../../components/ui/select';
 import { StatCard } from '../../components/ui/stat-card';
 
 type LibraryPath = { id: string; name: string; rootPath: string; enabled: boolean };
@@ -40,6 +41,13 @@ type LogsPayload = { logs: ScanLog[]; page: number; pageSize: number; total: num
 function statusLabel(status: ScanTask['status']) {
   return status === 'COMPLETED' ? 'FINISHED' : status;
 }
+
+const logLevelOptions = [
+  { value: '', label: '全部' },
+  { value: 'INFO', label: 'INFO' },
+  { value: 'WARN', label: 'WARN' },
+  { value: 'ERROR', label: 'ERROR' }
+];
 
 export function ScanTasksPage() {
   const [paths, setPaths] = useState<LibraryPath[]>([]);
@@ -141,13 +149,17 @@ export function ScanTasksPage() {
 
   const latestLogs = logs.length > 0 ? logs : activeTask?.logs ?? [];
   const durationSeconds = Math.round((activeTask?.duration ?? 0) / 1000);
+  const pathOptions = useMemo(
+    () => [{ value: '', label: '选择书库路径', disabled: true }, ...paths.map((path) => ({ value: path.id, label: path.name }))],
+    [paths]
+  );
 
   return (
     <div className="space-y-6">
       <PageTitle
         title="扫描任务"
         desc="查看 NAS 书库扫描任务、实时进度、日志和错误。"
-        action={<div className="flex flex-wrap gap-3"><select value={selectedPath} onChange={(event) => setSelectedPath(event.target.value)} className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm"><option value="">选择书库路径</option>{paths.map((path) => <option key={path.id} value={path.id}>{path.name}</option>)}</select><Button disabled={paths.length === 0} icon={PlusCircle} onClick={() => createTask(false)}>开始扫描</Button><Button disabled={paths.length === 0} variant="secondary" icon={FileText} onClick={() => createTask(true)}>Dry run</Button></div>}
+        action={<div className="flex flex-wrap gap-3"><Select value={selectedPath} options={pathOptions} onChange={setSelectedPath} ariaLabel="书库路径" className="min-w-[180px]" /><Button disabled={paths.length === 0} icon={PlusCircle} onClick={() => createTask(false)}>开始扫描</Button><Button disabled={paths.length === 0} variant="secondary" icon={FileText} onClick={() => createTask(true)}>Dry run</Button></div>}
       />
       {error ? <div className="rounded-3xl border border-red-100 bg-red-50 p-5 text-sm text-red-700">{error}</div> : null}
       <div className="rounded-[32px] border border-slate-200 bg-white p-6 shadow-sm">
@@ -206,12 +218,7 @@ export function ScanTasksPage() {
           <div className="mb-4 flex items-center justify-between font-sans">
             <span className="text-white">任务日志</span>
             <div className="flex items-center gap-2">
-              <select value={logLevel} onChange={(event) => setLogLevel(event.target.value)} className="rounded-xl border border-slate-700 bg-slate-900 px-3 py-1.5 text-xs text-slate-100">
-                <option value="">全部</option>
-                <option value="INFO">INFO</option>
-                <option value="WARN">WARN</option>
-                <option value="ERROR">ERROR</option>
-              </select>
+              <Select value={logLevel} options={logLevelOptions} onChange={setLogLevel} ariaLabel="日志等级" size="sm" tone="dark" className="min-w-[96px]" />
               <Badge tone="green">Live</Badge>
             </div>
           </div>

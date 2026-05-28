@@ -8,6 +8,7 @@ import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
 import { Progress } from '../../components/ui/progress';
+import { Select } from '../../components/ui/select';
 import type { BookView } from '../../lib/books';
 
 function Info({ label, value, green = false }: { label: string; value: string; green?: boolean }) {
@@ -18,6 +19,21 @@ function Info({ label, value, green = false }: { label: string; value: string; g
     </div>
   );
 }
+
+const formatOptions = [
+  { value: 'TXT', label: 'TXT' },
+  { value: 'PDF', label: 'PDF' },
+  { value: 'IMAGE', label: '图片' },
+  { value: 'COMIC', label: '漫画' },
+  { value: 'EPUB', label: 'EPUB' },
+  { value: 'UNKNOWN', label: '未知' }
+];
+
+const statusOptions = [
+  { value: 'WANT', label: '想读' },
+  { value: 'READING', label: '在读' },
+  { value: 'FINISHED', label: '已读' }
+];
 
 export function BookDetailPage({ bookId }: { bookId: string }) {
   const router = useRouter();
@@ -201,22 +217,11 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
             </label>
             <label className="text-sm text-slate-600">
               类型
-              <select value={form.format} onChange={(event) => setForm({ ...form, format: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-slate-900 outline-none focus:border-blue-300">
-                <option value="TXT">TXT</option>
-                <option value="PDF">PDF</option>
-                <option value="IMAGE">图片</option>
-                <option value="COMIC">漫画</option>
-                <option value="EPUB">EPUB</option>
-                <option value="UNKNOWN">未知</option>
-              </select>
+              <Select value={form.format} options={formatOptions} onChange={(format) => setForm({ ...form, format })} ariaLabel="类型" className="mt-2 w-full" />
             </label>
             <label className="text-sm text-slate-600">
               阅读状态
-              <select value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-slate-900 outline-none focus:border-blue-300">
-                <option value="WANT">想读</option>
-                <option value="READING">在读</option>
-                <option value="FINISHED">已读</option>
-              </select>
+              <Select value={form.status} options={statusOptions} onChange={(status) => setForm({ ...form, status })} ariaLabel="阅读状态" className="mt-2 w-full" />
             </label>
             <label className="text-sm text-slate-600 md:col-span-2">
               标签
@@ -250,7 +255,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
               </button>
             )) : (
               <div className="py-4 text-sm text-slate-500">
-                {book.formatValue === 'PDF' ? 'PDF 文档' : book.formatValue === 'TXT' ? '全文阅读' : book.formatValue === 'COMIC' || book.formatValue === 'IMAGE' ? '图片页' : '暂无章节信息'}
+                {book.formatValue === 'PDF' ? 'PDF 文档' : book.formatValue === 'TXT' || book.formatValue === 'EPUB' ? '全文阅读' : book.formatValue === 'COMIC' || book.formatValue === 'IMAGE' ? '图片页' : '暂无章节信息'}
               </div>
             )}
           </div>

@@ -8,13 +8,41 @@ import { BookTable } from '../../components/book/book-table';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
 import { PageTitle } from '../../components/ui/page-title';
+import { Select } from '../../components/ui/select';
 import type { BookView } from '../../lib/books';
 
 type BooksResponse = {
   ok: boolean;
-  data?: { books: BookView[]; total: number; page: number; totalPages: number };
+  data?: { books: BookView[]; total: number; page: number; pageSize: number; totalPages: number };
   error?: { message: string };
 };
+
+const visibilityOptions = [
+  { value: 'active', label: '在库中' },
+  { value: 'ignored', label: '已忽略' },
+  { value: 'all', label: '全部' }
+];
+
+const sortOptions = [
+  { value: 'updated', label: '最近更新' },
+  { value: 'created', label: '最近添加' },
+  { value: 'title', label: '标题' }
+];
+
+const formatOptions = [
+  { value: 'TXT', label: 'TXT' },
+  { value: 'PDF', label: 'PDF' },
+  { value: 'IMAGE', label: '图片' },
+  { value: 'COMIC', label: '漫画' },
+  { value: 'EPUB', label: 'EPUB' },
+  { value: 'UNKNOWN', label: '未知' }
+];
+
+const statusOptions = [
+  { value: 'WANT', label: '想读' },
+  { value: 'READING', label: '在读' },
+  { value: 'FINISHED', label: '已读' }
+];
 
 export function LibraryPage() {
   const router = useRouter();
@@ -24,6 +52,8 @@ export function LibraryPage() {
   const [sort, setSort] = useState('updated');
   const [search, setSearch] = useState('');
   const [books, setBooks] = useState<BookView[]>([]);
+  const [page, setPage] = useState(1);
+  const [meta, setMeta] = useState({ total: 0, pageSize: 24, totalPages: 1 });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string[]>([]);
@@ -40,7 +70,12 @@ export function LibraryPage() {
     if (filter !== '全部') params.set('format', filter);
     params.set('visibility', visibility);
     params.set('sort', sort);
+    params.set('page', String(page));
     return params.toString();
+  }, [filter, page, search, sort, visibility]);
+
+  useEffect(() => {
+    setPage(1);
   }, [filter, search, sort, visibility]);
 
   useEffect(() => {
@@ -51,7 +86,17 @@ export function LibraryPage() {
       .then((payload) => {
         if (!active) return;
         if (!payload.ok) throw new Error(payload.error?.message ?? '读取书库失败');
-        setBooks(payload.data?.books ?? []);
+        const data = payload.data;
+        if (data && page > data.totalPages && data.totalPages > 0) {
+          setPage(data.totalPages);
+          return;
+        }
+        setBooks(data?.books ?? []);
+        setMeta({
+          total: data?.total ?? 0,
+          pageSize: data?.pageSize ?? 24,
+          totalPages: data?.totalPages ?? 1
+        });
         setError('');
       })
       .catch((reason) => {
@@ -123,7 +168,7 @@ export function LibraryPage() {
           <Button variant={view === 'list' ? 'primary' : 'secondary'} icon={List} onClick={() => setView('list')}>列表</Button>
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
-          {['全部', '漫画', 'TXT', 'PDF', '图片'].map((item) => (
+          {['全部', '漫画', 'TXT', 'EPUB', 'PDF', '图片'].map((item) => (
             <button
               key={item}
               onClick={() => setFilter(item)}
@@ -135,16 +180,8 @@ export function LibraryPage() {
               {item}
             </button>
           ))}
-          <select value={visibility} onChange={(event) => setVisibility(event.target.value as typeof visibility)} className="rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600">
-            <option value="active">在库中</option>
-            <option value="ignored">已忽略</option>
-            <option value="all">全部</option>
-          </select>
-          <select value={sort} onChange={(event) => setSort(event.target.value)} className="ml-auto rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm text-slate-600">
-            <option value="updated">最近更新</option>
-            <option value="created">最近添加</option>
-            <option value="title">标题</option>
-          </select>
+          <Select value={visibility} options={visibilityOptions} onChange={setVisibility} ariaLabel="可见性筛选" />
+          <Select value={sort} options={sortOptions} onChange={setSort} ariaLabel="排序方式" className="ml-auto" align="right" />
         </div>
         <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-slate-600">
           <label className="flex items-center gap-2">
@@ -159,20 +196,9 @@ export function LibraryPage() {
             <div className="flex flex-wrap items-center gap-3">
               <CheckCircle2 size={16} />
               已选择 {selected.length} 项
-              <select value={bulkFormat} onChange={(event) => setBulkFormat(event.target.value)} className="rounded-xl border border-blue-100 bg-white px-3 py-2 text-slate-700">
-                <option value="TXT">TXT</option>
-                <option value="PDF">PDF</option>
-                <option value="IMAGE">图片</option>
-                <option value="COMIC">漫画</option>
-                <option value="EPUB">EPUB</option>
-                <option value="UNKNOWN">未知</option>
-              </select>
+              <Select value={bulkFormat} options={formatOptions} onChange={setBulkFormat} ariaLabel="批量修改类型" tone="blue" size="sm" />
               <Button disabled={busy} variant="secondary" className="bg-white" icon={Filter} onClick={() => performBulk({ format: bulkFormat }, '已批量修改类型')}>修改类型</Button>
-              <select value={bulkStatus} onChange={(event) => setBulkStatus(event.target.value)} className="rounded-xl border border-blue-100 bg-white px-3 py-2 text-slate-700">
-                <option value="WANT">想读</option>
-                <option value="READING">在读</option>
-                <option value="FINISHED">已读</option>
-              </select>
+              <Select value={bulkStatus} options={statusOptions} onChange={setBulkStatus} ariaLabel="批量修改阅读状态" tone="blue" size="sm" />
               <Button disabled={busy} variant="secondary" className="bg-white" icon={CheckCircle2} onClick={() => performBulk({ status: bulkStatus }, '已批量修改阅读状态')}>修改状态</Button>
             </div>
             <div className="flex flex-wrap items-center gap-3">
@@ -198,22 +224,33 @@ export function LibraryPage() {
         </div>
       ) : null}
       {!loading && !error && books.length > 0 ? (
-        view === 'grid' ? (
-          <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-            {books.map((book) => (
-              <BookCard
-                key={book.id}
-                book={book}
-                selectionEnabled
-                selected={selected.includes(book.id)}
-                onSelectedChange={(checked) => setBookSelected(book.id, checked)}
-                onClick={() => router.push(`/books/${book.id}`)}
-              />
-            ))}
+        <>
+          {view === 'grid' ? (
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+              {books.map((book) => (
+                <BookCard
+                  key={book.id}
+                  book={book}
+                  selectionEnabled
+                  selected={selected.includes(book.id)}
+                  onSelectedChange={(checked) => setBookSelected(book.id, checked)}
+                  onClick={() => router.push(`/books/${book.id}`)}
+                />
+              ))}
+            </div>
+          ) : (
+            <BookTable books={books} selectedIds={selected} onSelectedChange={setBookSelected} />
+          )}
+          <div className="flex flex-col gap-3 rounded-[28px] border border-slate-200 bg-white p-4 text-sm text-slate-600 shadow-sm md:flex-row md:items-center md:justify-between">
+            <div>
+              共 {meta.total} 本 · 第 {page}/{meta.totalPages} 页 · 每页 {meta.pageSize} 本
+            </div>
+            <div className="flex gap-2">
+              <Button variant="secondary" disabled={page <= 1 || loading} onClick={() => setPage((current) => Math.max(1, current - 1))}>上一页</Button>
+              <Button variant="secondary" disabled={page >= meta.totalPages || loading} onClick={() => setPage((current) => Math.min(meta.totalPages, current + 1))}>下一页</Button>
+            </div>
           </div>
-        ) : (
-          <BookTable books={books} selectedIds={selected} onSelectedChange={setBookSelected} />
-        )
+        </>
       ) : null}
     </div>
   );

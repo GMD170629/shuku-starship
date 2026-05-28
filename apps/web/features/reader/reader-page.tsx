@@ -7,6 +7,7 @@ import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
 import { Progress } from '../../components/ui/progress';
 import type { BookView } from '../../lib/books';
+import { EpubReader, type EpubControls } from './epub-reader';
 
 type ProgressPayload = {
   id: string;
@@ -41,11 +42,15 @@ export function ReaderPage({ bookId }: { bookId: string }) {
   const [archivePageCount, setArchivePageCount] = useState<number | null>(null);
   const [zoom, setZoom] = useState(1);
   const [percent, setPercent] = useState(0);
+  const [position, setPosition] = useState('');
+  const [epubLabel, setEpubLabel] = useState('正在定位');
+  const epubControlsRef = useRef<EpubControls | null>(null);
 
   const firstFile = book?.files[0];
   const readerType = useMemo(() => {
     if (!book) return 'unknown';
-    if (book.formatValue === 'TXT' || book.formatValue === 'EPUB') return 'txt';
+    if (book.formatValue === 'TXT') return 'txt';
+    if (book.formatValue === 'EPUB') return 'epub';
     if (book.formatValue === 'PDF') return 'pdf';
     if (book.formatValue === 'COMIC' || book.formatValue === 'IMAGE') return 'comic';
     return 'txt';
@@ -64,7 +69,10 @@ export function ReaderPage({ bookId }: { bookId: string }) {
         if (progress) {
           setPage(progress.page ?? 1);
           setPercent(progress.percent);
-          window.setTimeout(() => contentRef.current?.scrollTo({ top: Number(progress.position) || 0 }), 200);
+          setPosition(progress.position ?? '');
+          if (progress.readerType !== 'epub') {
+            window.setTimeout(() => contentRef.current?.scrollTo({ top: Number(progress.position) || 0 }), 200);
+          }
         }
       } catch (reason) {
         setError(reason instanceof Error ? reason.message : '读取读物失败');
@@ -111,7 +119,7 @@ export function ReaderPage({ bookId }: { bookId: string }) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           readerType,
-          position: String(contentRef.current?.scrollTop ?? 0),
+          position: readerType === 'epub' ? position : String(contentRef.current?.scrollTop ?? 0),
           page,
           percent,
           extra: { zoom, fontSize, lineHeight }
@@ -119,9 +127,10 @@ export function ReaderPage({ bookId }: { bookId: string }) {
       }).catch(() => undefined);
     }, 700);
     return () => window.clearTimeout(timer);
-  }, [book, readerType, page, percent, zoom, fontSize, lineHeight]);
+  }, [book, readerType, page, percent, position, zoom, fontSize, lineHeight]);
 
   function updateScrollProgress() {
+    if (readerType === 'epub') return;
     const element = contentRef.current;
     if (!element) return;
     const max = Math.max(1, element.scrollHeight - element.clientHeight);
@@ -130,6 +139,10 @@ export function ReaderPage({ bookId }: { bookId: string }) {
 
   function movePage(delta: number) {
     if (!book) return;
+    if (readerType === 'epub') {
+      void (delta > 0 ? epubControlsRef.current?.next() : epubControlsRef.current?.prev());
+      return;
+    }
     const maxPage = Math.max(1, totalPages || 1);
     const next = Math.max(1, Math.min(maxPage, page + delta));
     setPage(next);
@@ -173,6 +186,25 @@ export function ReaderPage({ bookId }: { bookId: string }) {
           {readerType === 'pdf' ? (
             <iframe title={book.title} src={`/api/books/${book.id}/file#page=${page}&zoom=${Math.round(zoom * 100)}`} className="h-[calc(100vh-12rem)] w-full rounded-2xl border border-white/10 bg-white" />
           ) : null}
+          {readerType === 'epub' ? (
+            <EpubReader
+              bookId={book.id}
+              title={book.title}
+              dark={dark}
+              fontSize={fontSize}
+              lineHeight={lineHeight}
+              initialCfi={position}
+              onControls={(controls) => {
+                epubControlsRef.current = controls;
+              }}
+              onProgress={(progress) => {
+                setPosition(progress.cfi);
+                setPage(progress.page);
+                setPercent(progress.percent);
+                setEpubLabel(progress.label);
+              }}
+            />
+          ) : null}
           {readerType === 'comic' && archiveComic && archivePageCount === null ? (
             <div className="text-slate-300">正在建立漫画页面索引...</div>
           ) : null}
@@ -191,10 +223,10 @@ export function ReaderPage({ bookId }: { bookId: string }) {
           <div className="mx-auto flex max-w-4xl flex-wrap items-center gap-3">
             <Button variant="ghost" icon={ChevronLeft} onClick={() => movePage(-1)}>上一页</Button>
             <Progress value={percent} className="min-w-40 flex-1" />
-            <span className="text-sm text-slate-400">{readerType === 'txt' ? `${percent}%` : `第 ${page} / ${Math.max(1, totalPages || 1)} 页 · ${percent}%`}</span>
+            <span className="text-sm text-slate-400">{readerType === 'txt' ? `${percent}%` : readerType === 'epub' ? `${epubLabel} · ${percent}%` : `第 ${page} / ${Math.max(1, totalPages || 1)} 页 · ${percent}%`}</span>
             <Button variant="ghost" icon={ChevronRight} onClick={() => movePage(1)}>下一页</Button>
-            <Button variant="ghost" icon={Minus} onClick={() => readerType === 'txt' ? setFontSize((value) => Math.max(14, value - 1)) : setZoom((value) => Math.max(0.5, Number((value - 0.1).toFixed(1))))} />
-            <Button variant="ghost" icon={Plus} onClick={() => readerType === 'txt' ? setFontSize((value) => Math.min(28, value + 1)) : setZoom((value) => Math.min(2, Number((value + 0.1).toFixed(1))))} />
+            <Button variant="ghost" icon={Minus} onClick={() => readerType === 'txt' || readerType === 'epub' ? setFontSize((value) => Math.max(14, value - 1)) : setZoom((value) => Math.max(0.5, Number((value - 0.1).toFixed(1))))} />
+            <Button variant="ghost" icon={Plus} onClick={() => readerType === 'txt' || readerType === 'epub' ? setFontSize((value) => Math.min(28, value + 1)) : setZoom((value) => Math.min(2, Number((value + 0.1).toFixed(1))))} />
             <Button variant="ghost" icon={dark ? Sun : Moon} onClick={() => setDark((value) => !value)}>{dark ? '护眼' : '夜间'}</Button>
           </div>
           <div className="mx-auto mt-4 grid max-w-4xl grid-cols-2 gap-3 text-sm md:grid-cols-4">

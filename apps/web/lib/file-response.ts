@@ -6,6 +6,7 @@ import { Readable } from 'node:stream';
 export const contentTypes: Record<string, string> = {
   '.txt': 'text/plain; charset=utf-8',
   '.pdf': 'application/pdf',
+  '.epub': 'application/epub+zip',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',

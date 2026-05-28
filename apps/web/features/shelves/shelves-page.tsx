@@ -9,6 +9,11 @@ import { cn } from '../../components/ui/cn';
 import { PageTitle } from '../../components/ui/page-title';
 import type { BookView } from '../../lib/books';
 
+type BooksPayload = {
+  ok: boolean;
+  data?: { books: BookView[]; page: number; totalPages: number };
+};
+
 const shelfDefs = [
   { name: '正在阅读', match: (book: BookView) => book.statusValue === 'READING' || book.progress > 0 },
   { name: '想看', match: (book: BookView) => book.statusValue === 'WANT' },
@@ -21,10 +26,25 @@ export function ShelvesPage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('/api/books?pageSize=60')
-      .then((response) => response.json())
-      .then((payload) => payload.ok && setBooks(payload.data.books ?? []))
-      .finally(() => setLoading(false));
+    let active = true;
+    async function loadAllBooks() {
+      const collected: BookView[] = [];
+      let nextPage = 1;
+      let totalPages = 1;
+      do {
+        const response = await fetch(`/api/books?page=${nextPage}&pageSize=60&sort=created`);
+        const payload = (await response.json()) as BooksPayload;
+        if (!payload.ok || !payload.data) break;
+        collected.push(...payload.data.books);
+        totalPages = payload.data.totalPages;
+        nextPage += 1;
+      } while (nextPage <= totalPages);
+      if (active) setBooks(collected);
+    }
+    loadAllBooks().catch(() => undefined).finally(() => active && setLoading(false));
+    return () => {
+      active = false;
+    };
   }, []);
 
   const shelves = useMemo(() => shelfDefs.map((shelf) => ({ ...shelf, books: books.filter(shelf.match).slice(0, 4), count: books.filter(shelf.match).length })), [books]);

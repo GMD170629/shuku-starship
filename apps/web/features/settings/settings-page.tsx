@@ -5,6 +5,7 @@ import { FormEvent, useEffect, useState } from 'react';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
 import { PageTitle } from '../../components/ui/page-title';
+import { Select } from '../../components/ui/select';
 
 type LibraryPath = {
   id: string;
@@ -14,6 +15,7 @@ type LibraryPath = {
   scanPolicy: string;
   ignorePatterns?: string | null;
   ignoreHidden: boolean;
+  minFileSizeBytes: number;
   description?: string | null;
 };
 
@@ -36,6 +38,12 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+const themeOptions = [
+  { value: 'system', label: '跟随系统' },
+  { value: 'light', label: '浅色' },
+  { value: 'dark', label: '深色' }
+];
+
 export function SettingsPage() {
   const groups = ['基础设置', '书库路径', '扫描规则', '备份与恢复', '元数据', '用户与权限', '多端同步', '安全与 API'];
   const [active, setActive] = useState('书库路径');
@@ -46,8 +54,9 @@ export function SettingsPage() {
   const [settings, setSettings] = useState({ systemName: '书库星舰', theme: 'system', language: 'zh-CN', timezone: 'Asia/Shanghai' });
   const [name, setName] = useState('我的书库');
   const [rootPath, setRootPath] = useState('/books');
-  const [ignorePatterns, setIgnorePatterns] = useState('*.tmp\n*.part\n*.download');
+  const [ignorePatterns, setIgnorePatterns] = useState('');
   const [ignoreHidden, setIgnoreHidden] = useState(true);
+  const [minFileSizeKb, setMinFileSizeKb] = useState('10');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [backupBusy, setBackupBusy] = useState('');
@@ -81,7 +90,7 @@ export function SettingsPage() {
     const response = await fetch('/api/library-paths', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, rootPath, enabled: true, scanPolicy: 'manual', ignorePatterns, ignoreHidden })
+      body: JSON.stringify({ name, rootPath, enabled: true, scanPolicy: 'manual', ignorePatterns, ignoreHidden, minFileSizeBytes: Math.max(0, Math.round(Number(minFileSizeKb || 0) * 1024)) })
     });
     const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
     if (!payload.ok) {
@@ -106,7 +115,7 @@ export function SettingsPage() {
     await loadPaths();
   }
 
-  async function saveScanRules(path: LibraryPath, updates: Pick<LibraryPath, 'ignorePatterns' | 'ignoreHidden'>) {
+  async function saveScanRules(path: LibraryPath, updates: Pick<LibraryPath, 'ignorePatterns' | 'ignoreHidden' | 'minFileSizeBytes'>) {
     setError('');
     setMessage('');
     const response = await fetch(`/api/library-paths/${path.id}`, {
@@ -224,11 +233,7 @@ export function SettingsPage() {
               </label>
               <label className="text-sm text-slate-600">
                 主题
-                <select value={settings.theme} onChange={(event) => setSettings({ ...settings, theme: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-slate-900 outline-none">
-                  <option value="system">跟随系统</option>
-                  <option value="light">浅色</option>
-                  <option value="dark">深色</option>
-                </select>
+                <Select value={settings.theme} options={themeOptions} onChange={(theme) => setSettings({ ...settings, theme })} ariaLabel="主题" className="mt-2 w-full" />
               </label>
               <label className="text-sm text-slate-600">
                 语言
@@ -251,7 +256,7 @@ export function SettingsPage() {
                   <input value={rootPath} onChange={(event) => setRootPath(event.target.value)} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
                 </label>
                 <label className="md:col-span-9">
-                  <span className="text-sm font-medium text-slate-700">忽略规则</span>
+                  <span className="text-sm font-medium text-slate-700">自定义忽略规则</span>
                   <textarea
                     value={ignorePatterns}
                     onChange={(event) => setIgnorePatterns(event.target.value)}
@@ -262,6 +267,10 @@ export function SettingsPage() {
                 <label className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700 md:col-span-3 md:mt-7">
                   <input type="checkbox" checked={ignoreHidden} onChange={(event) => setIgnoreHidden(event.target.checked)} />
                   忽略隐藏文件
+                </label>
+                <label className="md:col-span-3">
+                  <span className="text-sm font-medium text-slate-700">最小文件大小 KB</span>
+                  <input type="number" min={0} value={minFileSizeKb} onChange={(event) => setMinFileSizeKb(event.target.value)} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
                 </label>
                 <div className="flex items-end md:col-span-2">
                   <Button className="h-11 w-full" icon={FolderOpen}>保存</Button>
@@ -278,7 +287,7 @@ export function SettingsPage() {
                     <div className="min-w-0 flex-1">
                       <div className="font-semibold">{path.name}</div>
                       <div className="break-words text-sm text-slate-500">{path.rootPath}</div>
-                      <div className="mt-2 text-xs text-slate-500">{path.ignoreHidden ? '忽略隐藏文件' : '包含隐藏文件'} · {path.ignorePatterns?.trim() ? '已配置自定义忽略规则' : '仅默认忽略规则'}</div>
+                      <div className="mt-2 text-xs text-slate-500">{path.ignoreHidden ? '忽略隐藏文件' : '包含隐藏文件'} · 小于 {Math.round((path.minFileSizeBytes ?? 10240) / 1024)} KB 跳过 · {path.ignorePatterns?.trim() ? '已配置自定义忽略规则' : '仅默认忽略规则'}</div>
                     </div>
                     <button onClick={() => togglePath(path)} className={cn('h-7 w-12 rounded-full p-1 transition', path.enabled ? 'bg-blue-600' : 'bg-slate-300')} aria-label="启用书库路径">
                       <span className={cn('block h-5 w-5 rounded-full bg-white transition', path.enabled && 'translate-x-5')} />
@@ -370,13 +379,15 @@ export function SettingsPage() {
   );
 }
 
-function ScanRuleEditor({ path, onSave }: { path: LibraryPath; onSave: (path: LibraryPath, updates: Pick<LibraryPath, 'ignorePatterns' | 'ignoreHidden'>) => Promise<void> }) {
+function ScanRuleEditor({ path, onSave }: { path: LibraryPath; onSave: (path: LibraryPath, updates: Pick<LibraryPath, 'ignorePatterns' | 'ignoreHidden' | 'minFileSizeBytes'>) => Promise<void> }) {
   const [patterns, setPatterns] = useState(path.ignorePatterns ?? '');
   const [hidden, setHidden] = useState(path.ignoreHidden);
+  const [minSizeKb, setMinSizeKb] = useState(String(Math.round((path.minFileSizeBytes ?? 10240) / 1024)));
 
   useEffect(() => {
     setPatterns(path.ignorePatterns ?? '');
     setHidden(path.ignoreHidden);
+    setMinSizeKb(String(Math.round((path.minFileSizeBytes ?? 10240) / 1024)));
   }, [path]);
 
   return (
@@ -391,14 +402,25 @@ function ScanRuleEditor({ path, onSave }: { path: LibraryPath; onSave: (path: Li
           忽略隐藏文件
         </label>
       </div>
+      <label className="mt-4 block text-sm text-slate-600">
+        小于此大小的文件跳过（KB）
+        <input
+          type="number"
+          min={0}
+          value={minSizeKb}
+          onChange={(event) => setMinSizeKb(event.target.value)}
+          className="mt-2 h-11 w-full max-w-xs rounded-2xl border border-slate-200 bg-white px-4 text-sm text-slate-900 outline-none"
+        />
+      </label>
       <textarea
         value={patterns}
         onChange={(event) => setPatterns(event.target.value)}
         rows={6}
         className="mt-4 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-sm outline-none"
       />
+      <div className="mt-2 text-xs leading-5 text-slate-500">默认已忽略封面、缩略图、临时文件、说明文件和普通图片；这里填写额外规则，每行一条。</div>
       <div className="mt-3 flex justify-end">
-        <Button type="button" icon={CheckCircle2} onClick={() => onSave(path, { ignorePatterns: patterns, ignoreHidden: hidden })}>保存规则</Button>
+        <Button type="button" icon={CheckCircle2} onClick={() => onSave(path, { ignorePatterns: patterns, ignoreHidden: hidden, minFileSizeBytes: Math.max(0, Math.round(Number(minSizeKb || 0) * 1024)) })}>保存规则</Button>
       </div>
     </div>
   );

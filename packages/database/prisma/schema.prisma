@@ -78,6 +78,7 @@ model LibraryPath {
   scanPolicy  String     @default("manual")
   ignorePatterns String?  @db.Text
   ignoreHidden Boolean    @default(true)
+  minFileSizeBytes Int     @default(10240)
   description String?
   books       Book[]
   scanTasks   ScanTask[]

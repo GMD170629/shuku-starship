@@ -2,11 +2,18 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, it } from 'node:test';
+import JSZip from 'jszip';
 import { buildCandidates, computeFileFingerprint, walkFiles } from './index';
 
 let tempDir = '';
 let previousThreshold: string | undefined;
 let previousChunkSize: string | undefined;
+
+async function writeZip(path: string) {
+  const zip = new JSZip();
+  zip.file('page-001.txt', 'ok');
+  await writeFile(path, await zip.generateAsync({ type: 'nodebuffer' }));
+}
 
 beforeEach(async () => {
   previousThreshold = process.env.SCAN_LARGE_FILE_THRESHOLD_BYTES;
@@ -101,6 +108,40 @@ describe('scanner file discovery', () => {
     assert.equal(result.candidates[0].sourcePath, goodText);
     assert.equal(result.errors.length, 1);
     assert.equal(result.errors[0].path, corruptZip);
+  });
+
+  it('recognizes only book-like files and skips ordinary images', async () => {
+    await mkdir(join(tempDir, 'images'), { recursive: true });
+    await writeFile(join(tempDir, 'novel.txt'), 'long enough text');
+    await writeFile(join(tempDir, 'notes.md'), 'long enough markdown');
+    await writeFile(join(tempDir, 'doc.pdf'), '%PDF-1.4\nbody');
+    await writeFile(join(tempDir, 'ebook.epub'), 'epub placeholder');
+    await writeZip(join(tempDir, 'comic.cbz'));
+    await writeZip(join(tempDir, 'archive.zip'));
+    await writeFile(join(tempDir, 'cover.jpg'), 'cover image');
+    await writeFile(join(tempDir, 'photo.png'), 'plain image');
+    await writeFile(join(tempDir, 'images', 'page-001.jpg'), 'page one');
+    await writeFile(join(tempDir, 'images', 'page-002.jpg'), 'page two');
+
+    const result = await buildCandidates(tempDir, { ignoreHidden: true, ignorePatterns: null });
+
+    assert.equal(result.errors.length, 0);
+    assert.deepEqual(
+      result.candidates.map((candidate) => candidate.format).sort(),
+      ['COMIC', 'COMIC', 'EPUB', 'PDF', 'TXT', 'TXT']
+    );
+    assert.equal(result.skipped, 4);
+  });
+
+  it('skips supported files smaller than the configured minimum size', async () => {
+    await writeFile(join(tempDir, 'tiny.txt'), '123456789');
+    await writeFile(join(tempDir, 'large.txt'), '1234567890');
+
+    const result = await buildCandidates(tempDir, { ignoreHidden: true, ignorePatterns: null, minFileSizeBytes: 10 });
+
+    assert.equal(result.errors.length, 0);
+    assert.deepEqual(result.candidates.map((candidate) => candidate.sourcePath), [join(tempDir, 'large.txt')]);
+    assert.equal(result.skipped, 1);
   });
 
   it('keeps the same source hash when a file is moved by rename', async () => {
