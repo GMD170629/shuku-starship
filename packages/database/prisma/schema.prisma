@@ -43,6 +43,13 @@ enum CoverStatus {
   FAILED
 }
 
+enum BookImportStatus {
+  PENDING
+  PARSING
+  COMPLETED
+  FAILED
+}
+
 enum ScanTaskMode {
   NORMAL
   DRY_RUN
@@ -104,7 +111,16 @@ model Book {
   sizeBytes     BigInt            @default(0)
   pageCount     Int?
   chapterCount  Int?
+  language      String?
+  publisher     String?
+  publishedAt   String?
+  identifier    String?
+  isbn          String?
+  importStatus  BookImportStatus @default(PENDING)
+  importError   String? @db.Text
   files         BookFile[]
+  chapters      BookChapter[]
+  metadataItems BookMetadata[]
   progresses    ReadingProgress[]
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
@@ -205,4 +221,31 @@ model SystemSetting {
   value     String   @db.Text
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+
+model BookChapter {
+  id        String   @id @default(cuid())
+  bookId    String
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  title     String
+  href      String
+  mediaType String?
+  sortOrder Int
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([bookId, sortOrder])
+}
+
+model BookMetadata {
+  id        String   @id @default(cuid())
+  bookId    String
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  source    String
+  rawJson   String   @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([bookId])
 }
