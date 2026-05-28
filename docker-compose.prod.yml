@@ -1,15 +1,17 @@
+name: shuku-starship
+
 services:
   mysql:
     image: mysql:8.4
     container_name: shuku-prod-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-root-me}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-shuku_starship}
       MYSQL_USER: ${MYSQL_USER:-shuku}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?set MYSQL_PASSWORD}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-me}
     volumes:
-      - ./data/mysql:/var/lib/mysql
+      - ${MYSQL_DATA_PATH:-./data/mysql}:/var/lib/mysql
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
       interval: 10s
@@ -23,46 +25,60 @@ services:
     restart: unless-stopped
     command: ["redis-server", "--appendonly", "yes"]
     volumes:
-      - ./data/redis:/data
+      - ${REDIS_DATA_PATH:-./data/redis}:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
       timeout: 3s
       retries: 10
 
+  migrate:
+    image: gamersgu/shuku-starship-migrator:prod
+    platform: linux/amd64
+    pull_policy: always
+    container_name: shuku-prod-migrate
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-mysql://${MYSQL_USER:-shuku}:${MYSQL_PASSWORD:-change-me}@mysql:3306/${MYSQL_DATABASE:-shuku_starship}}
+    command: ["pnpm", "--filter", "@shuku/database", "exec", "prisma", "db", "push", "--skip-generate"]
+
   web:
-    build:
-      context: .
-      dockerfile: apps/web/Dockerfile.prod
+    image: gamersgu/shuku-starship-web:prod
+    platform: linux/amd64
+    pull_policy: always
     container_name: shuku-prod-web
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
     depends_on:
       mysql:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     environment:
-      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
-      REDIS_URL: ${REDIS_URL:?set REDIS_URL}
-      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET}
-      BOOKS_ROOT: ${BOOKS_ROOT:?set BOOKS_ROOT}
+      DATABASE_URL: ${DATABASE_URL:-mysql://${MYSQL_USER:-shuku}:${MYSQL_PASSWORD:-change-me}@mysql:3306/${MYSQL_DATABASE:-shuku_starship}}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      SESSION_SECRET: ${SESSION_SECRET:-replace-this-production-secret-before-real-use-32chars}
+      BOOKS_ROOT: ${BOOKS_ROOT:-/books}
       DEMO_MODE: ${DEMO_MODE:-false}
       NEXT_PUBLIC_DEMO_MODE: ${NEXT_PUBLIC_DEMO_MODE:-false}
       STORAGE_ROOT: /app/storage
       PORT: 3000
       HOSTNAME: 0.0.0.0
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
-      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-starshipnas}
     ports:
       - "${WEB_PORT:-3000}:3000"
     volumes:
-      - ./data/storage:/app/storage
-      - ./books:/books:ro
+      - ${STORAGE_PATH:-./data/storage}:/app/storage
+      - ${BOOKS_HOST_PATH:-./books}:/books:ro
     command: >
       sh -c "./scripts/require-env.sh DATABASE_URL REDIS_URL SESSION_SECRET BOOKS_ROOT
       && mkdir -p /app/storage/covers /app/storage/indexes /app/storage/temp /app/storage/logs
-      && pnpm --filter @shuku/database exec prisma db push --skip-generate
+      && node scripts/seed.mjs
       && node apps/web/server.js"
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
@@ -72,9 +88,9 @@ services:
       start_period: 30s
 
   scan-worker:
-    build:
-      context: .
-      dockerfile: workers/scan-worker/Dockerfile.prod
+    image: gamersgu/shuku-starship-scan-worker:prod
+    platform: linux/amd64
+    pull_policy: always
     container_name: shuku-prod-scan-worker
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
@@ -84,19 +100,19 @@ services:
       redis:
         condition: service_healthy
     environment:
-      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL}
-      REDIS_URL: ${REDIS_URL:?set REDIS_URL}
-      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET}
-      BOOKS_ROOT: ${BOOKS_ROOT:?set BOOKS_ROOT}
+      DATABASE_URL: ${DATABASE_URL:-mysql://${MYSQL_USER:-shuku}:${MYSQL_PASSWORD:-change-me}@mysql:3306/${MYSQL_DATABASE:-shuku_starship}}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+      SESSION_SECRET: ${SESSION_SECRET:-replace-this-production-secret-before-real-use-32chars}
+      BOOKS_ROOT: ${BOOKS_ROOT:-/books}
       DEMO_MODE: ${DEMO_MODE:-false}
       STORAGE_ROOT: /app/storage
     volumes:
-      - ./data/storage:/app/storage
-      - ./books:/books:ro
+      - ${STORAGE_PATH:-./data/storage}:/app/storage
+      - ${BOOKS_HOST_PATH:-./books}:/books:ro
     command: >
-      sh -c "./scripts/require-env.sh DATABASE_URL REDIS_URL SESSION_SECRET BOOKS_ROOT
+      sh -c "/app/scripts/require-env.sh DATABASE_URL REDIS_URL SESSION_SECRET BOOKS_ROOT
       && mkdir -p /app/storage/covers /app/storage/indexes /app/storage/temp /app/storage/logs
-      && pnpm --filter @shuku/scan-worker start"
+      && node dist/index.js"
     healthcheck:
       test: ["CMD", "test", "-f", "/tmp/scan-worker-ready"]
       interval: 30s

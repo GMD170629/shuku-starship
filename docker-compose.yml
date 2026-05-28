@@ -37,12 +37,13 @@ services:
       SLOW_FILE_REQUEST_MS: 1500
       ADMIN_EMAIL: admin@example.com
       ADMIN_PASSWORD: starshipnas
+      SESSION_SECRET: dev-session-secret-change-me-at-least-32-chars
     ports:
-      - "3000:3000"
+      - "${WEB_PORT:-3000}:3000"
     volumes:
-      - ./test-data/library:/books:ro
+      - ./books:/books:ro
       - ./storage:/app/storage
-    command: sh -c "pnpm --filter @shuku/database prisma:push && pnpm start"
+    command: sh -c "pnpm --filter @shuku/database exec prisma db push --accept-data-loss && pnpm --filter @shuku/web exec tsx ../../scripts/seed.ts && pnpm start"
 
   scan-worker:
     build:
@@ -57,8 +58,9 @@ services:
       REDIS_URL: redis://redis:6379
       BOOKS_ROOT: /books
       STORAGE_ROOT: /app/storage
+      SESSION_SECRET: dev-session-secret-change-me-at-least-32-chars
     volumes:
-      - ./test-data/library:/books:ro
+      - ./books:/books:ro
       - ./storage:/app/storage
 
 volumes:

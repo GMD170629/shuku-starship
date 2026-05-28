@@ -8,4 +8,5 @@
 6. 从详情页进入阅读器，TXT、PDF、图片/漫画都通过 `/api/files/:fileId` 加载。
 7. 翻页或滚动后刷新阅读器，进度能恢复。
 8. 在 375px 宽度下检查登录、书库、详情、扫描、设置和阅读器无明显横向溢出。
-9. 执行 `docker compose up --build`，确认 Web、MySQL、Redis、Worker 可启动并连接。
+9. 本地开发执行 `docker compose up --build`，确认 Web、MySQL、Redis、Worker 可启动并连接。
+10. 生产发布后在空目录执行 `curl -fsSL https://raw.githubusercontent.com/GMD170629/shuku-starship/main/docker-compose.prod.yml | docker compose -f - up -d`，确认不下载代码也能拉取镜像并启动完整服务。

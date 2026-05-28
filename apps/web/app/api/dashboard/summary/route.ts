@@ -22,7 +22,7 @@ export async function GET() {
     novelBooks,
     pdfBooks,
     documentBooks,
-    storageUsedBytes: Number(storage._sum.sizeBytes ?? 0n),
+    storageUsedBytes: Number(storage._sum.sizeBytes ?? BigInt(0)),
     libraryPathCount,
     lastScanAt: lastScan?.finishedAt ?? lastScan?.updatedAt ?? null,
     latestSyncAt: latestProgress?.updatedAt ?? null

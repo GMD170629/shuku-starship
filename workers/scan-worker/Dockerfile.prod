@@ -13,23 +13,25 @@ FROM deps AS builder
 COPY scripts ./scripts
 COPY packages ./packages
 COPY workers/scan-worker ./workers/scan-worker
-RUN pnpm --filter @shuku/database prisma:generate \
+RUN pnpm --filter @shuku/database build \
   && pnpm --filter @shuku/scanner build \
-  && pnpm --filter @shuku/scan-worker build
+  && pnpm --filter @shuku/scan-worker build \
+  && pnpm --filter @shuku/scan-worker deploy --prod /prod/scan-worker \
+  && for pkg in $(find /prod/scan-worker/node_modules/.pnpm -path '*/node_modules/@prisma/client' -type d); do mkdir -p "$(dirname "$(dirname "$pkg")")/.prisma"; rm -rf "$(dirname "$(dirname "$pkg")")/.prisma/client"; cp -R /app/node_modules/.pnpm/@prisma+client@5.22.0_prisma@5.22.0/node_modules/.prisma/client "$(dirname "$(dirname "$pkg")")/.prisma/client"; done \
+  && for pkg in $(find /prod/scan-worker/node_modules -path '*/@shuku/database' -type d); do cp -R /app/packages/database/dist "$pkg/dist"; done \
+  && for pkg in $(find /prod/scan-worker/node_modules -path '*/@shuku/scanner' -type d); do cp -R /app/packages/scanner/dist "$pkg/dist"; done \
+  && node -e "const fs=require('node:fs'); const cp=require('node:child_process'); const files=cp.execSync(\"find /prod/scan-worker/node_modules -path '*/@shuku/scanner/package.json' -o -path '*/@shuku/database/package.json'\").toString().trim().split(/\\n/).filter(Boolean); for (const p of files) { const pkg=JSON.parse(fs.readFileSync(p,'utf8')); if (pkg.name === '@shuku/database') { pkg.main='dist/client.js'; pkg.types='dist/client.d.ts'; pkg.exports={'.':{types:'./dist/client.d.ts',import:'./dist/client.js',default:'./dist/client.js'}}; } if (pkg.name === '@shuku/scanner') { pkg.main='dist/index.js'; pkg.types='dist/index.d.ts'; pkg.exports={'.':{types:'./dist/index.d.ts',import:'./dist/index.js',default:'./dist/index.js'},'./path-security-service':{types:'./dist/path-security-service.d.ts',import:'./dist/path-security-service.js',default:'./dist/path-security-service.js'},'./cover-service':{types:'./dist/cover-service.d.ts',import:'./dist/cover-service.js',default:'./dist/cover-service.js'}}; } fs.writeFileSync(p, JSON.stringify(pkg,null,2)); }"
 
 FROM node:20-alpine AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 
-RUN apk add --no-cache libc6-compat openssl \
-  && corepack enable
+RUN apk add --no-cache libc6-compat openssl
 
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml /app/turbo.json ./
 COPY --from=builder /app/scripts/require-env.sh ./scripts/require-env.sh
-COPY --from=builder /app/packages ./packages
-COPY --from=builder /app/workers/scan-worker ./workers/scan-worker
+COPY --from=builder /prod/scan-worker ./scan-worker
 RUN chmod +x ./scripts/require-env.sh \
   && mkdir -p /app/storage/covers /app/storage/indexes /app/storage/temp /app/storage/logs /books
 
-CMD ["pnpm", "--filter", "@shuku/scan-worker", "start"]
+WORKDIR /app/scan-worker
+CMD ["node", "dist/index.js"]
