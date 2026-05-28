@@ -7,7 +7,7 @@ function securityStatus(error: PathSecurityError) {
   return error.code === 'PATH_UNAVAILABLE' || error.code === 'BOOKS_ROOT_UNAVAILABLE' ? 404 : 400;
 }
 
-function parseMinFileSizeBytes(value: unknown, fallback = 10240) {
+function parseMinFileSizeBytes(value: unknown, fallback = 0) {
   if (value === undefined || value === null || value === '') return fallback;
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed < 0) return null;
@@ -17,7 +17,7 @@ function parseMinFileSizeBytes(value: unknown, fallback = 10240) {
 export async function GET() {
   await requireUser();
   const paths = await prisma.libraryPath.findMany({ orderBy: { createdAt: 'desc' } });
-  return ok({ paths });
+  return ok({ paths, booksRoot: PathSecurityService.configuredBooksRoot() });
 }
 
 export async function POST(request: Request) {

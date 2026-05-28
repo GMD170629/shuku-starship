@@ -3,6 +3,7 @@ import { BackupService } from '../../../lib/backup-service';
 import { runSystemHealthChecks } from '../../../lib/system-health';
 
 export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
 
 BackupService.startAutomaticScheduler();
 

@@ -7,7 +7,7 @@ import type { Book, BookFile, ReadingFormat, ScanTask } from '@prisma/client';
 import { CoverService } from './cover-service.js';
 import { PathSecurityService } from './path-security-service.js';
 
-export { PathSecurityError, PathSecurityService } from './path-security-service.js';
+export { configuredScanQueueName, normalizeConfiguredPath, PathSecurityError, PathSecurityService } from './path-security-service.js';
 
 export interface ScanTarget {
   scanTaskId: string;
@@ -624,8 +624,35 @@ export async function scanNas(target: ScanTarget) {
     await log(task.id, 'warn', 'scan skipped: task was canceled before worker start');
     return;
   }
-  if (!task.libraryPath.enabled) throw new Error(`Library path is disabled: ${task.libraryPath.rootPath}`);
-  const secureRoot = await PathSecurityService.fromEnv().validateLibraryRoot(task.libraryPath.rootPath);
+  if (!task.libraryPath.enabled) {
+    const message = `书库路径已禁用：${task.libraryPath.rootPath}`;
+    await updateTask(task.id, {
+      status: 'FAILED',
+      runningLockKey: null,
+      errorCount: 1,
+      errorSummary: message,
+      message,
+      finishedAt: new Date()
+    });
+    await log(task.id, 'error', message);
+    throw new Error(message);
+  }
+  let secureRoot;
+  try {
+    secureRoot = await PathSecurityService.fromEnv().validateLibraryRoot(task.libraryPath.rootPath);
+  } catch (error) {
+    const message = `扫描失败：${summarizeError(error)}`;
+    await updateTask(task.id, {
+      status: 'FAILED',
+      runningLockKey: null,
+      errorCount: 1,
+      errorSummary: summarizeError(error),
+      message,
+      finishedAt: new Date()
+    });
+    await log(task.id, 'error', message);
+    throw error;
+  }
   const dryRun = task.mode === 'DRY_RUN';
   const startedAt = Date.now();
   let stopHeartbeat = () => {};

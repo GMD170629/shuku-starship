@@ -3,6 +3,7 @@ import { formatLabels, statusLabels } from './book-metadata';
 
 export type BookView = {
   id: string;
+  libraryPathId: string | null;
   title: string;
   author: string;
   type: string;
@@ -75,6 +76,7 @@ export function toBookView(
   const percent = Math.max(0, Math.min(100, Math.round(progress?.percent ?? 0)));
   return {
     id: book.id,
+    libraryPathId: book.libraryPathId,
     title: book.title,
     author: book.author ?? '未知作者',
     type: formatLabel(book.format),

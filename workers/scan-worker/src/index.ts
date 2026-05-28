@@ -1,10 +1,27 @@
 import { Worker } from 'bullmq';
 import { Redis } from 'ioredis';
+import { existsSync, readFileSync } from 'node:fs';
 import { access, rm, stat, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { recoverStaleRunningScanTasks, scanNas } from '@shuku/scanner';
+import { join } from 'node:path';
+import { configuredScanQueueName, normalizeConfiguredPath, recoverStaleRunningScanTasks, scanNas } from '@shuku/scanner';
 
 const readyFile = '/tmp/scan-worker-ready';
+
+function loadEnvFile(path: string) {
+  if (!existsSync(path)) return;
+  const env = readFileSync(path, 'utf8');
+  for (const line of env.split(/\r?\n/)) {
+    const match = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)=(.*)\s*$/);
+    if (!match || process.env[match[1]] !== undefined) continue;
+    process.env[match[1]] = match[2].replace(/^['"]|['"]$/g, '');
+  }
+}
+
+loadEnvFile(join(process.env.INIT_CWD || process.cwd(), '.env'));
+loadEnvFile(join(process.cwd(), '../../.env'));
+if (process.env.BOOKS_ROOT) process.env.BOOKS_ROOT = normalizeConfiguredPath(process.env.BOOKS_ROOT);
+if (process.env.STORAGE_ROOT) process.env.STORAGE_ROOT = normalizeConfiguredPath(process.env.STORAGE_ROOT);
 
 async function startupCheck() {
   for (const name of ['DATABASE_URL', 'REDIS_URL', 'SESSION_SECRET', 'BOOKS_ROOT']) {
@@ -27,7 +44,7 @@ const recovered = await recoverStaleRunningScanTasks({ resume: true });
 if (recovered > 0) console.warn(`[scan-worker] recovered ${recovered} stale running scan task(s)`);
 
 const worker = new Worker(
-  'scan-jobs',
+  configuredScanQueueName(),
   async (job) => {
     console.log(`[scan-worker] processing job ${job.id}`, job.data);
     await scanNas(job.data);

@@ -7,16 +7,19 @@ import {
   FolderOpen,
   Home,
   Library,
+  LogIn,
+  LogOut,
   RefreshCw,
   Search,
   Server,
   Settings,
   Tags,
-  User
+  User,
+  UserCircle
 } from 'lucide-react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
-import { useEffect, useState, type ReactNode } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Badge } from '../ui/badge';
 import { cn } from '../ui/cn';
 import { Progress } from '../ui/progress';
@@ -43,9 +46,13 @@ function isActive(pathname: string, href: string) {
 
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
   const [summary, setSummary] = useState<{ storageUsedBytes: number; latestSyncAt: string | null } | null>(null);
   const [status, setStatus] = useState<{ status: string; checks: Array<{ name: string; status: string; message: string }> } | null>(null);
   const [scan, setScan] = useState<{ progress: number } | null>(null);
+  const [user, setUser] = useState<{ email: string; name: string; role: string } | null>(null);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const accountRef = useRef<HTMLDivElement>(null);
   const isReader = pathname.startsWith('/reader/');
   const isLogin = pathname === '/login';
   const isMobilePreview = pathname === '/mobile-preview';
@@ -54,11 +61,13 @@ export function AppShell({ children }: { children: ReactNode }) {
     if (isReader || isLogin || isMobilePreview) return;
     let active = true;
     Promise.all([
+      fetch('/api/auth/me').then((response) => response.json()).catch(() => null),
       fetch('/api/dashboard/summary').then((response) => response.json()).catch(() => null),
       fetch('/api/system/health').then((response) => response.json()).catch(() => null),
       fetch('/api/dashboard/system-status').then((response) => response.json()).catch(() => null)
-    ]).then(([summaryPayload, healthPayload, systemPayload]) => {
+    ]).then(([mePayload, summaryPayload, healthPayload, systemPayload]) => {
       if (!active) return;
+      setUser(mePayload?.ok ? mePayload.data.user : null);
       if (summaryPayload?.ok) setSummary(summaryPayload.data);
       if (healthPayload?.ok) setStatus(healthPayload.data);
       if (systemPayload?.ok) setScan(systemPayload.data.currentRunningScanTask);
@@ -67,6 +76,25 @@ export function AppShell({ children }: { children: ReactNode }) {
       active = false;
     };
   }, [isLogin, isMobilePreview, isReader, pathname]);
+
+  useEffect(() => {
+    if (!accountOpen) return;
+    function closeOnOutsideClick(event: MouseEvent) {
+      if (!accountRef.current?.contains(event.target as Node)) {
+        setAccountOpen(false);
+      }
+    }
+    window.addEventListener('mousedown', closeOnOutsideClick);
+    return () => window.removeEventListener('mousedown', closeOnOutsideClick);
+  }, [accountOpen]);
+
+  async function logout() {
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => null);
+    setAccountOpen(false);
+    setUser(null);
+    router.replace('/login');
+    router.refresh();
+  }
 
   const storage = summary?.storageUsedBytes ?? 0;
   const storageLabel = storage > 0 ? `${(storage / 1024 / 1024 / 1024).toFixed(1)} GB` : '0 B';
@@ -131,11 +159,54 @@ export function AppShell({ children }: { children: ReactNode }) {
               {summary?.latestSyncAt ? '有进度' : '暂无同步'}
             </Badge>
             <Badge tone={scan ? 'amber' : 'green'}>
-              <RefreshCw size={13} className="mr-1 animate-spin" />
+              <RefreshCw size={13} className={cn('mr-1', scan ? 'animate-spin' : '')} />
               {scan ? `扫描 ${scan.progress}%` : '暂无扫描'}
             </Badge>
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-900 text-white">
-              <User size={18} />
+            <div ref={accountRef} className="relative">
+              <button
+                type="button"
+                aria-expanded={accountOpen}
+                aria-label="账户菜单"
+                onClick={() => setAccountOpen((open) => !open)}
+                className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-900 text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-4 focus:ring-blue-100"
+              >
+                <User size={18} />
+              </button>
+              {accountOpen ? (
+                <div className="absolute right-0 top-12 w-64 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl shadow-slate-200/70">
+                  <div className="border-b border-slate-100 px-4 py-3">
+                    <div className="text-sm font-semibold text-slate-900">{user?.name ?? '未登录'}</div>
+                    <div className="mt-0.5 truncate text-xs text-slate-500">{user?.email ?? '请先登录后使用系统'}</div>
+                  </div>
+                  <Link
+                    href="/settings"
+                    onClick={() => setAccountOpen(false)}
+                    className="flex items-center gap-2 px-4 py-3 text-sm text-slate-700 hover:bg-slate-50"
+                  >
+                    <UserCircle size={16} />
+                    账户与系统设置
+                  </Link>
+                  {user ? (
+                    <button
+                      type="button"
+                      onClick={logout}
+                      className="flex w-full items-center gap-2 px-4 py-3 text-left text-sm text-red-700 hover:bg-red-50"
+                    >
+                      <LogOut size={16} />
+                      退出登录
+                    </button>
+                  ) : (
+                    <Link
+                      href={`/login?next=${encodeURIComponent(pathname)}`}
+                      onClick={() => setAccountOpen(false)}
+                      className="flex items-center gap-2 px-4 py-3 text-sm text-blue-700 hover:bg-blue-50"
+                    >
+                      <LogIn size={16} />
+                      前往登录
+                    </Link>
+                  )}
+                </div>
+              ) : null}
             </div>
           </div>
         </header>

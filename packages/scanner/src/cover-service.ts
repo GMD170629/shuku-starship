@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { accessSync } from 'node:fs';
-import { mkdir, readFile, stat } from 'node:fs/promises';
+import { accessSync, existsSync } from 'node:fs';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, extname, join, resolve } from 'node:path';
 import type { Book, BookFile } from '@prisma/client';
 import { prisma } from '@shuku/database';
@@ -37,7 +37,13 @@ function coverDirectory(bookId: string) {
 }
 
 export function coverPathFor(bookId: string, size: CoverSize) {
+  const svgPath = join(coverDirectory(bookId), `${size}.svg`);
+  if (existsSync(svgPath)) return svgPath;
   return join(coverDirectory(bookId), `${size}.webp`);
+}
+
+function coverOutputPathFor(bookId: string, size: CoverSize, ext: 'webp' | 'svg') {
+  return join(coverDirectory(bookId), `${size}.${ext}`);
 }
 
 function stableGradient(seed: string) {
@@ -174,24 +180,39 @@ export class CoverService {
       status = 'FAILED';
     }
 
-    const { default: sharp } = await import('sharp');
-    await Promise.all(
-      (Object.keys(coverWidths) as CoverSize[]).map((size) =>
-        sharp(input, { limitInputPixels: false })
-          .resize({ width: coverWidths[size], withoutEnlargement: false })
-          .webp({ quality: size === 'large' ? 84 : 80 })
-          .toFile(coverPathFor(book.id, size))
-      )
-    );
+    try {
+      const { default: sharp } = await import('sharp');
+      await Promise.all(
+        (Object.keys(coverWidths) as CoverSize[]).map((size) =>
+          sharp(input, { limitInputPixels: false })
+            .resize({ width: coverWidths[size], withoutEnlargement: false })
+            .webp({ quality: size === 'large' ? 84 : 80 })
+            .toFile(coverOutputPathFor(book.id, size, 'webp'))
+        )
+      );
+      await Promise.all((Object.keys(coverWidths) as CoverSize[]).map((size) => rm(coverOutputPathFor(book.id, size, 'svg'), { force: true })));
 
-    await prisma.book.update({
-      where: { id: book.id },
-      data: {
-        coverStatus: status,
-        coverPath: coverPathFor(book.id, 'medium')
-      }
-    });
-    return status;
+      await prisma.book.update({
+        where: { id: book.id },
+        data: {
+          coverStatus: status,
+          coverPath: coverPathFor(book.id, 'medium')
+        }
+      });
+      return status;
+    } catch {
+      const fallback = await textCover(book);
+      await Promise.all((Object.keys(coverWidths) as CoverSize[]).map((size) => writeFile(coverOutputPathFor(book.id, size, 'svg'), fallback)));
+      await Promise.all((Object.keys(coverWidths) as CoverSize[]).map((size) => rm(coverOutputPathFor(book.id, size, 'webp'), { force: true })));
+      await prisma.book.update({
+        where: { id: book.id },
+        data: {
+          coverStatus: 'FAILED',
+          coverPath: coverPathFor(book.id, 'medium')
+        }
+      });
+      return 'FAILED';
+    }
   }
 
   static async ensureBookCover(book: BookWithFiles) {

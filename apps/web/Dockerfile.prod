@@ -16,7 +16,12 @@ RUN pnpm install --frozen-lockfile
 FROM deps AS builder
 COPY . .
 RUN pnpm --filter @shuku/database prisma:generate \
-  && pnpm --filter @shuku/web build
+  && pnpm --filter @shuku/web build \
+  && sharp_pkg_dir="$(dirname "$(node -e "console.log(require.resolve('sharp/package.json', { paths: ['/app/packages/scanner'] }))")")" \
+  && standalone_sharp_pkg_dir="$(dirname "$(find apps/web/.next/standalone/node_modules/.pnpm -path '*/node_modules/sharp/package.json' -print -quit)")" \
+  && rm -rf "$(dirname "$standalone_sharp_pkg_dir")/@img" \
+  && mkdir -p "$(dirname "$standalone_sharp_pkg_dir")/@img" \
+  && cp -RL "$sharp_pkg_dir"/../@img/* "$(dirname "$standalone_sharp_pkg_dir")/@img/"
 
 FROM node:20-alpine AS migrator-deps
 WORKDIR /app

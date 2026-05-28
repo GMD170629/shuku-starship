@@ -1,5 +1,6 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
+import { extname } from 'node:path';
 import { Readable } from 'node:stream';
 import { CoverService, type CoverSize } from '@shuku/scanner/cover-service';
 import { requireUser } from '../../../../../lib/auth';
@@ -7,6 +8,10 @@ import { fail } from '../../../../../lib/http';
 import { prisma } from '../../../../../lib/prisma';
 
 const coverSizes = new Set<CoverSize>(['small', 'medium', 'large']);
+
+function coverContentType(path: string) {
+  return extname(path).toLowerCase() === '.svg' ? 'image/svg+xml; charset=utf-8' : 'image/webp';
+}
 
 async function readableCoverPath(bookId: string, size: CoverSize) {
   const path = CoverService.coverPathFor(bookId, size);
@@ -36,7 +41,7 @@ export async function GET(request: Request, { params }: { params: { id: string }
   const stream = createReadStream(cover.path);
   return new Response(Readable.toWeb(stream) as ReadableStream, {
     headers: {
-      'Content-Type': 'image/webp',
+      'Content-Type': coverContentType(cover.path),
       'Content-Length': String(cover.size),
       'Cache-Control': 'private, max-age=86400'
     }

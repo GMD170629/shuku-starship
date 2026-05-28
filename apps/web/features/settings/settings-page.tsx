@@ -19,6 +19,11 @@ type LibraryPath = {
   description?: string | null;
 };
 
+type LibraryPathsPayload = {
+  paths: LibraryPath[];
+  booksRoot?: string;
+};
+
 type BackupItem = {
   id: string;
   kind: 'manual' | 'automatic' | 'unknown';
@@ -56,16 +61,20 @@ export function SettingsPage() {
   const [rootPath, setRootPath] = useState('/books');
   const [ignorePatterns, setIgnorePatterns] = useState('');
   const [ignoreHidden, setIgnoreHidden] = useState(true);
-  const [minFileSizeKb, setMinFileSizeKb] = useState('10');
+  const [minFileSizeKb, setMinFileSizeKb] = useState('0');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [backupBusy, setBackupBusy] = useState('');
 
   async function loadPaths() {
     const response = await fetch('/api/library-paths');
-    const payload = (await response.json()) as { ok: boolean; data?: { paths: LibraryPath[] }; error?: { message: string } };
-    if (payload.ok) setPaths(payload.data?.paths ?? []);
-    else setError(payload.error?.message ?? '读取书库路径失败');
+    const payload = (await response.json()) as { ok: boolean; data?: LibraryPathsPayload; error?: { message: string } };
+    if (payload.ok) {
+      setPaths(payload.data?.paths ?? []);
+      if (payload.data?.booksRoot && rootPath === '/books') setRootPath(payload.data.booksRoot);
+    } else {
+      setError(payload.error?.message ?? '读取书库路径失败');
+    }
   }
 
   async function loadBackups() {
@@ -287,7 +296,7 @@ export function SettingsPage() {
                     <div className="min-w-0 flex-1">
                       <div className="font-semibold">{path.name}</div>
                       <div className="break-words text-sm text-slate-500">{path.rootPath}</div>
-                      <div className="mt-2 text-xs text-slate-500">{path.ignoreHidden ? '忽略隐藏文件' : '包含隐藏文件'} · 小于 {Math.round((path.minFileSizeBytes ?? 10240) / 1024)} KB 跳过 · {path.ignorePatterns?.trim() ? '已配置自定义忽略规则' : '仅默认忽略规则'}</div>
+                      <div className="mt-2 text-xs text-slate-500">{path.ignoreHidden ? '忽略隐藏文件' : '包含隐藏文件'} · 小于 {Math.round((path.minFileSizeBytes ?? 0) / 1024)} KB 跳过 · {path.ignorePatterns?.trim() ? '已配置自定义忽略规则' : '仅默认忽略规则'}</div>
                     </div>
                     <button onClick={() => togglePath(path)} className={cn('h-7 w-12 rounded-full p-1 transition', path.enabled ? 'bg-blue-600' : 'bg-slate-300')} aria-label="启用书库路径">
                       <span className={cn('block h-5 w-5 rounded-full bg-white transition', path.enabled && 'translate-x-5')} />
@@ -382,12 +391,12 @@ export function SettingsPage() {
 function ScanRuleEditor({ path, onSave }: { path: LibraryPath; onSave: (path: LibraryPath, updates: Pick<LibraryPath, 'ignorePatterns' | 'ignoreHidden' | 'minFileSizeBytes'>) => Promise<void> }) {
   const [patterns, setPatterns] = useState(path.ignorePatterns ?? '');
   const [hidden, setHidden] = useState(path.ignoreHidden);
-  const [minSizeKb, setMinSizeKb] = useState(String(Math.round((path.minFileSizeBytes ?? 10240) / 1024)));
+  const [minSizeKb, setMinSizeKb] = useState(String(Math.round((path.minFileSizeBytes ?? 0) / 1024)));
 
   useEffect(() => {
     setPatterns(path.ignorePatterns ?? '');
     setHidden(path.ignoreHidden);
-    setMinSizeKb(String(Math.round((path.minFileSizeBytes ?? 10240) / 1024)));
+    setMinSizeKb(String(Math.round((path.minFileSizeBytes ?? 0) / 1024)));
   }, [path]);
 
   return (

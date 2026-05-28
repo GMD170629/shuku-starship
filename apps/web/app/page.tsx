@@ -1,5 +1,7 @@
+import { requirePageUser } from '../lib/auth';
 import { DashboardPage } from '../features/dashboard/dashboard-page';
 
-export default function HomePage() {
+export default async function HomePage() {
+  await requirePageUser();
   return <DashboardPage />;
 }

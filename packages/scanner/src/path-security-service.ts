@@ -1,6 +1,8 @@
 import { constants } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { access, realpath, stat } from 'node:fs/promises';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 export type PathSecurityErrorCode =
   | 'EMPTY_PATH'
@@ -41,6 +43,37 @@ function isSensitivePath(path: string) {
   return sensitivePaths.some((sensitivePath) => normalized === sensitivePath || normalized.startsWith(`${sensitivePath}/`));
 }
 
+function findWorkspaceRoot(start: string) {
+  let current = resolve(start);
+  while (true) {
+    if (existsSync(join(current, 'pnpm-workspace.yaml'))) return current;
+    const parent = dirname(current);
+    if (parent === current) return null;
+    current = parent;
+  }
+}
+
+export function normalizeConfiguredPath(path: string) {
+  const trimmed = path.trim();
+  if (!trimmed || isAbsolute(trimmed)) return trimmed;
+  const base =
+    process.env.SHUKU_ROOT ||
+    findWorkspaceRoot(process.cwd()) ||
+    (process.env.INIT_CWD ? findWorkspaceRoot(process.env.INIT_CWD) : null) ||
+    process.env.INIT_CWD ||
+    process.cwd();
+  return resolve(base, trimmed);
+}
+
+export function configuredScanQueueName() {
+  const explicit = process.env.SCAN_QUEUE_NAME?.trim();
+  if (explicit) return explicit;
+
+  const booksRoot = process.env.BOOKS_ROOT ? normalizeConfiguredPath(process.env.BOOKS_ROOT) : 'default';
+  const scope = createHash('sha1').update(booksRoot).digest('hex').slice(0, 10);
+  return `scan-jobs-${scope}`;
+}
+
 async function realpathOrSecurityError(path: string, message: string, code: PathSecurityErrorCode) {
   try {
     return await realpath(path);
@@ -53,11 +86,15 @@ export class PathSecurityService {
   private readonly booksRoot: string;
 
   constructor(booksRoot = process.env.BOOKS_ROOT || '/books') {
-    this.booksRoot = booksRoot.trim();
+    this.booksRoot = normalizeConfiguredPath(booksRoot);
   }
 
   static fromEnv() {
     return new PathSecurityService();
+  }
+
+  static configuredBooksRoot() {
+    return normalizeConfiguredPath(process.env.BOOKS_ROOT || '/books');
   }
 
   async validateLibraryRoot(inputPath: string): Promise<PathSecurityValidation> {

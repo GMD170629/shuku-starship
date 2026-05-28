@@ -28,7 +28,8 @@ export function LoginPage() {
       return;
     }
     const next = new URLSearchParams(window.location.search).get('next');
-    router.replace(next || '/library');
+    const safeNext = next?.startsWith('/') && !next.startsWith('//') ? next : '/library';
+    router.replace(safeNext);
     router.refresh();
   }
 

@@ -1,5 +1,6 @@
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
+import { configuredScanQueueName } from '@shuku/scanner/path-security-service';
 import { requireUser } from '../../../lib/auth';
 import { fail, ok, readJson } from '../../../lib/http';
 import { prisma } from '../../../lib/prisma';
@@ -10,7 +11,7 @@ function createQueue() {
     lazyConnect: true
   });
   return {
-    queue: new Queue('scan-jobs', { connection: connection as never }),
+    queue: new Queue(configuredScanQueueName(), { connection: connection as never }),
     connection
   };
 }
@@ -28,6 +29,24 @@ export async function GET() {
 function parseErrorPath(message: string) {
   const match = /^(?:would error|error): (.*?): /.exec(message);
   return match?.[1];
+}
+
+async function failStaleQueuedTask(task: { id: string; status: string; updatedAt: Date }) {
+  if (task.status !== 'QUEUED') return false;
+  const timeoutMs = Number(process.env.SCAN_QUEUED_TIMEOUT_MS ?? 2 * 60 * 1000);
+  if (Date.now() - task.updatedAt.getTime() < timeoutMs) return false;
+  await prisma.scanTask.update({
+    where: { id: task.id },
+    data: {
+      status: 'FAILED',
+      errorCount: 1,
+      errorSummary: '等待 Worker 超时',
+      message: '等待 Worker 超时，请确认 scan-worker 正在运行并与 Web 使用同一个 BOOKS_ROOT/Redis 配置',
+      finishedAt: new Date()
+    }
+  });
+  await prisma.scanLog.create({ data: { scanTaskId: task.id, level: 'error', message: 'scan failed: queued task timed out waiting for worker' } });
+  return true;
 }
 
 export async function POST(request: Request) {
@@ -61,7 +80,7 @@ export async function POST(request: Request) {
   const existing = await prisma.scanTask.findFirst({
     where: { libraryPathId: libraryPath.id, status: { in: ['QUEUED', 'RUNNING'] } }
   });
-  if (existing) return fail('该路径已有排队或运行中的扫描任务', 409, { scanTaskId: existing.id });
+  if (existing && !(await failStaleQueuedTask(existing))) return fail('该路径已有排队或运行中的扫描任务', 409, { scanTaskId: existing.id });
 
   const task = await prisma.scanTask.create({
     data: {

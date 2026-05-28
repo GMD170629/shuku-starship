@@ -1,5 +1,7 @@
+import { requirePageUser } from '../../../lib/auth';
 import { ReaderPage } from '../../../features/reader/reader-page';
 
-export default function Page({ params }: { params: { id: string } }) {
+export default async function Page({ params }: { params: { id: string } }) {
+  await requirePageUser();
   return <ReaderPage bookId={params.id} />;
 }
