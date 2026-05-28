@@ -30,12 +30,14 @@ const sortOptions = [
 ];
 
 const formatOptions = [
-  { value: 'TXT', label: 'TXT' },
-  { value: 'PDF', label: 'PDF' },
-  { value: 'IMAGE', label: '图片' },
-  { value: 'COMIC', label: '漫画' },
+  { value: '全部', label: '全部' },
+  { value: 'ebook', label: '电子书' },
+  { value: 'comic', label: '漫画' }
+];
+
+const bulkFormatOptions = [
   { value: 'EPUB', label: 'EPUB' },
-  { value: 'UNKNOWN', label: '未知' }
+  { value: 'COMIC', label: '漫画' }
 ];
 
 const statusOptions = [
@@ -57,7 +59,7 @@ export function LibraryPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<string[]>([]);
-  const [bulkFormat, setBulkFormat] = useState('COMIC');
+  const [bulkFormat, setBulkFormat] = useState('EPUB');
   const [bulkStatus, setBulkStatus] = useState('READING');
   const [tagInput, setTagInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -67,7 +69,7 @@ export function LibraryPage() {
   const query = useMemo(() => {
     const params = new URLSearchParams();
     if (search.trim()) params.set('search', search.trim());
-    if (filter !== '全部') params.set('format', filter);
+    if (filter !== '全部') params.set('type', filter);
     params.set('visibility', visibility);
     params.set('sort', sort);
     params.set('page', String(page));
@@ -168,7 +170,19 @@ export function LibraryPage() {
           <Button variant={view === 'list' ? 'primary' : 'secondary'} icon={List} onClick={() => setView('list')}>列表</Button>
         </div>
         <div className="mt-4 flex flex-wrap gap-2">
-          {['全部', '漫画', 'TXT', 'EPUB', 'PDF', '图片'].map((item) => (
+          {formatOptions.map((option) => (
+            <button
+              key={option.value}
+              onClick={() => setFilter(option.value)}
+              className={cn(
+                'rounded-full border px-4 py-2 text-sm',
+                filter === option.value ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-600'
+              )}
+            >
+              {option.label}
+            </button>
+          ))}
+          {['EPUB', 'CBZ', 'ZIP'].map((item) => (
             <button
               key={item}
               onClick={() => setFilter(item)}
@@ -196,7 +210,7 @@ export function LibraryPage() {
             <div className="flex flex-wrap items-center gap-3">
               <CheckCircle2 size={16} />
               已选择 {selected.length} 项
-              <Select value={bulkFormat} options={formatOptions} onChange={setBulkFormat} ariaLabel="批量修改类型" tone="blue" size="sm" />
+              <Select value={bulkFormat} options={bulkFormatOptions} onChange={setBulkFormat} ariaLabel="批量修改类型" tone="blue" size="sm" />
               <Button disabled={busy} variant="secondary" className="bg-white" icon={Filter} onClick={() => performBulk({ format: bulkFormat }, '已批量修改类型')}>修改类型</Button>
               <Select value={bulkStatus} options={statusOptions} onChange={setBulkStatus} ariaLabel="批量修改阅读状态" tone="blue" size="sm" />
               <Button disabled={busy} variant="secondary" className="bg-white" icon={CheckCircle2} onClick={() => performBulk({ status: bulkStatus }, '已批量修改阅读状态')}>修改状态</Button>

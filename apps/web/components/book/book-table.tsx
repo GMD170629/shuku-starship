@@ -55,12 +55,12 @@ export function BookTable({
                   <div>
                     <div className="font-semibold">{book.title}</div>
                     <div className="text-xs text-slate-500">
-                      {book.author} · {book.format} · {book.size}
+                      {book.author} · {book.format} · {book.type === 'comic' ? `共 ${book.totalUnits} 页` : `共 ${book.totalUnits} 章`} · {book.size}
                     </div>
                   </div>
                 </div>
               </td>
-              <td>{book.type}</td>
+              <td>{book.type === 'comic' ? '漫画' : '电子书'}</td>
               <td>
                 <div className="flex gap-1">
                   {book.tags.slice(0, 2).map((tag) => (

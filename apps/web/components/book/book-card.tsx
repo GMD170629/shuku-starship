@@ -15,7 +15,7 @@ export function BookCard({
   onSelectedChange,
   onClick
 }: {
-  book: CoverBook & { tags: string[]; progress: number; type: string };
+  book: CoverBook & { tags: string[]; progress: number; type: string; format: string; totalUnits?: number };
   compact?: boolean;
   selected?: boolean;
   selectionEnabled?: boolean;
@@ -48,7 +48,7 @@ export function BookCard({
       <div className="mt-3">
         <div className="line-clamp-1 text-sm font-semibold text-slate-950">{book.title}</div>
         <div className="mt-1 text-xs text-slate-500">
-          {book.author} · {book.type}
+          {book.author} · {book.format} · {book.type === 'comic' ? `共 ${book.totalUnits ?? 0} 页` : `共 ${book.totalUnits ?? 0} 章`}
         </div>
         <div className="mt-3 flex flex-wrap gap-1.5">
           {book.tags.slice(0, compact ? 1 : 2).map((tag) => (

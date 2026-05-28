@@ -1,4 +1,5 @@
 import { extname } from 'node:path';
+import { stat } from 'node:fs/promises';
 import { PathSecurityError } from '@shuku/scanner/path-security-service';
 import { requireUser } from '../../../../../lib/auth';
 import { ensureArchiveIndex } from '../../../../../lib/archive-index';
@@ -13,17 +14,40 @@ function isArchiveFile(path: string, mimeType: string) {
   return archiveExts.has(ext) || mimeType === 'application/vnd.comicbook+zip' || mimeType === 'application/zip';
 }
 
+async function readableArchivePath(path: string, libraryRoot?: string | null) {
+  if (libraryRoot) return (await new FileAccessService().validateReadableFile(path, libraryRoot)).realPath;
+  const fileStat = await stat(path);
+  if (!fileStat.isFile()) throw new Error('漫画文件不可读');
+  return path;
+}
+
 export async function GET(_request: Request, { params }: { params: { id: string } }) {
   await requireUser();
   const book = await prisma.book.findFirst({
     where: { id: params.id, hidden: false },
     include: {
       libraryPath: true,
-      files: { orderBy: { sortOrder: 'asc' } }
+      files: { orderBy: { sortOrder: 'asc' } },
+      readingUnits: { where: { unitType: 'page' }, orderBy: { sortOrder: 'asc' } }
     }
   });
-  if (!book || !book.libraryPath?.enabled) return fail('读物不存在或无权访问', 404);
+  if (!book) return fail('读物不存在或无权访问', 404);
 
+  if (book.readingUnits.length > 0) {
+    return ok({
+      pageCount: book.readingUnits.length,
+      pages: book.readingUnits.map((page) => ({
+        pageIndex: page.sortOrder,
+        title: page.title,
+        mimeType: page.mediaType,
+        width: page.width,
+        height: page.height,
+        size: page.size ? Number(page.size) : null
+      }))
+    });
+  }
+
+  if (book.libraryPath && !book.libraryPath.enabled) return fail('读物不存在或无权访问', 404);
   const archiveFile = book.files.length === 1 && isArchiveFile(book.files[0].path, book.files[0].mimeType) ? book.files[0] : null;
   if (!archiveFile) {
     const imageFiles = book.files.filter((file) => file.kind === 'IMAGE' || file.mimeType.startsWith('image/'));
@@ -37,16 +61,16 @@ export async function GET(_request: Request, { params }: { params: { id: string 
     });
   }
 
-  let validation;
+  let realPath: string;
   try {
-    validation = await new FileAccessService().validateReadableFile(archiveFile.path, book.libraryPath.rootPath);
+    realPath = await readableArchivePath(archiveFile.path, book.libraryPath?.rootPath);
   } catch (error) {
     if (error instanceof PathSecurityError) return fail(error.message, fileSecurityStatus(error));
-    throw error;
+    return fail('漫画文件不可读', 404);
   }
 
   try {
-    const index = await ensureArchiveIndex(book.id, archiveFile.id, validation.realPath);
+    const index = await ensureArchiveIndex(book.id, archiveFile.id, realPath);
     return ok({
       pageCount: index.pages.length,
       pages: index.pages.map((page) => ({
