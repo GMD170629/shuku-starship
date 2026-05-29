@@ -14,7 +14,10 @@ export type BookView = {
   statusValue: ReadingStatus;
   status: string;
   ignored: boolean;
+  organized: boolean;
   tags: string[];
+  seriesName: string | null;
+  seriesIndex: number | null;
   added: string;
   lastRead: string;
   lastReadAt: string | null;
@@ -30,6 +33,8 @@ export type BookView = {
   totalUnits: number;
   readingProgress: number;
   importStatus: string;
+  importError: string | null;
+  importedAt: string;
   files: Array<{
     id: string;
     path: string;
@@ -104,8 +109,12 @@ export function toBookView(
     statusValue: book.status,
     status: statusLabels[book.status],
     ignored: book.hidden,
+    organized: book.organized,
     tags: parseTags(book.tags),
+    seriesName: book.seriesName,
+    seriesIndex: book.seriesIndex,
     added: book.createdAt.toISOString().slice(0, 10),
+    importedAt: book.createdAt.toISOString(),
     lastReadAt: progress?.updatedAt.toISOString() ?? null,
     lastRead: progress?.updatedAt.toISOString().slice(0, 10) ?? '尚未阅读',
     chapter: progress?.page ? `第 ${progress.page} 页` : '未开始',
@@ -120,6 +129,7 @@ export function toBookView(
     totalUnits: book.format === 'COMIC' ? (book.pageCount ?? 0) : (book.chapterCount ?? 0),
     readingProgress: percent,
     importStatus: book.importStatus,
+    importError: book.importError,
     files: (book.files ?? []).map((file) => ({
       id: file.id,
       path: file.path,

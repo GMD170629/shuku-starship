@@ -24,9 +24,11 @@ const visibilityOptions = [
 ];
 
 const sortOptions = [
-  { value: 'updated', label: '最近更新' },
-  { value: 'created', label: '最近添加' },
-  { value: 'title', label: '标题' }
+  { value: 'recent_read', label: '最近阅读' },
+  { value: 'recent_import', label: '最近导入' },
+  { value: 'title', label: '标题' },
+  { value: 'author', label: '作者' },
+  { value: 'progress', label: '阅读进度' }
 ];
 
 const formatOptions = [
@@ -50,6 +52,10 @@ export function LibraryPage() {
   const router = useRouter();
   const [view, setView] = useState<'grid' | 'list'>('grid');
   const [filter, setFilter] = useState('全部');
+  const [statusFilter, setStatusFilter] = useState('全部');
+  const [tagFilter, setTagFilter] = useState('');
+  const [missingCoverOnly, setMissingCoverOnly] = useState(false);
+  const [newImportOnly, setNewImportOnly] = useState(false);
   const [visibility, setVisibility] = useState<'active' | 'ignored' | 'all'>('active');
   const [sort, setSort] = useState('updated');
   const [search, setSearch] = useState('');
@@ -72,15 +78,29 @@ export function LibraryPage() {
     const params = new URLSearchParams();
     if (search.trim()) params.set('search', search.trim());
     if (filter !== '全部') params.set('type', filter);
+    if (statusFilter !== '全部') params.set('status', statusFilter);
+    if (tagFilter.trim()) params.set('tag', tagFilter.trim());
+    if (missingCoverOnly) params.set('missingCover', 'true');
+    if (newImportOnly) params.set('newImport', 'true');
     params.set('visibility', visibility);
     params.set('sort', sort);
     params.set('page', String(page));
     return params.toString();
-  }, [filter, page, search, sort, visibility]);
+  }, [filter, missingCoverOnly, newImportOnly, page, search, sort, statusFilter, tagFilter, visibility]);
 
   useEffect(() => {
     setPage(1);
-  }, [filter, search, sort, visibility]);
+  }, [filter, missingCoverOnly, newImportOnly, search, sort, statusFilter, tagFilter, visibility]);
+
+  useEffect(() => {
+    const savedView = window.localStorage.getItem('shuku.library.view');
+    if (savedView === 'grid' || savedView === 'list') setView(savedView);
+  }, []);
+
+  function updateView(nextView: 'grid' | 'list') {
+    setView(nextView);
+    window.localStorage.setItem('shuku.library.view', nextView);
+  }
 
   useEffect(() => {
     let active = true;
@@ -115,7 +135,7 @@ export function LibraryPage() {
 
   const visibleBookIds = useMemo(() => books.map((book) => book.id), [books]);
   const allVisibleSelected = visibleBookIds.length > 0 && visibleBookIds.every((id) => selected.includes(id));
-  const activeFilterCount = [search.trim(), filter !== '全部', visibility !== 'active'].filter(Boolean).length;
+  const activeFilterCount = [search.trim(), filter !== '全部', visibility !== 'active', statusFilter !== '全部', tagFilter.trim(), missingCoverOnly, newImportOnly].filter(Boolean).length;
 
   function setBookSelected(bookId: string, checked: boolean) {
     setSelected((current) => (checked ? [...new Set([...current, bookId])] : current.filter((id) => id !== bookId)));
@@ -157,6 +177,11 @@ export function LibraryPage() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function confirmBulk(body: Record<string, unknown>, successMessage: string, prompt?: string) {
+    if (prompt && !window.confirm(prompt)) return;
+    void performBulk(body, successMessage);
   }
 
   async function uploadBook(file: File | null) {
@@ -219,7 +244,7 @@ export function LibraryPage() {
               type="button"
               title="网格"
               aria-label="网格"
-              onClick={() => setView('grid')}
+              onClick={() => updateView('grid')}
               className={cn(
                 'inline-flex h-10 w-10 items-center justify-center rounded-2xl border transition',
                 view === 'grid' ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
@@ -231,7 +256,7 @@ export function LibraryPage() {
               type="button"
               title="列表"
               aria-label="列表"
-              onClick={() => setView('list')}
+              onClick={() => updateView('list')}
               className={cn(
                 'inline-flex h-10 w-10 items-center justify-center rounded-2xl border transition',
                 view === 'list' ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
@@ -250,6 +275,8 @@ export function LibraryPage() {
               </div>
               <Button variant="secondary" icon={Filter} className="h-10 px-3 py-0">高级筛选</Button>
               <Select value={visibility} options={visibilityOptions} onChange={setVisibility} ariaLabel="可见性筛选" size="sm" />
+              <Select value={statusFilter} options={[{ value: '全部', label: '全部状态' }, ...statusOptions]} onChange={setStatusFilter} ariaLabel="阅读状态筛选" size="sm" />
+              <input value={tagFilter} onChange={(event) => setTagFilter(event.target.value)} placeholder="标签筛选" className="h-10 rounded-2xl border border-slate-200 px-3 text-sm outline-none focus:border-blue-300" />
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
               {formatOptions.map((option) => (
@@ -276,6 +303,14 @@ export function LibraryPage() {
                   {item}
                 </button>
               ))}
+              <label className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600">
+                <input type="checkbox" checked={missingCoverOnly} onChange={(event) => setMissingCoverOnly(event.target.checked)} className="h-4 w-4 accent-blue-600" />
+                缺封面
+              </label>
+              <label className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-600">
+                <input type="checkbox" checked={newImportOnly} onChange={(event) => setNewImportOnly(event.target.checked)} className="h-4 w-4 accent-blue-600" />
+                新导入
+              </label>
             </div>
           </div>
         ) : null}
@@ -294,7 +329,8 @@ export function LibraryPage() {
               <Button disabled={busy || parseTagInput().length === 0} variant="secondary" className="bg-white" icon={Tags} onClick={() => performBulk({ addTags: parseTagInput() }, '已批量添加标签')}>添加标签</Button>
               <Button disabled={busy || parseTagInput().length === 0} variant="secondary" className="bg-white" icon={Tags} onClick={() => performBulk({ removeTags: parseTagInput() }, '已批量移除标签')}>移除标签</Button>
               <Button disabled={busy} variant="secondary" className="bg-white" icon={RefreshCw} onClick={() => performBulk({ regenerateCover: true }, '已批量重新生成封面')}>重新生成封面</Button>
-              <Button disabled={busy} variant="danger" icon={Trash2} onClick={() => performBulk({ ignored: true }, '已批量忽略读物')}>忽略</Button>
+              <Button disabled={busy} variant="danger" icon={Trash2} onClick={() => confirmBulk({ ignored: true }, '已批量隐藏读物', `确认隐藏选中的 ${selected.length} 本读物吗？不会删除源文件。`)}>隐藏</Button>
+              <Button disabled={busy} variant="danger" icon={Trash2} onClick={() => confirmBulk({ deleteRecords: true }, '已删除数据库记录，源文件未删除', `确认删除选中的 ${selected.length} 条数据库记录吗？NAS 源文件不会被删除。`)}>删除记录</Button>
               {visibility !== 'active' ? <Button disabled={busy} variant="secondary" className="bg-white" icon={EyeOff} onClick={() => performBulk({ ignored: false }, '已恢复显示')}>恢复显示</Button> : null}
             </div>
           </div>

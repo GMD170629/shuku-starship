@@ -1,13 +1,11 @@
 'use client';
 
-import { CheckCircle2, ChevronLeft, ChevronRight, Library, Minus, Moon, Plus, Sun } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Button } from '../../components/ui/button';
-import { cn } from '../../components/ui/cn';
-import { Progress } from '../../components/ui/progress';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { BookView } from '../../lib/books';
-import { EpubReader, type EpubControls } from './epub-reader';
+import { ComicReader, type ComicDirection, type ComicImageFit, type ComicMode } from './comic-reader';
+import { EbookReader } from './epub-reader';
+import { ReaderShell, type ReaderControls, type ReaderKind, type ReaderProgress, type ReaderSettings } from './reader-shell';
 
 type ProgressPayload = {
   id: string;
@@ -18,199 +16,215 @@ type ProgressPayload = {
   extra: string;
 };
 
-function archivePageUrl(bookId: string, pageIndex: number) {
-  return `/api/books/${bookId}/pages/${pageIndex}`;
+const defaultProgress: ReaderProgress = {
+  page: 1,
+  total: null,
+  percent: 0,
+  position: '',
+  label: '正在定位'
+};
+
+const defaultSettings: ReaderSettings = {
+  dark: true,
+  fontSize: 18,
+  lineHeight: 1.9,
+  pageWidth: 960,
+  zoom: 1,
+  comicDirection: 'ltr',
+  comicMode: 'single',
+  imageFit: 'width'
+};
+
+function readerTypeForBook(book: BookView | null): ReaderKind | 'unknown' {
+  if (!book) return 'unknown';
+  if (book.formatValue === 'EPUB') return 'epub';
+  if (book.formatValue === 'COMIC') return 'comic';
+  return 'unknown';
 }
 
-function isArchiveComicFile(file: BookView['files'][number] | undefined) {
-  if (!file) return false;
-  const lowerPath = file.path.toLowerCase();
-  return lowerPath.endsWith('.cbz') || lowerPath.endsWith('.zip') || file.mimeType === 'application/vnd.comicbook+zip' || file.mimeType === 'application/zip';
+function safeExtra(value: string) {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
 }
 
 export function ReaderPage({ bookId }: { bookId: string }) {
   const router = useRouter();
-  const contentRef = useRef<HTMLDivElement>(null);
   const [book, setBook] = useState<BookView | null>(null);
   const [error, setError] = useState('');
-  const [tools, setTools] = useState(true);
-  const [dark, setDark] = useState(true);
-  const [fontSize, setFontSize] = useState(18);
-  const [lineHeight, setLineHeight] = useState(1.9);
-  const [page, setPage] = useState(1);
-  const [archivePageCount, setArchivePageCount] = useState<number | null>(null);
-  const [zoom, setZoom] = useState(1);
-  const [percent, setPercent] = useState(0);
-  const [position, setPosition] = useState('');
-  const [epubLabel, setEpubLabel] = useState('正在定位');
-  const epubControlsRef = useRef<EpubControls | null>(null);
+  const [settings, setSettings] = useState<ReaderSettings>(defaultSettings);
+  const [progress, setProgress] = useState<ReaderProgress>(defaultProgress);
+  const [controls, setControls] = useState<ReaderControls | null>(null);
 
-  const firstFile = book?.files[0];
-  const readerType = useMemo(() => {
-    if (!book) return 'unknown';
-    if (book.formatValue === 'EPUB') return 'epub';
-    if (book.formatValue === 'COMIC') return 'comic';
-    return 'unknown';
-  }, [book]);
-  const archiveComic = readerType === 'comic' && book?.files.length === 1 && isArchiveComicFile(firstFile);
-  const totalPages = archiveComic ? archivePageCount ?? 0 : book?.files.length ?? 0;
+  const readerType = useMemo(() => readerTypeForBook(book), [book]);
 
   useEffect(() => {
+    let active = true;
     async function load() {
       try {
         const bookPayload = (await fetch(`/api/books/${bookId}`).then((response) => response.json())) as { ok: boolean; data?: { book: BookView }; error?: { message: string } };
         if (!bookPayload.ok || !bookPayload.data?.book) throw new Error(bookPayload.error?.message ?? '读取读物失败');
+        if (!active) return;
         setBook(bookPayload.data.book);
+
         const progressPayload = (await fetch(`/api/books/${bookId}/progress`).then((response) => response.json())) as { ok: boolean; data?: { progress: ProgressPayload | null } };
-        const progress = progressPayload.data?.progress;
-        if (progress) {
-          setPage(progress.page ?? 1);
-          setPercent(progress.percent);
-          setPosition(progress.position ?? '');
-          if (progress.readerType !== 'epub') {
-            window.setTimeout(() => contentRef.current?.scrollTo({ top: Number(progress.position) || 0 }), 200);
-          }
+        const savedProgress = progressPayload.data?.progress;
+        if (savedProgress && active) {
+          const extra = safeExtra(savedProgress.extra);
+          setProgress({
+            page: savedProgress.page ?? 1,
+            total: null,
+            percent: savedProgress.percent,
+            position: savedProgress.position ?? '',
+            label: savedProgress.readerType === 'comic' && savedProgress.page ? `第 ${savedProgress.page} 页` : '正在定位'
+          });
+          setSettings((current) => ({
+            ...current,
+            zoom: typeof extra.zoom === 'number' ? extra.zoom : current.zoom,
+            fontSize: typeof extra.fontSize === 'number' ? extra.fontSize : current.fontSize,
+            lineHeight: typeof extra.lineHeight === 'number' ? extra.lineHeight : current.lineHeight
+          }));
         }
       } catch (reason) {
-        setError(reason instanceof Error ? reason.message : '读取读物失败');
+        if (active) setError(reason instanceof Error ? reason.message : '读取读物失败');
       }
     }
     load();
+    return () => {
+      active = false;
+    };
   }, [bookId]);
 
   useEffect(() => {
-    if (!book || readerType !== 'comic' || !archiveComic) return;
-    fetch(`/api/books/${book.id}/pages`)
-      .then((response) => {
-        if (!response.ok) throw new Error('漫画页面索引加载失败');
-        return response.json() as Promise<{ ok: boolean; data?: { pageCount: number }; error?: { message: string } }>;
-      })
+    if (readerType === 'unknown') return;
+    let active = true;
+    fetch(`/api/reader/preferences?readerType=${readerType}`)
+      .then((response) => response.json() as Promise<{ ok: boolean; data?: { settings: Record<string, unknown> } }>)
       .then((payload) => {
-        if (!payload.ok || !payload.data) throw new Error(payload.error?.message ?? '漫画页面索引加载失败');
-        const pageCount = payload.data.pageCount;
-        setArchivePageCount(pageCount);
-        setPage((current) => Math.max(1, Math.min(current, Math.max(1, pageCount))));
+        if (!active) return;
+        const savedSettings = payload.data?.settings ?? {};
+        setSettings((current) => ({
+          ...current,
+          fontSize: typeof savedSettings.fontSize === 'number' ? savedSettings.fontSize : current.fontSize,
+          lineHeight: typeof savedSettings.lineHeight === 'number' ? savedSettings.lineHeight : current.lineHeight,
+          pageWidth: typeof savedSettings.pageWidth === 'number' ? savedSettings.pageWidth : current.pageWidth,
+          zoom: typeof savedSettings.zoom === 'number' ? savedSettings.zoom : current.zoom,
+          dark: savedSettings.theme === 'light' ? false : savedSettings.theme === 'dark' ? true : current.dark,
+          comicDirection: savedSettings.readingDirection === 'rtl' || savedSettings.readingDirection === 'ltr' ? savedSettings.readingDirection : current.comicDirection,
+          comicMode: savedSettings.mode === 'single' || savedSettings.mode === 'scroll' ? savedSettings.mode : current.comicMode,
+          imageFit: savedSettings.imageFit === 'width' || savedSettings.imageFit === 'height' || savedSettings.imageFit === 'contain' ? savedSettings.imageFit : current.imageFit
+        }));
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : '漫画页面索引加载失败'));
-  }, [book, readerType, archiveComic]);
+      .catch(() => undefined);
+    return () => {
+      active = false;
+    };
+  }, [readerType]);
 
   useEffect(() => {
-    if (!book) return;
+    if (!book || readerType === 'unknown') return;
     const timer = window.setTimeout(() => {
       fetch(`/api/books/${book.id}/progress`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           readerType,
-          position: readerType === 'epub' ? position : String(contentRef.current?.scrollTop ?? 0),
-          page,
-          percent,
-          extra: { zoom, fontSize, lineHeight }
+          position: progress.position,
+          page: progress.page,
+          percent: progress.percent,
+          extra: { zoom: settings.zoom, fontSize: settings.fontSize, lineHeight: settings.lineHeight }
         })
       }).catch(() => undefined);
     }, 700);
     return () => window.clearTimeout(timer);
-  }, [book, readerType, page, percent, position, zoom, fontSize, lineHeight]);
+  }, [book, progress.page, progress.percent, progress.position, readerType, settings.fontSize, settings.lineHeight, settings.zoom]);
 
-  function updateScrollProgress() {
-    if (readerType === 'epub') return;
-    const element = contentRef.current;
-    if (!element) return;
-    const max = Math.max(1, element.scrollHeight - element.clientHeight);
-    setPercent(Math.round((element.scrollTop / max) * 100));
+  useEffect(() => {
+    if (readerType === 'unknown') return;
+    const timer = window.setTimeout(() => {
+      const payload = readerType === 'comic'
+        ? {
+            readingDirection: settings.comicDirection,
+            mode: settings.comicMode,
+            imageFit: settings.imageFit,
+            zoom: settings.zoom,
+            theme: settings.dark ? 'dark' : 'light'
+          }
+        : {
+            fontSize: settings.fontSize,
+            lineHeight: settings.lineHeight,
+            pageWidth: settings.pageWidth,
+            theme: settings.dark ? 'dark' : 'light'
+          };
+      fetch('/api/reader/preferences', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ readerType, settings: payload })
+      }).catch(() => undefined);
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [readerType, settings]);
+
+  const handleProgress = useCallback((nextProgress: ReaderProgress) => {
+    setProgress(nextProgress);
+  }, []);
+
+  const handleReaderError = useCallback((message: string) => {
+    setError(message);
+  }, []);
+
+  function updateSettings(nextSettings: ReaderSettings) {
+    setSettings(nextSettings);
   }
 
-  function movePage(delta: number) {
-    if (!book) return;
-    if (readerType === 'epub') {
-      void (delta > 0 ? epubControlsRef.current?.next() : epubControlsRef.current?.prev());
-      return;
-    }
-    const maxPage = Math.max(1, totalPages || 1);
-    const next = Math.max(1, Math.min(maxPage, page + delta));
-    setPage(next);
-    setPercent(Math.round(((next - 1) / Math.max(1, maxPage - 1)) * 100));
-  }
-
-  if (error) return <div className="min-h-screen bg-slate-950 p-8 text-red-200">{error}</div>;
-  if (!book) return <div className="min-h-screen bg-slate-950 p-8 text-slate-200">正在打开阅读器...</div>;
-
-  const currentFile = firstFile;
+  if (error) return <div className="flex min-h-[100dvh] items-center justify-center bg-slate-950 p-8 text-center text-red-200">{error}</div>;
+  if (!book) return <div className="flex min-h-[100dvh] items-center justify-center bg-slate-950 p-8 text-slate-200">正在打开阅读器...</div>;
+  if (readerType === 'unknown') return <div className="flex min-h-[100dvh] items-center justify-center bg-slate-950 p-8 text-center text-slate-200">该读物没有可读内容，或文件格式暂不支持。</div>;
 
   return (
-    <div className={cn('relative min-h-screen overflow-hidden transition', dark ? 'bg-[#0F172A] text-slate-100' : 'bg-[#F5F1E8] text-slate-900')}>
-      {tools ? (
-        <div className={cn('absolute inset-x-0 top-0 z-10 flex h-20 items-center justify-between border-b px-4 backdrop-blur-xl md:px-6', dark ? 'border-white/10 bg-slate-950/75' : 'border-slate-200 bg-white/75')}>
-          <div className="flex min-w-0 items-center gap-3">
-            <button onClick={() => router.push(`/books/${book.id}`)} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full hover:bg-white/10">
-              <ChevronLeft />
-            </button>
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/10">
-              <Library size={18} />
-            </div>
-            <div className="min-w-0">
-              <div className="truncate font-semibold">{book.title}</div>
-              <div className="text-xs opacity-60">{readerType.toUpperCase()} · {book.chapter}</div>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <CheckCircle2 size={18} className="text-emerald-400" />
-          </div>
-        </div>
-      ) : null}
-      <div ref={contentRef} onScroll={updateScrollProgress} onClick={() => setTools((value) => !value)} className="h-screen overflow-auto px-4 pb-40 pt-24 md:px-8">
-        <div className="mx-auto flex min-h-full max-w-6xl items-start justify-center">
-          {readerType === 'epub' ? (
-            <EpubReader
-              bookId={book.id}
-              title={book.title}
-              dark={dark}
-              fontSize={fontSize}
-              lineHeight={lineHeight}
-              initialCfi={position}
-              onControls={(controls) => {
-                epubControlsRef.current = controls;
-              }}
-              onProgress={(progress) => {
-                setPosition(progress.cfi);
-                setPage(progress.page);
-                setPercent(progress.percent);
-                setEpubLabel(progress.label);
-              }}
-            />
-          ) : null}
-          {readerType === 'comic' && archiveComic && archivePageCount === null ? (
-            <div className="text-slate-300">正在建立漫画页面索引...</div>
-          ) : null}
-          {readerType === 'comic' && currentFile && archivePageCount !== null ? (
-            <div className="flex w-full justify-center">
-              <img src={archiveComic ? archivePageUrl(book.id, page) : archivePageUrl(book.id, page)} alt={`${book.title} 第 ${page} 页`} className="max-h-none max-w-full rounded-2xl shadow-2xl" style={{ transform: `scale(${zoom})`, transformOrigin: 'top center' }} />
-            </div>
-          ) : null}
-          {readerType === 'unknown' ? (
-            <div className="rounded-3xl bg-white/10 p-8 text-slate-200">该读物没有可读内容，或文件格式暂不支持。</div>
-          ) : null}
-        </div>
-      </div>
-      {tools ? (
-        <div className={cn('absolute inset-x-0 bottom-0 z-10 border-t p-4 backdrop-blur-xl md:p-5', dark ? 'border-white/10 bg-slate-950/75' : 'border-slate-200 bg-white/75')}>
-          <div className="mx-auto flex max-w-4xl flex-wrap items-center gap-3">
-            <Button variant="ghost" icon={ChevronLeft} onClick={() => movePage(-1)}>上一页</Button>
-            <Progress value={percent} className="min-w-40 flex-1" />
-            <span className="text-sm text-slate-400">{readerType === 'epub' ? `${epubLabel} · ${percent}%` : `第 ${page} / ${Math.max(1, totalPages || 1)} 页 · ${percent}%`}</span>
-            <Button variant="ghost" icon={ChevronRight} onClick={() => movePage(1)}>下一页</Button>
-            <Button variant="ghost" icon={Minus} onClick={() => readerType === 'epub' ? setFontSize((value) => Math.max(14, value - 1)) : setZoom((value) => Math.max(0.5, Number((value - 0.1).toFixed(1))))} />
-            <Button variant="ghost" icon={Plus} onClick={() => readerType === 'epub' ? setFontSize((value) => Math.min(28, value + 1)) : setZoom((value) => Math.min(2, Number((value + 0.1).toFixed(1))))} />
-            <Button variant="ghost" icon={dark ? Sun : Moon} onClick={() => setDark((value) => !value)}>{dark ? '护眼' : '夜间'}</Button>
-          </div>
-          <div className="mx-auto mt-4 grid max-w-4xl grid-cols-2 gap-3 text-sm md:grid-cols-4">
-            <div className="rounded-2xl border border-white/10 bg-white/10 p-3">字号 {fontSize}px</div>
-            <button className="rounded-2xl border border-white/10 bg-white/10 p-3 text-left" onClick={() => setLineHeight((value) => (value >= 2.2 ? 1.6 : Number((value + 0.1).toFixed(1))))}>行距 {lineHeight}</button>
-            <div className="rounded-2xl border border-white/10 bg-white/10 p-3">缩放 {Math.round(zoom * 100)}%</div>
-            <div className="rounded-2xl border border-white/10 bg-white/10 p-3">背景 {dark ? '深色' : '护眼'}</div>
-          </div>
-        </div>
-      ) : null}
-    </div>
+    <ReaderShell
+      bookId={book.id}
+      title={book.title}
+      readerType={readerType}
+      progress={progress}
+      controls={controls}
+      settings={settings}
+      onBack={() => router.push(`/books/${book.id}`)}
+      onSettingsChange={updateSettings}
+    >
+      {(readerEvents) => readerType === 'epub' ? (
+        <EbookReader
+          bookId={book.id}
+          title={book.title}
+          dark={settings.dark}
+          fontSize={settings.fontSize}
+          lineHeight={settings.lineHeight}
+          pageWidth={settings.pageWidth}
+          initialCfi={progress.position}
+          onControls={setControls}
+          onProgress={handleProgress}
+          onActivity={readerEvents.enterImmersive}
+          onTap={readerEvents.toggleControls}
+        />
+      ) : (
+        <ComicReader
+          book={book}
+          dark={settings.dark}
+          initialPage={progress.page}
+          initialPosition={progress.position}
+          mode={settings.comicMode as ComicMode}
+          direction={settings.comicDirection as ComicDirection}
+          imageFit={settings.imageFit as ComicImageFit}
+          zoom={settings.zoom}
+          onControls={setControls}
+          onProgress={handleProgress}
+          onActivity={readerEvents.enterImmersive}
+          onError={handleReaderError}
+        />
+      )}
+    </ReaderShell>
   );
 }

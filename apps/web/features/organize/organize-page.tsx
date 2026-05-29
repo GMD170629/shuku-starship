@@ -1,116 +1,58 @@
 'use client';
 
-import { CheckCircle2, Copy, FileText, RefreshCw, Tags, X } from 'lucide-react';
+import { CheckCircle2, EyeOff, RefreshCw, Tags, Trash2, X } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { BookCard } from '../../components/book/book-card';
+import { Cover } from '../../components/book/cover';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
-import { cn } from '../../components/ui/cn';
 import { PageTitle } from '../../components/ui/page-title';
+import { Select } from '../../components/ui/select';
 import type { BookView } from '../../lib/books';
 
-type BooksResponse = {
+type Issue = { code: string; label: string };
+type Duplicate = { bookId: string; otherBookId: string; reasons: Array<{ code: string; label: string }> };
+type PendingResponse = {
   ok: boolean;
-  data?: { books: BookView[] };
+  data?: { books: BookView[]; issues: Record<string, Issue[]>; duplicates: Duplicate[]; total: number };
   error?: { message: string };
 };
 
-type BookResponse = {
-  ok: boolean;
-  data?: { book: BookView; mergedBookId?: string };
-  error?: { message: string };
-};
-
-type MetaFormState = {
-  title: string;
-  author: string;
-  format: string;
-  tags: string;
-  path: string;
-};
-
-const emptyForm: MetaFormState = {
-  title: '',
-  author: '',
-  format: '',
-  tags: '',
-  path: ''
-};
-
-function formFromBook(book: BookView | null): MetaFormState {
-  if (!book) return emptyForm;
-  return {
-    title: book.title,
-    author: book.author === '未知作者' ? '' : book.author,
-    format: book.format,
-    tags: book.tags.join(', '),
-    path: book.path
-  };
-}
+const statusOptions = [
+  { value: 'WANT', label: '未读' },
+  { value: 'READING', label: '在读' },
+  { value: 'FINISHED', label: '已读' }
+];
 
 function parseTags(value: string) {
   return [...new Set(value.split(/[,，\n]/).map((tag) => tag.trim()).filter(Boolean))];
 }
 
-function MetaForm({
-  form,
-  disabled,
-  onChange
-}: {
-  form: MetaFormState;
-  disabled: boolean;
-  onChange: (field: keyof MetaFormState, value: string) => void;
-}) {
-  const fields: Array<{ label: string; field: keyof MetaFormState; readOnly?: boolean }> = [
-    { label: '标题', field: 'title' },
-    { label: '作者', field: 'author' },
-    { label: '类型', field: 'format' },
-    { label: '标签', field: 'tags' },
-    { label: '源路径', field: 'path', readOnly: true }
-  ];
-
-  return (
-    <div className="mt-5 space-y-4">
-      {fields.map(({ label, field, readOnly }) => (
-        <label key={label} className="block">
-          <span className="text-sm text-slate-500">{label}</span>
-          <input
-            value={form[field]}
-            readOnly={readOnly}
-            disabled={disabled && !readOnly}
-            onChange={(event) => onChange(field, event.target.value)}
-            className={cn(
-              'mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none focus:border-blue-500',
-              readOnly ? 'bg-slate-50 text-slate-500' : ''
-            )}
-          />
-        </label>
-      ))}
-    </div>
-  );
-}
-
 export function OrganizePage() {
+  const router = useRouter();
   const [books, setBooks] = useState<BookView[]>([]);
-  const [selected, setSelected] = useState<BookView | null>(null);
-  const [form, setForm] = useState<MetaFormState>(emptyForm);
-  const [busy, setBusy] = useState(false);
+  const [issues, setIssues] = useState<Record<string, Issue[]>>({});
+  const [duplicates, setDuplicates] = useState<Duplicate[]>([]);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [status, setStatus] = useState('READING');
+  const [tagInput, setTagInput] = useState('');
   const [loading, setLoading] = useState(true);
-  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const [mergeOpen, setMergeOpen] = useState(false);
-  const [mergeSearch, setMergeSearch] = useState('');
-  const [mergeCandidates, setMergeCandidates] = useState<BookView[]>([]);
-  const [mergeLoading, setMergeLoading] = useState(false);
+  const [message, setMessage] = useState('');
+  const [duplicateOpenFor, setDuplicateOpenFor] = useState<string | null>(null);
 
-  const loadBooks = useCallback(() => {
+  const loadPending = useCallback(() => {
     setLoading(true);
-    fetch('/api/books?visibility=active&pageSize=30&sort=created')
-      .then((response) => response.json() as Promise<BooksResponse>)
+    fetch('/api/organize/pending?pageSize=100')
+      .then((response) => response.json() as Promise<PendingResponse>)
       .then((payload) => {
         if (!payload.ok) throw new Error(payload.error?.message ?? '读取待整理读物失败');
-        const nextBooks = payload.data?.books ?? [];
-        setBooks(nextBooks);
-        setSelected((current) => nextBooks.find((book) => book.id === current?.id) ?? nextBooks[0] ?? null);
+        setBooks(payload.data?.books ?? []);
+        setIssues(payload.data?.issues ?? {});
+        setDuplicates(payload.data?.duplicates ?? []);
+        setSelectedIds((current) => current.filter((id) => (payload.data?.books ?? []).some((book) => book.id === id)));
         setError('');
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : '读取待整理读物失败'))
@@ -118,226 +60,150 @@ export function OrganizePage() {
   }, []);
 
   useEffect(() => {
-    loadBooks();
-  }, [loadBooks]);
+    loadPending();
+  }, [loadPending]);
 
-  useEffect(() => {
-    setForm(formFromBook(selected));
-  }, [selected]);
+  const allSelected = books.length > 0 && books.every((book) => selectedIds.includes(book.id));
+  const duplicateForOpenBook = useMemo(() => {
+    if (!duplicateOpenFor) return [];
+    return duplicates.filter((item) => item.bookId === duplicateOpenFor || item.otherBookId === duplicateOpenFor);
+  }, [duplicateOpenFor, duplicates]);
 
-  const mergeQuery = useMemo(() => mergeSearch.trim(), [mergeSearch]);
-
-  useEffect(() => {
-    if (!mergeOpen || !selected) return;
-    let active = true;
-    setMergeLoading(true);
-    const params = new URLSearchParams({ visibility: 'active', pageSize: '12', sort: 'title' });
-    if (mergeQuery) params.set('search', mergeQuery);
-    fetch(`/api/books?${params}`)
-      .then((response) => response.json() as Promise<BooksResponse>)
-      .then((payload) => {
-        if (!active) return;
-        if (!payload.ok) throw new Error(payload.error?.message ?? '搜索读物失败');
-        const candidates = (payload.data?.books ?? []).filter(
-          (book) => book.id !== selected.id && book.monitorFolderId === selected.monitorFolderId
-        );
-        setMergeCandidates(candidates);
-      })
-      .catch((reason) => active && setError(reason instanceof Error ? reason.message : '搜索读物失败'))
-      .finally(() => active && setMergeLoading(false));
-    return () => {
-      active = false;
-    };
-  }, [mergeOpen, mergeQuery, selected]);
-
-  function selectBook(book: BookView) {
-    setMessage('');
-    setError('');
-    setSelected(book);
+  function setSelected(bookId: string, selected: boolean) {
+    setSelectedIds((current) => (selected ? [...new Set([...current, bookId])] : current.filter((id) => id !== bookId)));
   }
 
-  function updateSelectedBook(book: BookView) {
-    setBooks((current) => current.map((item) => (item.id === book.id ? book : item)));
-    setSelected(book);
-  }
-
-  function removeSelectedBook(bookId: string) {
-    setBooks((current) => {
-      const index = current.findIndex((book) => book.id === bookId);
-      const nextBooks = current.filter((book) => book.id !== bookId);
-      setSelected(nextBooks[index] ?? nextBooks[index - 1] ?? nextBooks[0] ?? null);
-      return nextBooks;
-    });
-  }
-
-  async function patchSelected(body: Record<string, unknown>, successMessage: string) {
-    if (!selected) return;
+  async function performBulk(body: Record<string, unknown>, successMessage: string, confirmText?: string) {
+    if (selectedIds.length === 0) return;
+    if (confirmText && !window.confirm(confirmText)) return;
     setBusy(true);
     setError('');
     setMessage('');
     try {
-      const response = await fetch(`/api/books/${selected.id}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
-      });
-      const payload = (await response.json()) as BookResponse;
-      if (!payload.ok || !payload.data?.book) throw new Error(payload.error?.message ?? '操作失败');
-      updateSelectedBook(payload.data.book);
-      setMessage(successMessage);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '操作失败');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function saveMetadata() {
-    await patchSelected(
-      {
-        title: form.title,
-        author: form.author,
-        format: form.format,
-        tags: parseTags(form.tags)
-      },
-      '识别信息已保存'
-    );
-  }
-
-  async function addTags() {
-    if (!selected) return;
-    const tags = [...new Set([...selected.tags, ...parseTags(form.tags)])];
-    await patchSelected({ tags }, '标签已添加');
-  }
-
-  async function ignoreSelected() {
-    if (!selected) return;
-    if (!window.confirm(`确认忽略「${selected.title}」吗？读物会从待整理列表隐藏，但不会删除文件。`)) return;
-    const ignoredId = selected.id;
-    setBusy(true);
-    setError('');
-    setMessage('');
-    try {
-      const response = await fetch(`/api/books/${ignoredId}`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ignored: true })
-      });
-      const payload = (await response.json()) as BookResponse;
-      if (!payload.ok) throw new Error(payload.error?.message ?? '忽略失败');
-      removeSelectedBook(ignoredId);
-      setMessage('读物已忽略');
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '忽略失败');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function mergeBook(sourceBookId: string) {
-    if (!selected) return;
-    setBusy(true);
-    setError('');
-    setMessage('');
-    try {
-      const response = await fetch(`/api/books/${selected.id}/merge`, {
+      const response = await fetch('/api/books/bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sourceBookId })
+        body: JSON.stringify({ ids: selectedIds, ...body })
       });
-      const payload = (await response.json()) as BookResponse;
-      if (!payload.ok || !payload.data?.book || !payload.data.mergedBookId) {
-        throw new Error(payload.error?.message ?? '合并分卷失败');
-      }
-      const mergedBook = payload.data.book;
-      const mergedBookId = payload.data.mergedBookId;
-      setBooks((current) => current.filter((book) => book.id !== mergedBookId).map((book) => (book.id === mergedBook.id ? mergedBook : book)));
-      setSelected(mergedBook);
-      setMergeOpen(false);
-      setMergeSearch('');
-      setMessage('分卷已合并');
+      const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
+      if (!payload.ok) throw new Error(payload.error?.message ?? '批量操作失败');
+      setMessage(successMessage);
+      setTagInput('');
+      setSelectedIds([]);
+      loadPending();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '合并分卷失败');
+      setError(reason instanceof Error ? reason.message : '批量操作失败');
     } finally {
       setBusy(false);
     }
+  }
+
+  async function hideOne(book: BookView) {
+    if (!window.confirm(`确认隐藏「${book.title}」吗？不会删除源文件。`)) return;
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      const response = await fetch('/api/books/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: [book.id], ignored: true })
+      });
+      const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
+      if (!payload.ok) throw new Error(payload.error?.message ?? '隐藏失败');
+      setMessage('已隐藏重复记录，源文件未删除');
+      setDuplicateOpenFor(null);
+      loadPending();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '隐藏失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function otherBook(match: Duplicate) {
+    const otherId = match.bookId === duplicateOpenFor ? match.otherBookId : match.bookId;
+    return books.find((book) => book.id === otherId);
   }
 
   return (
     <div className="space-y-6">
-      <PageTitle title="待整理" desc="处理新扫描、识别失败、重复和缺少元数据的读物。" action={<Button icon={RefreshCw}>批量重新识别</Button>} />
+      <PageTitle
+        title="待整理"
+        desc="集中处理新导入、缺封面、元数据异常、解析失败和疑似重复的读物。"
+        action={<Button variant="secondary" icon={RefreshCw} onClick={loadPending}>刷新</Button>}
+      />
       {message ? <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div> : null}
       {error ? <div className="rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
-      <div className="grid h-[720px] grid-cols-12 gap-5">
-        <div className="col-span-3 rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex gap-2 overflow-x-auto pb-3">
-            {['待识别', '识别失败', '疑似重复', '缺少封面'].map((item, index) => (
-              <Badge key={item} tone={index === 1 ? 'red' : index === 2 ? 'amber' : 'slate'}>{item}</Badge>
-            ))}
-          </div>
-          <div className="mt-3 space-y-2">
-            {books.map((book) => (
-              <button key={book.id} onClick={() => selectBook(book)} className={cn('w-full rounded-2xl border p-3 text-left text-sm', selected?.id === book.id ? 'border-blue-200 bg-blue-50' : 'border-slate-200 bg-white')}>
-                <div className="font-medium">{book.title}</div>
-                <div className="mt-1 text-xs text-slate-500">{book.ignored ? '已忽略' : book.coverStatus === 'FAILED' ? '缺少封面' : '来自扫描'}</div>
-              </button>
-            ))}
-            {loading ? <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">正在读取待整理读物...</div> : null}
-            {!loading && books.length === 0 ? <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">暂无待整理读物。</div> : null}
-          </div>
-        </div>
-        <div className="col-span-5 rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="font-semibold">文件预览</h2>
-          <div className="mt-5 flex h-[580px] items-center justify-center rounded-3xl bg-slate-100">
-            <div className="w-64 rounded-[28px] bg-gradient-to-br from-slate-400 to-slate-700 p-8 text-white shadow-xl">
-              <FileText size={42} />
-              <div className="mt-20 text-2xl font-semibold">{selected?.title ?? '暂无读物'}</div>
-              <div className="mt-2 text-sm text-white/70">{selected ? `${selected.format} · ${selected.size}` : '请先扫描真实目录'}</div>
-            </div>
-          </div>
-        </div>
-        <div className="col-span-4 rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-          <h2 className="font-semibold">元数据编辑</h2>
-          <MetaForm form={form} disabled={!selected || busy} onChange={(field, value) => setForm((current) => ({ ...current, [field]: value }))} />
-          <div className="mt-6 grid grid-cols-2 gap-3">
-            <Button disabled={!selected || busy} icon={CheckCircle2} onClick={saveMetadata}>保存识别</Button>
-            <Button disabled={!selected || busy} variant="secondary" icon={Copy} onClick={() => setMergeOpen(true)}>合并分卷</Button>
-            <Button disabled={!selected || busy || parseTags(form.tags).length === 0} variant="secondary" icon={Tags} onClick={addTags}>添加标签</Button>
-            <Button disabled={!selected || busy} variant="danger" icon={X} onClick={ignoreSelected}>忽略文件</Button>
-          </div>
+
+      <div className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          <label className="inline-flex items-center gap-2 text-slate-600">
+            <input type="checkbox" checked={allSelected} onChange={(event) => setSelectedIds(event.target.checked ? books.map((book) => book.id) : [])} className="h-4 w-4 accent-blue-600" />
+            全选当前列表
+          </label>
+          <span className="text-slate-500">已选择 {selectedIds.length} 本</span>
+          <Select value={status} options={statusOptions} onChange={setStatus} ariaLabel="阅读状态" size="sm" />
+          <Button disabled={busy || selectedIds.length === 0} variant="secondary" icon={CheckCircle2} onClick={() => void performBulk({ status }, '阅读状态已更新')}>设置状态</Button>
+          <input value={tagInput} onChange={(event) => setTagInput(event.target.value)} placeholder="标签，用逗号分隔" className="h-10 min-w-[220px] flex-1 rounded-2xl border border-slate-200 px-3 text-sm outline-none focus:border-blue-300" />
+          <Button disabled={busy || selectedIds.length === 0 || parseTags(tagInput).length === 0} variant="secondary" icon={Tags} onClick={() => void performBulk({ addTags: parseTags(tagInput) }, '标签已添加')}>添加标签</Button>
+          <Button disabled={busy || selectedIds.length === 0 || parseTags(tagInput).length === 0} variant="secondary" icon={Tags} onClick={() => void performBulk({ removeTags: parseTags(tagInput) }, '标签已移除')}>移除标签</Button>
+          <Button disabled={busy || selectedIds.length === 0} variant="secondary" icon={CheckCircle2} onClick={() => void performBulk({ markOrganized: true }, '已标记为整理完成')}>确认整理</Button>
+          <Button disabled={busy || selectedIds.length === 0} variant="danger" icon={EyeOff} onClick={() => void performBulk({ ignored: true }, '已隐藏，源文件未删除', `确认隐藏 ${selectedIds.length} 本读物吗？`)}>隐藏</Button>
+          <Button disabled={busy || selectedIds.length === 0} variant="danger" icon={Trash2} onClick={() => void performBulk({ deleteRecords: true }, '数据库记录已删除，源文件未删除', `确认删除 ${selectedIds.length} 条数据库记录吗？NAS 源文件不会被删除。`)}>删除记录</Button>
         </div>
       </div>
-      {mergeOpen && selected ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/30 p-6">
-          <div className="w-full max-w-xl rounded-[28px] border border-slate-200 bg-white p-6 shadow-xl">
-            <div className="flex items-center justify-between gap-4">
-              <div>
-                <h2 className="font-semibold">合并分卷</h2>
-                <p className="mt-1 text-sm text-slate-500">选择要合并进「{selected.title}」的来源读物。</p>
-              </div>
-              <Button variant="ghost" icon={X} onClick={() => setMergeOpen(false)} />
-            </div>
-            <input
-              value={mergeSearch}
-              onChange={(event) => setMergeSearch(event.target.value)}
-              placeholder="搜索标题、作者、标签、文件路径..."
-              className="mt-5 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none focus:border-blue-500"
-            />
-            <div className="mt-4 max-h-80 space-y-2 overflow-y-auto">
-              {mergeLoading ? <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">正在搜索...</div> : null}
-              {!mergeLoading && mergeCandidates.length === 0 ? <div className="rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">没有可合并的同目录读物。</div> : null}
-              {mergeCandidates.map((book) => (
-                <button
-                  key={book.id}
-                  disabled={busy}
-                  onClick={() => mergeBook(book.id)}
-                  className="w-full rounded-2xl border border-slate-200 p-4 text-left text-sm hover:border-blue-200 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  <div className="font-medium text-slate-900">{book.title}</div>
-                  <div className="mt-1 text-xs text-slate-500">{book.author} · {book.format} · {book.size}</div>
-                  <div className="mt-1 truncate text-xs text-slate-400">{book.path}</div>
+
+      {loading ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取待整理读物...</div> : null}
+      {!loading && books.length === 0 ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">暂无待整理读物。</div> : null}
+
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(170px,220px))] gap-4">
+        {books.map((book) => (
+          <div key={book.id} className="space-y-2">
+            <BookCard book={book} selectionEnabled selected={selectedIds.includes(book.id)} onSelectedChange={(checked) => setSelected(book.id, checked)} onClick={() => router.push(`/books/${book.id}`)} />
+            <div className="flex flex-wrap gap-1.5">
+              {(issues[book.id] ?? []).map((issue) => (
+                <button key={issue.code} type="button" onClick={() => issue.code === 'DUPLICATE' ? setDuplicateOpenFor(book.id) : undefined}>
+                  <Badge tone={issue.code === 'IMPORT_FAILED' ? 'red' : issue.code === 'DUPLICATE' ? 'amber' : 'slate'}>{issue.label}</Badge>
                 </button>
               ))}
+            </div>
+            <div className="text-xs text-slate-500">{book.format} · 导入 {new Date(book.importedAt).toLocaleString()}</div>
+          </div>
+        ))}
+      </div>
+
+      {duplicateOpenFor ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/30 p-4">
+          <div className="w-full max-w-3xl rounded-[28px] border border-slate-200 bg-white p-6 shadow-xl">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="font-semibold">疑似重复对比</h2>
+                <p className="mt-1 text-sm text-slate-500">可隐藏其中一条记录，不会自动删除源文件。</p>
+              </div>
+              <Button variant="ghost" icon={X} onClick={() => setDuplicateOpenFor(null)} />
+            </div>
+            <div className="mt-5 space-y-3">
+              {duplicateForOpenBook.map((match) => {
+                const current = books.find((book) => book.id === duplicateOpenFor);
+                const other = otherBook(match);
+                if (!current || !other) return null;
+                return (
+                  <div key={`${match.bookId}-${match.otherBookId}`} className="grid gap-4 rounded-2xl border border-slate-200 p-4 md:grid-cols-2">
+                    {[current, other].map((book) => (
+                      <div key={book.id} className="flex gap-3">
+                        <Cover book={book} className="h-32 w-20" />
+                        <div className="min-w-0 text-sm">
+                          <div className="font-semibold">{book.title}</div>
+                          <div className="mt-1 text-slate-500">{book.author} · {book.format} · {book.size}</div>
+                          <div className="mt-2 flex flex-wrap gap-1">{match.reasons.map((reason) => <Badge key={reason.code} tone="amber">{reason.label}</Badge>)}</div>
+                          <Button className="mt-3 px-3 py-2" variant="danger" icon={EyeOff} onClick={() => void hideOne(book)}>隐藏此记录</Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </div>

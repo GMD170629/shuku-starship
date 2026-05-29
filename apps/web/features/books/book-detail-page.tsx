@@ -1,6 +1,6 @@
 'use client';
 
-import { BookOpen, ChevronDown, ChevronLeft, ChevronRight, Edit3, EyeOff, RefreshCw, Save, Trash2 } from 'lucide-react';
+import { BookOpen, ChevronDown, ChevronLeft, ChevronRight, Edit3, EyeOff, RefreshCw, Save, Trash2, UploadCloud } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Cover } from '../../components/book/cover';
@@ -48,6 +48,8 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
     title: '',
     author: '',
     description: '',
+    seriesName: '',
+    seriesIndex: '',
     format: 'EPUB',
     tags: '',
     status: 'WANT'
@@ -67,6 +69,8 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
             title: nextBook.title,
             author: nextBook.author === '未知作者' ? '' : nextBook.author,
             description: nextBook.desc === '暂无简介，可在详情页补充元数据。' ? '' : nextBook.desc,
+            seriesName: nextBook.seriesName ?? '',
+            seriesIndex: nextBook.seriesIndex === null ? '' : String(nextBook.seriesIndex),
             format: nextBook.formatValue,
             tags: nextBook.tags.join(', '),
             status: nextBook.statusValue
@@ -97,9 +101,12 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
           title: form.title,
           author: form.author,
           description: form.description,
+          seriesName: form.seriesName,
+          seriesIndex: form.seriesIndex,
           format: form.format,
           status: form.status,
-          tags: form.tags.split(/[,，\n]/).map((tag) => tag.trim()).filter(Boolean)
+          tags: form.tags.split(/[,，\n]/).map((tag) => tag.trim()).filter(Boolean),
+          organized: true
         })
       });
       const payload = (await response.json()) as { ok: boolean; data?: { book: BookView }; error?: { message: string } };
@@ -149,6 +156,27 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
       setMessage(ignored ? '读物已忽略' : '读物已恢复显示');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '操作失败');
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function uploadCover(file: File | null) {
+    if (!file) return;
+    setSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      const formData = new FormData();
+      formData.append('cover', file);
+      const response = await fetch(`/api/books/${bookId}/cover/upload`, { method: 'POST', body: formData });
+      const payload = (await response.json()) as { ok: boolean; data?: { coverUrl: string }; error?: { message: string } };
+      if (!payload.ok) throw new Error(payload.error?.message ?? '上传封面失败');
+      setCoverBust(Date.now());
+      loadBook();
+      setMessage('自定义封面已保存');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '上传封面失败');
     } finally {
       setSaving(false);
     }
@@ -249,6 +277,22 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
             <label className="text-sm text-slate-600 md:col-span-2">
               标签
               <input value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} placeholder="标签，用逗号分隔" className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none focus:border-blue-300" />
+            </label>
+            <label className="text-sm text-slate-600">
+              系列名
+              <input value={form.seriesName} onChange={(event) => setForm({ ...form, seriesName: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none focus:border-blue-300" />
+            </label>
+            <label className="text-sm text-slate-600">
+              系列序号
+              <input value={form.seriesIndex} onChange={(event) => setForm({ ...form, seriesIndex: event.target.value })} type="number" step="0.01" className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none focus:border-blue-300" />
+            </label>
+            <label className="text-sm text-slate-600 md:col-span-2">
+              自定义封面
+              <span className="mt-2 inline-flex h-11 cursor-pointer items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-4 text-sm font-medium text-slate-700 hover:bg-slate-100">
+                <UploadCloud size={16} />
+                上传 JPG / PNG / WebP
+                <input type="file" accept="image/jpeg,image/png,image/webp" disabled={saving} className="hidden" onChange={(event) => void uploadCover(event.target.files?.[0] ?? null)} />
+              </span>
             </label>
             <label className="text-sm text-slate-600 md:col-span-2">
               简介

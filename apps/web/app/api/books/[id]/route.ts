@@ -52,10 +52,13 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     title?: string;
     author?: string;
     description?: string;
+    seriesName?: string;
+    seriesIndex?: number | string | null;
     format?: string;
     tags?: string[];
     status?: string;
     ignored?: boolean;
+    organized?: boolean;
     coverPath?: string;
   }>(request);
   const data: Prisma.BookUpdateInput = {};
@@ -66,6 +69,12 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   }
   if (typeof body.author === 'string') data.author = body.author.trim() || null;
   if (typeof body.description === 'string') data.description = body.description;
+  if (typeof body.seriesName === 'string') data.seriesName = body.seriesName.trim() || null;
+  if (typeof body.seriesIndex === 'number' || typeof body.seriesIndex === 'string') {
+    const nextIndex = body.seriesIndex === '' ? null : Number(body.seriesIndex);
+    if (nextIndex !== null && !Number.isFinite(nextIndex)) return fail('系列序号不正确', 400);
+    data.seriesIndex = nextIndex;
+  }
   if (typeof body.format === 'string') {
     const format = parseReadingFormat(body.format);
     if (!format) return fail('读物类型不正确', 400);
@@ -78,6 +87,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   }
   if (Array.isArray(body.tags)) data.tags = JSON.stringify(normalizeTags(body.tags));
   if (typeof body.ignored === 'boolean') data.hidden = body.ignored;
+  if (typeof body.organized === 'boolean') data.organized = body.organized;
   if (typeof body.coverPath === 'string') data.coverPath = body.coverPath;
   await prisma.book.update({ where: { id: params.id }, data });
   const book = await prisma.book.findUnique({

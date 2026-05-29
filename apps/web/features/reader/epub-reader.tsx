@@ -1,13 +1,9 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import ePub, { type Book, type Rendition, type Location } from 'epubjs';
+import ePub, { type Book, type Location, type Rendition } from 'epubjs';
 import { cn } from '../../components/ui/cn';
-
-export type EpubControls = {
-  next: () => Promise<void>;
-  prev: () => Promise<void>;
-};
+import type { ReaderControls, ReaderProgress } from './reader-shell';
 
 type EpubReaderProps = {
   bookId: string;
@@ -15,9 +11,17 @@ type EpubReaderProps = {
   dark: boolean;
   fontSize: number;
   lineHeight: number;
+  pageWidth: number;
   initialCfi: string;
-  onControls: (controls: EpubControls | null) => void;
-  onProgress: (progress: { cfi: string; page: number; percent: number; label: string }) => void;
+  onControls: (controls: ReaderControls | null) => void;
+  onProgress: (progress: ReaderProgress) => void;
+  onActivity: () => void;
+  onTap: () => void;
+};
+
+type EpubLocationStore = {
+  generate: (chars?: number) => Promise<unknown>;
+  cfiFromPercentage: (percentage: number) => string;
 };
 
 function applyTheme(rendition: Rendition, dark: boolean, fontSize: number, lineHeight: number) {
@@ -42,7 +46,22 @@ function applyTheme(rendition: Rendition, dark: boolean, fontSize: number, lineH
   });
 }
 
-export function EpubReader({ bookId, title, dark, fontSize, lineHeight, initialCfi, onControls, onProgress }: EpubReaderProps) {
+function clampPercent(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function isCenterClick(event: MouseEvent) {
+  const view = event.view;
+  const width = view?.innerWidth ?? window.innerWidth;
+  const height = view?.innerHeight ?? window.innerHeight;
+  return event.clientX >= width * 0.18 && event.clientX <= width * 0.82 && event.clientY >= height * 0.28 && event.clientY <= height * 0.72;
+}
+
+type EpubView = {
+  document?: Document;
+};
+
+export function EbookReader({ bookId, title, dark, fontSize, lineHeight, pageWidth, initialCfi, onControls, onProgress, onActivity, onTap }: EpubReaderProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bookRef = useRef<Book | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
@@ -66,7 +85,7 @@ export function EpubReader({ bookId, title, dark, fontSize, lineHeight, initialC
         return response.arrayBuffer();
       })
       .then((buffer) => book.open(buffer, 'binary'))
-      .then(() => {
+      .then(async () => {
         if (canceled) return;
         const rendition = book.renderTo(container, {
           width: '100%',
@@ -77,22 +96,47 @@ export function EpubReader({ bookId, title, dark, fontSize, lineHeight, initialC
         });
         renditionRef.current = rendition;
         applyTheme(rendition, dark, fontSize, lineHeight);
-        onControls({
-          next: () => rendition.next(),
-          prev: () => rendition.prev()
+
+        const locations = book.locations as unknown as EpubLocationStore;
+        const locationsReady = locations.generate(1200).catch(() => undefined);
+
+        rendition.on('rendered', (_section: unknown, view: EpubView) => {
+          view.document?.addEventListener('click', (event) => {
+            if (isCenterClick(event)) onTap();
+          });
         });
+
+        onControls({
+          next: async () => {
+            onActivity();
+            await rendition.next();
+          },
+          prev: async () => {
+            onActivity();
+            await rendition.prev();
+          },
+          jumpToProgress: async (value) => {
+            onActivity();
+            await locationsReady;
+            const cfi = locations.cfiFromPercentage(Math.max(0, Math.min(1, value / 100)));
+            if (cfi) await rendition.display(cfi);
+          }
+        });
+
         rendition.on('relocated', (location: Location) => {
-          const percent = Math.max(0, Math.min(100, Math.round((location.start?.percentage ?? 0) * 100)));
+          const percent = clampPercent((location.start?.percentage ?? 0) * 100);
           const page = Math.max(1, (location.start?.index ?? 0) + 1);
           const displayed = location.start?.displayed;
           onProgress({
-            cfi: location.start?.cfi ?? '',
             page,
+            total: displayed?.total ?? null,
             percent,
+            position: location.start?.cfi ?? '',
             label: displayed?.total ? `第 ${displayed.page} / ${displayed.total} 屏` : `第 ${page} 章`
           });
         });
-        return rendition.display(initialCfi || undefined);
+
+        await rendition.display(initialCfi || undefined);
       })
       .then(() => {
         if (!canceled) setLoading(false);
@@ -118,18 +162,25 @@ export function EpubReader({ bookId, title, dark, fontSize, lineHeight, initialC
   }, [dark, fontSize, lineHeight]);
 
   return (
-    <div className="relative h-[calc(100vh-12rem)] w-full max-w-5xl overflow-hidden rounded-[28px] border border-white/10 bg-white shadow-2xl">
-      <div ref={containerRef} className="h-full w-full" aria-label={`${title} EPUB 阅读器`} />
-      {loading ? (
-        <div className={cn('absolute inset-0 flex items-center justify-center text-sm', dark ? 'bg-slate-900 text-slate-300' : 'bg-[#FDF9F0] text-slate-500')}>
-          正在打开 EPUB...
-        </div>
-      ) : null}
-      {error ? (
-        <div className="absolute inset-0 flex items-center justify-center bg-red-950/90 p-6 text-center text-sm text-red-100">
-          {error}
-        </div>
-      ) : null}
+    <div className="flex h-full w-full justify-center px-3 py-4 md:px-8 md:py-8">
+      <div
+        className="relative h-full min-h-0 w-full overflow-hidden bg-white shadow-2xl md:rounded-[24px] md:border md:border-white/10"
+        style={{ maxWidth: `${pageWidth}px` }}
+      >
+        <div ref={containerRef} className="h-full w-full" aria-label={`${title} EPUB 阅读器`} />
+        {loading ? (
+          <div className={cn('absolute inset-0 flex items-center justify-center text-sm', dark ? 'bg-slate-900 text-slate-300' : 'bg-[#FDF9F0] text-slate-500')}>
+            正在打开 EPUB...
+          </div>
+        ) : null}
+        {error ? (
+          <div className="absolute inset-0 flex items-center justify-center bg-red-950/90 p-6 text-center text-sm text-red-100">
+            {error}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
+
+export { EbookReader as EpubReader };

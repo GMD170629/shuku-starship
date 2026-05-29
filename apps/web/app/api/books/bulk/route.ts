@@ -14,6 +14,8 @@ type BulkBody = {
   removeTags?: string[];
   ignored?: boolean;
   regenerateCover?: boolean;
+  deleteRecords?: boolean;
+  markOrganized?: boolean;
 };
 
 export async function POST(request: Request) {
@@ -22,6 +24,10 @@ export async function POST(request: Request) {
   const ids = [...new Set((body.ids ?? []).map(String).filter(Boolean))];
   if (ids.length === 0) return fail('请选择要批量处理的读物', 400);
   if (ids.length > 200) return fail('单次最多批量处理 200 本读物', 400);
+  if (body.deleteRecords) {
+    const result = await prisma.book.deleteMany({ where: { id: { in: ids } } });
+    return ok({ matched: ids.length, deleted: result.count, sourceFilesDeleted: false });
+  }
 
   const data: Prisma.BookUpdateInput = {};
   if (typeof body.format === 'string') {
@@ -35,6 +41,7 @@ export async function POST(request: Request) {
     data.status = status;
   }
   if (typeof body.ignored === 'boolean') data.hidden = body.ignored;
+  if (typeof body.markOrganized === 'boolean') data.organized = body.markOrganized;
 
   const hasBulkData = Object.keys(data).length > 0;
   const hasTagChange = Array.isArray(body.addTags) || Array.isArray(body.removeTags);

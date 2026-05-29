@@ -13,7 +13,6 @@ import {
   Search,
   Server,
   Settings,
-  Tags,
   User,
   UserCircle
 } from 'lucide-react';
@@ -28,12 +27,18 @@ const navItems = [
   { href: '/', icon: Home, label: '首页' },
   { href: '/library', icon: Library, label: '我的书库' },
   { href: '/shelves', icon: BookMarked, label: '书架' },
-  { href: '/organize', icon: FolderOpen, label: '待整理' },
-  { href: '/library?filter=tags', icon: Tags, label: '标签' },
-  { href: '/library?focus=search', icon: Search, label: '搜索' },
+  { href: '/organize/pending', icon: FolderOpen, label: '待整理' },
   { href: '/', icon: BarChart3, label: '阅读统计' },
   { href: '/import-tasks', icon: RefreshCw, label: '导入任务' },
   { href: '/settings', icon: Settings, label: '系统设置' }
+];
+
+const mobileNavItems = [
+  { href: '/', icon: Home, label: '首页' },
+  { href: '/library', icon: Library, label: '书库' },
+  { href: '/shelves', icon: BookMarked, label: '书架' },
+  { href: '/organize/pending', icon: FolderOpen, label: '整理' },
+  { href: '/settings', icon: Settings, label: '设置' }
 ];
 
 function isActive(pathname: string, href: string) {
@@ -213,7 +218,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <div className="p-4 lg:p-8">{children}</div>
       </main>
       <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-slate-200 bg-white/95 px-2 py-2 shadow-lg backdrop-blur lg:hidden">
-        {navItems.slice(0, 5).map(({ href, icon: Icon, label }) => (
+        {mobileNavItems.map(({ href, icon: Icon, label }) => (
           <Link key={`${href}-mobile`} href={href} className={cn('flex flex-col items-center gap-1 rounded-2xl px-2 py-1.5 text-[11px]', isActive(pathname, href) ? 'bg-blue-50 text-blue-700' : 'text-slate-500')}>
             <Icon size={17} />
             <span className="line-clamp-1">{label}</span>

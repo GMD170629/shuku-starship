@@ -50,6 +50,7 @@ model User {
   role         String            @default("admin")
   sessions     Session[]
   progresses   ReadingProgress[]
+  readerPreferences ReaderPreference[]
   createdAt    DateTime          @default(now())
   updatedAt    DateTime          @updatedAt
 }
@@ -87,12 +88,15 @@ model Book {
   title         String
   author        String?
   description   String?           @db.Text
+  seriesName    String?
+  seriesIndex   Float?
   format        ReadingFormat
   status        ReadingStatus     @default(WANT)
   tags          String            @db.Text
   coverPath     String?
   coverStatus   CoverStatus       @default(PENDING)
   hidden        Boolean           @default(false)
+  organized     Boolean           @default(false)
   managedFilePath String
   contentHash   String            @unique
   sizeBytes     BigInt            @default(0)
@@ -112,12 +116,15 @@ model Book {
   metadataItems BookMetadata[]
   progresses    ReadingProgress[]
   importTasks   ImportTask[]
+  shelves       ShelfBook[]
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
 
   @@index([format])
   @@index([title])
+  @@index([author])
   @@index([hidden])
+  @@index([organized])
   @@index([monitorFolderId])
 }
 
@@ -202,11 +209,47 @@ model ReadingProgress {
   @@index([bookId])
 }
 
+model ReaderPreference {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  readerType String
+  settings   String   @db.Text
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([userId, readerType])
+  @@index([userId])
+}
+
 model SystemSetting {
   key       String   @id
   value     String   @db.Text
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+model Shelf {
+  id          String      @id @default(cuid())
+  name        String
+  description String?     @db.Text
+  books       ShelfBook[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([updatedAt])
+}
+
+model ShelfBook {
+  shelfId   String
+  bookId    String
+  shelf     Shelf    @relation(fields: [shelfId], references: [id], onDelete: Cascade)
+  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@id([shelfId, bookId])
+  @@index([bookId])
+  @@index([shelfId, createdAt])
 }
 
 

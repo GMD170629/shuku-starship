@@ -1,4 +1,4 @@
-import type { Prisma } from '@prisma/client';
+import type { Prisma, ReadingStatus } from '@prisma/client';
 import { requireUser } from '../../../lib/auth';
 import { ok } from '../../../lib/http';
 import { toBookView } from '../../../lib/books';
@@ -15,16 +15,25 @@ export async function GET(request: Request) {
   const type = url.searchParams.get('type')?.trim();
   const sort = url.searchParams.get('sort') ?? 'updated';
   const visibility = url.searchParams.get('visibility') ?? 'active';
+  const status = url.searchParams.get('status')?.trim();
+  const tag = url.searchParams.get('tag')?.trim();
+  const missingCover = url.searchParams.get('missingCover') === 'true';
+  const newImport = url.searchParams.get('newImport') === 'true';
 
   const where: Prisma.BookWhereInput = {};
   if (visibility === 'ignored') where.hidden = true;
   else if (visibility !== 'all') where.hidden = false;
   if (search) {
-    where.OR = [
-      { title: { contains: search } },
-      { author: { contains: search } },
-      { tags: { contains: search } },
-      { managedFilePath: { contains: search } }
+    where.AND = [
+      ...(Array.isArray(where.AND) ? where.AND : []),
+      {
+        OR: [
+          { title: { contains: search } },
+          { author: { contains: search } },
+          { tags: { contains: search } },
+          { managedFilePath: { contains: search } }
+        ]
+      }
     ];
   }
   if (type === 'ebook') where.format = { in: ['EPUB'] };
@@ -42,9 +51,31 @@ export async function GET(request: Request) {
       if (parsedFormat) where.format = parsedFormat;
     }
   }
+  if (status && status !== '全部') {
+    const normalizedStatus = status.toUpperCase();
+    if (['WANT', 'READING', 'FINISHED'].includes(normalizedStatus)) where.status = normalizedStatus as ReadingStatus;
+  }
+  if (tag) where.tags = { contains: tag };
+  if (missingCover) {
+    where.AND = [
+      ...(Array.isArray(where.AND) ? where.AND : []),
+      { OR: [{ coverPath: null }, { coverStatus: { not: 'READY' } }] }
+    ];
+  }
+  if (newImport) where.organized = false;
 
   const orderBy: Prisma.BookOrderByWithRelationInput =
-    sort === 'title' ? { title: 'asc' } : sort === 'created' ? { createdAt: 'desc' } : { updatedAt: 'desc' };
+    sort === 'title'
+      ? { title: 'asc' }
+      : sort === 'author'
+        ? { author: 'asc' }
+        : sort === 'created' || sort === 'recent_import'
+          ? { createdAt: 'desc' }
+          : sort === 'progress'
+            ? { updatedAt: 'desc' }
+            : sort === 'recent_read'
+              ? { updatedAt: 'desc' }
+              : { updatedAt: 'desc' };
 
   const [total, books] = await Promise.all([
     prisma.book.count({ where }),
@@ -61,8 +92,14 @@ export async function GET(request: Request) {
     })
   ]);
 
+  const sortedBooks = [...books].sort((a, b) => {
+    if (sort === 'progress') return (b.progresses[0]?.percent ?? 0) - (a.progresses[0]?.percent ?? 0);
+    if (sort === 'recent_read') return (b.progresses[0]?.updatedAt?.getTime() ?? 0) - (a.progresses[0]?.updatedAt?.getTime() ?? 0);
+    return 0;
+  });
+
   return ok({
-    books: books.map(toBookView),
+    books: sortedBooks.map(toBookView),
     page,
     pageSize,
     total,

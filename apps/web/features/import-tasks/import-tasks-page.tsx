@@ -20,6 +20,7 @@ type ImportTask = {
   duplicate: boolean;
   message?: string | null;
   errorSummary?: string | null;
+  friendlyError?: string | null;
   createdAt: string;
   finishedAt?: string | null;
   monitorFolder?: { name: string; rootPath: string } | null;
@@ -40,6 +41,7 @@ function statusLabel(status: ImportTask['status']) {
 
 export function ImportTasksPage() {
   const [tasks, setTasks] = useState<ImportTask[]>([]);
+  const [summary, setSummary] = useState({ added: 0, updated: 0, skipped: 0, failed: 0 });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const activeTask = useMemo(() => tasks.find((task) => task.status === 'PARSING' || task.status === 'PENDING') ?? null, [tasks]);
@@ -49,11 +51,12 @@ export function ImportTasksPage() {
     try {
       const response = await fetch('/api/import-tasks');
       const text = await response.text();
-      const payload = text ? JSON.parse(text) as { ok: boolean; data?: { tasks: ImportTask[] }; error?: { message: string } } : null;
+      const payload = text ? JSON.parse(text) as { ok: boolean; data?: { tasks: ImportTask[]; summary: typeof summary }; error?: { message: string } } : null;
       if (!response.ok) throw new Error(payload?.error?.message ?? `读取导入任务失败：HTTP ${response.status}`);
       if (!payload) throw new Error('读取导入任务失败：接口返回为空');
       if (!payload.ok) throw new Error(payload.error?.message ?? '读取导入任务失败');
       setTasks(payload.data?.tasks ?? []);
+      setSummary(payload.data?.summary ?? { added: 0, updated: 0, skipped: 0, failed: 0 });
       setError('');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '读取导入任务失败');
@@ -78,6 +81,19 @@ export function ImportTasksPage() {
           <div className="mt-2 text-sm">{activeTask.originalName ?? activeTask.sourcePath}</div>
         </div>
       ) : null}
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        {[
+          ['新增', summary.added],
+          ['更新', summary.updated],
+          ['跳过', summary.skipped],
+          ['失败', summary.failed]
+        ].map(([label, value]) => (
+          <div key={label} className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="text-xs text-slate-500">{label}</div>
+            <div className="mt-1 text-2xl font-semibold text-slate-950">{value}</div>
+          </div>
+        ))}
+      </div>
       {loading ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取导入任务...</div> : null}
       {error ? <div className="rounded-3xl border border-red-100 bg-red-50 p-8 text-sm text-red-700">{error}</div> : null}
       {!loading && !error && tasks.length === 0 ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">暂无导入任务。</div> : null}
@@ -95,7 +111,12 @@ export function ImportTasksPage() {
                 </div>
                 <div className="mt-2 break-words text-sm text-slate-500">{task.monitorFolder?.name ? `${task.monitorFolder.name} · ` : ''}{task.sourcePath}</div>
                 {task.managedFilePath ? <div className="mt-1 break-words text-xs text-slate-400">托管文件：{task.managedFilePath}</div> : null}
-                {task.errorSummary ? <div className="mt-3 flex gap-2 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700"><AlertTriangle size={16} />{task.errorSummary}</div> : null}
+                {task.errorSummary ? (
+                  <div className="mt-3 space-y-2 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">
+                    <div className="flex gap-2"><AlertTriangle size={16} />{task.errorSummary}</div>
+                    {task.friendlyError ? <div className="pl-6 text-red-600">建议：{task.friendlyError}</div> : null}
+                  </div>
+                ) : null}
               </div>
               <div className="text-sm text-slate-500">{new Date(task.createdAt).toLocaleString()}</div>
             </div>
