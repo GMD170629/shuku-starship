@@ -20,6 +20,11 @@
       "types": "./src/cover-service.ts",
       "import": "./src/cover-service.ts",
       "default": "./src/cover-service.ts"
+    },
+    "./managed-import": {
+      "types": "./src/managed-import.ts",
+      "import": "./src/managed-import.ts",
+      "default": "./src/managed-import.ts"
     }
   },
   "scripts": {
@@ -32,13 +37,16 @@
     "@napi-rs/canvas": "^1.0.0",
     "@prisma/client": "^5.21.1",
     "@shuku/database": "workspace:*",
+    "chokidar": "^4.0.3",
     "ignore": "^7.0.5",
     "jszip": "^3.10.1",
     "pdfjs-dist": "^5.7.284",
-    "sharp": "^0.34.5"
+    "sharp": "^0.34.5",
+    "yauzl": "^3.3.1"
   },
   "devDependencies": {
     "@types/node": "^22.7.6",
+    "@types/yauzl": "^2.10.3",
     "tsx": "^4.19.1",
     "typescript": "^5.6.3"
   }

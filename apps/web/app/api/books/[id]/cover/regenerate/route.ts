@@ -10,7 +10,7 @@ export async function POST(_request: Request, { params }: { params: { id: string
     where: { id: params.id },
     include: {
       files: { orderBy: { sortOrder: 'asc' } },
-      libraryPath: true,
+      monitorFolder: true,
       progresses: { where: { userId: user.id }, take: 1 }
     }
   });
@@ -20,7 +20,7 @@ export async function POST(_request: Request, { params }: { params: { id: string
     where: { id: params.id },
     include: {
       files: { orderBy: { sortOrder: 'asc' } },
-      libraryPath: true,
+      monitorFolder: true,
       progresses: { where: { userId: user.id }, take: 1 }
     }
   });

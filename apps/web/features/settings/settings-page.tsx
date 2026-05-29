@@ -7,21 +7,20 @@ import { cn } from '../../components/ui/cn';
 import { PageTitle } from '../../components/ui/page-title';
 import { Select } from '../../components/ui/select';
 
-type LibraryPath = {
+type MonitorFolder = {
   id: string;
   name: string;
   rootPath: string;
   enabled: boolean;
-  scanPolicy: string;
   ignorePatterns?: string | null;
   ignoreHidden: boolean;
   minFileSizeBytes: number;
   description?: string | null;
 };
 
-type LibraryPathsPayload = {
-  paths: LibraryPath[];
-  booksRoot?: string;
+type MonitorFoldersPayload = {
+  folders: MonitorFolder[];
+  monitorRoot?: string;
 };
 
 type BackupItem = {
@@ -33,7 +32,7 @@ type BackupItem = {
   counts?: {
     books: number;
     readingProgresses: number;
-    libraryPaths: number;
+    monitorFolders: number;
   };
 };
 
@@ -50,14 +49,14 @@ const themeOptions = [
 ];
 
 export function SettingsPage() {
-  const groups = ['基础设置', '书库路径', '扫描规则', '备份与恢复', '元数据', '用户与权限', '多端同步', '安全与 API'];
-  const [active, setActive] = useState('书库路径');
-  const [paths, setPaths] = useState<LibraryPath[]>([]);
+  const groups = ['基础设置', '监控文件夹', '监控规则', '备份与恢复', '元数据', '用户与权限', '多端同步', '安全与 API'];
+  const [active, setActive] = useState('监控文件夹');
+  const [folders, setFolders] = useState<MonitorFolder[]>([]);
   const [backups, setBackups] = useState<BackupItem[]>([]);
   const [health, setHealth] = useState<{ status: string; checks: Array<{ name: string; status: string; message: string }> } | null>(null);
   const [summary, setSummary] = useState<{ latestSyncAt: string | null } | null>(null);
   const [settings, setSettings] = useState({ systemName: '书库星舰', theme: 'system', language: 'zh-CN', timezone: 'Asia/Shanghai' });
-  const [name, setName] = useState('我的书库');
+  const [name, setName] = useState('我的监控文件夹');
   const [rootPath, setRootPath] = useState('/books');
   const [ignorePatterns, setIgnorePatterns] = useState('');
   const [ignoreHidden, setIgnoreHidden] = useState(true);
@@ -67,13 +66,13 @@ export function SettingsPage() {
   const [backupBusy, setBackupBusy] = useState('');
 
   async function loadPaths() {
-    const response = await fetch('/api/library-paths');
-    const payload = (await response.json()) as { ok: boolean; data?: LibraryPathsPayload; error?: { message: string } };
+    const response = await fetch('/api/monitor-folders');
+    const payload = (await response.json()) as { ok: boolean; data?: MonitorFoldersPayload; error?: { message: string } };
     if (payload.ok) {
-      setPaths(payload.data?.paths ?? []);
-      if (payload.data?.booksRoot && rootPath === '/books') setRootPath(payload.data.booksRoot);
+      setFolders(payload.data?.folders ?? []);
+      if (payload.data?.monitorRoot && rootPath === '/books') setRootPath(payload.data.monitorRoot);
     } else {
-      setError(payload.error?.message ?? '读取书库路径失败');
+      setError(payload.error?.message ?? '读取监控文件夹失败');
     }
   }
 
@@ -96,22 +95,22 @@ export function SettingsPage() {
     event.preventDefault();
     setError('');
     setMessage('');
-    const response = await fetch('/api/library-paths', {
+    const response = await fetch('/api/monitor-folders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, rootPath, enabled: true, scanPolicy: 'manual', ignorePatterns, ignoreHidden, minFileSizeBytes: Math.max(0, Math.round(Number(minFileSizeKb || 0) * 1024)) })
+      body: JSON.stringify({ name, rootPath, enabled: true, ignorePatterns, ignoreHidden, minFileSizeBytes: Math.max(0, Math.round(Number(minFileSizeKb || 0) * 1024)) })
     });
     const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
     if (!payload.ok) {
       setError(payload.error?.message ?? '保存失败');
       return;
     }
-    setMessage('书库路径已保存');
+    setMessage('监控文件夹已保存');
     await loadPaths();
   }
 
-  async function togglePath(path: LibraryPath) {
-    await fetch(`/api/library-paths/${path.id}`, {
+  async function togglePath(path: MonitorFolder) {
+    await fetch(`/api/monitor-folders/${path.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled: !path.enabled })
@@ -119,25 +118,25 @@ export function SettingsPage() {
     await loadPaths();
   }
 
-  async function deletePath(path: LibraryPath) {
-    await fetch(`/api/library-paths/${path.id}`, { method: 'DELETE' });
+  async function deletePath(path: MonitorFolder) {
+    await fetch(`/api/monitor-folders/${path.id}`, { method: 'DELETE' });
     await loadPaths();
   }
 
-  async function saveScanRules(path: LibraryPath, updates: Pick<LibraryPath, 'ignorePatterns' | 'ignoreHidden' | 'minFileSizeBytes'>) {
+  async function saveScanRules(path: MonitorFolder, updates: Pick<MonitorFolder, 'ignorePatterns' | 'ignoreHidden' | 'minFileSizeBytes'>) {
     setError('');
     setMessage('');
-    const response = await fetch(`/api/library-paths/${path.id}`, {
+    const response = await fetch(`/api/monitor-folders/${path.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(updates)
     });
     const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
     if (!payload.ok) {
-      setError(payload.error?.message ?? '保存扫描规则失败');
+      setError(payload.error?.message ?? '保存监控规则失败');
       return;
     }
-    setMessage('扫描规则已保存');
+    setMessage('监控规则已保存');
     await loadPaths();
   }
 
@@ -161,7 +160,7 @@ export function SettingsPage() {
   }
 
   async function restoreBackup(backup: BackupItem) {
-    const first = window.confirm('恢复备份会覆盖当前书库元数据、标签、阅读进度和书库路径配置，但不会删除原始读物文件。是否继续？');
+    const first = window.confirm('恢复备份会覆盖当前读物元数据、标签、阅读进度和监控文件夹配置，但不会删除原始读物文件。是否继续？');
     if (!first) return;
     const confirmText = window.prompt(`二次确认：请输入 RESTORE 恢复备份 ${backup.filename}`);
     if (confirmText !== 'RESTORE') {
@@ -218,7 +217,7 @@ export function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <PageTitle title="系统设置" desc="配置系统、书库路径、扫描规则、同步、安全和备份。" action={<Button icon={CheckCircle2} onClick={saveSettings}>保存设置</Button>} />
+      <PageTitle title="系统设置" desc="配置系统、监控文件夹、监控规则、同步、安全和备份。" action={<Button icon={CheckCircle2} onClick={saveSettings}>保存设置</Button>} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
         <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm lg:col-span-3">
           {groups.map((group) => (
@@ -253,7 +252,7 @@ export function SettingsPage() {
                 <input value={settings.timezone} onChange={(event) => setSettings({ ...settings, timezone: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none" />
               </label>
             </div>
-          ) : active === '书库路径' ? (
+          ) : active === '监控文件夹' ? (
             <div className="mt-6 space-y-5">
               <form onSubmit={savePath} className="grid grid-cols-1 gap-4 rounded-3xl border border-slate-200 bg-slate-50 p-5 md:grid-cols-12">
                 <label className="md:col-span-4">
@@ -261,7 +260,7 @@ export function SettingsPage() {
                   <input value={name} onChange={(event) => setName(event.target.value)} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
                 </label>
                 <label className="md:col-span-6">
-                  <span className="text-sm font-medium text-slate-700">NAS 根路径</span>
+                  <span className="text-sm font-medium text-slate-700">监控文件夹路径</span>
                   <input value={rootPath} onChange={(event) => setRootPath(event.target.value)} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
                 </label>
                 <label className="md:col-span-9">
@@ -288,7 +287,7 @@ export function SettingsPage() {
                 {error ? <div className="md:col-span-12 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
               </form>
               <div className="space-y-3">
-                {paths.map((path) => (
+                {folders.map((path) => (
                   <div key={path.id} className="flex flex-col gap-4 rounded-3xl border border-slate-200 bg-white p-5 md:flex-row md:items-center">
                     <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-blue-50 text-blue-700">
                       <FolderOpen size={18} />
@@ -298,28 +297,28 @@ export function SettingsPage() {
                       <div className="break-words text-sm text-slate-500">{path.rootPath}</div>
                       <div className="mt-2 text-xs text-slate-500">{path.ignoreHidden ? '忽略隐藏文件' : '包含隐藏文件'} · 小于 {Math.round((path.minFileSizeBytes ?? 0) / 1024)} KB 跳过 · {path.ignorePatterns?.trim() ? '已配置自定义忽略规则' : '仅默认忽略规则'}</div>
                     </div>
-                    <button onClick={() => togglePath(path)} className={cn('h-7 w-12 rounded-full p-1 transition', path.enabled ? 'bg-blue-600' : 'bg-slate-300')} aria-label="启用书库路径">
+                    <button onClick={() => togglePath(path)} className={cn('h-7 w-12 rounded-full p-1 transition', path.enabled ? 'bg-blue-600' : 'bg-slate-300')} aria-label="启用监控文件夹">
                       <span className={cn('block h-5 w-5 rounded-full bg-white transition', path.enabled && 'translate-x-5')} />
                     </button>
                     <Button variant="danger" icon={Trash2} onClick={() => deletePath(path)}>删除</Button>
                   </div>
                 ))}
-                {paths.length === 0 ? <div className="rounded-3xl bg-slate-50 p-6 text-sm text-slate-500">尚未保存书库路径。</div> : null}
+                {folders.length === 0 ? <div className="rounded-3xl bg-slate-50 p-6 text-sm text-slate-500">尚未保存监控文件夹。</div> : null}
               </div>
             </div>
-          ) : active === '扫描规则' ? (
+          ) : active === '监控规则' ? (
             <div className="mt-6 space-y-4">
-              {paths.map((path) => (
+              {folders.map((path) => (
                 <ScanRuleEditor key={path.id} path={path} onSave={saveScanRules} />
               ))}
-              {paths.length === 0 ? <div className="rounded-3xl bg-slate-50 p-6 text-sm text-slate-500">请先添加书库路径。</div> : null}
+              {folders.length === 0 ? <div className="rounded-3xl bg-slate-50 p-6 text-sm text-slate-500">请先添加监控文件夹。</div> : null}
             </div>
           ) : active === '备份与恢复' ? (
             <div className="mt-6 space-y-5">
               <div className="flex flex-col gap-4 rounded-3xl border border-slate-200 bg-slate-50 p-5 md:flex-row md:items-center md:justify-between">
                 <div>
                   <div className="font-semibold">备份范围</div>
-                  <div className="mt-1 text-sm leading-6 text-slate-500">数据库数据、读物元数据、标签、阅读进度、书库路径配置和封面缓存索引。原始读物文件不会写入备份。</div>
+                  <div className="mt-1 text-sm leading-6 text-slate-500">数据库数据、读物元数据、标签、阅读进度、监控文件夹配置和封面缓存索引。原始读物文件不会写入备份。</div>
                   <div className="mt-2 text-xs text-slate-500">自动备份未配置；当前仅显示真实备份文件。</div>
                 </div>
                 <Button icon={Save} onClick={createBackup} disabled={backupBusy === 'create'}>{backupBusy === 'create' ? '创建中' : '立即备份'}</Button>
@@ -340,7 +339,7 @@ export function SettingsPage() {
                       <div className="mt-1 text-sm text-slate-500">{new Date(backup.createdAt).toLocaleString()} · {formatBytes(backup.sizeBytes)}</div>
                       {backup.counts ? (
                         <div className="mt-2 text-xs text-slate-500">
-                          {backup.counts.books} 本读物 · {backup.counts.readingProgresses} 条阅读进度 · {backup.counts.libraryPaths} 个书库路径
+                          {backup.counts.books} 本读物 · {backup.counts.readingProgresses} 条阅读进度 · {backup.counts.monitorFolders} 个监控文件夹
                         </div>
                       ) : null}
                     </div>
@@ -359,8 +358,8 @@ export function SettingsPage() {
           ) : (
             <div className="mt-6 grid grid-cols-1 gap-5 md:grid-cols-2">
               {[
-                { icon: RefreshCw, title: '自动扫描', desc: paths.some((path) => path.scanPolicy !== 'manual') ? '已启用自动扫描策略。' : '未配置自动扫描。' },
-                { icon: Database, title: 'NAS 连接状态', desc: health?.checks.find((check) => check.name === 'booksRootReadable')?.message ?? '待检测' },
+                { icon: RefreshCw, title: '实时导入', desc: folders.some((path) => path.enabled) ? '已启用监控文件夹实时导入。' : '未启用监控文件夹。' },
+                { icon: Database, title: '监控根目录', desc: health?.checks.find((check) => check.name === 'monitorRootReadable')?.message ?? '待检测' },
                 { icon: Smartphone, title: '多端同步', desc: summary?.latestSyncAt ? `最近进度更新 ${new Date(summary.latestSyncAt).toLocaleString()}` : '暂无阅读进度同步' },
                 { icon: KeyRound, title: 'API Token', desc: '尚未启用 API Token。' }
               ].map(({ icon: Icon, title, desc }) => (
@@ -388,7 +387,7 @@ export function SettingsPage() {
   );
 }
 
-function ScanRuleEditor({ path, onSave }: { path: LibraryPath; onSave: (path: LibraryPath, updates: Pick<LibraryPath, 'ignorePatterns' | 'ignoreHidden' | 'minFileSizeBytes'>) => Promise<void> }) {
+function ScanRuleEditor({ path, onSave }: { path: MonitorFolder; onSave: (path: MonitorFolder, updates: Pick<MonitorFolder, 'ignorePatterns' | 'ignoreHidden' | 'minFileSizeBytes'>) => Promise<void> }) {
   const [patterns, setPatterns] = useState(path.ignorePatterns ?? '');
   const [hidden, setHidden] = useState(path.ignoreHidden);
   const [minSizeKb, setMinSizeKb] = useState(String(Math.round((path.minFileSizeBytes ?? 0) / 1024)));

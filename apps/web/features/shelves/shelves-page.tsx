@@ -58,7 +58,7 @@ export function ShelvesPage() {
         ))}
       </div>
       {loading ? <div className="rounded-3xl bg-white p-6 text-sm text-slate-500">正在读取书架...</div> : null}
-      {!loading && books.length === 0 ? <div className="rounded-3xl bg-white p-6 text-sm text-slate-500">暂无读物，请先在系统设置中添加书库路径，然后启动扫描。</div> : null}
+      {!loading && books.length === 0 ? <div className="rounded-3xl bg-white p-6 text-sm text-slate-500">暂无读物，请上传 EPUB/CBZ/ZIP，或在系统设置中添加监控文件夹。</div> : null}
       <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-4">
         {books.length > 0 ? shelves.map((shelf) => (
           <div key={shelf.name} className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md">

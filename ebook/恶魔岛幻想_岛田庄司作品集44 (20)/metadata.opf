@@ -1,0 +1,24 @@
+<?xml version='1.0' encoding='utf-8'?>
+<package xmlns="http://www.idpf.org/2007/opf" unique-identifier="uuid_id" version="2.0">
+    <metadata xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:opf="http://www.idpf.org/2007/opf">
+        <dc:identifier opf:scheme="calibre" id="calibre_id">20</dc:identifier>
+        <dc:identifier opf:scheme="uuid" id="uuid_id">7172813a-ea92-4b0a-94ca-a6191c75e08c</dc:identifier>
+        <dc:title>恶魔岛幻想:岛田庄司作品集44</dc:title>
+        <dc:creator opf:file-as="（日）岛田庄司 &amp; 阮航" opf:role="aut">（日）岛田庄司</dc:creator>
+        <dc:creator opf:file-as="（日）岛田庄司 &amp; 阮航" opf:role="aut">阮航</dc:creator>
+        <dc:contributor opf:file-as="calibre" opf:role="bkp">calibre (7.7.0) [https://calibre-ebook.com]</dc:contributor>
+        <dc:date>2014-08-01T00:00:00+00:00</dc:date>
+        <dc:description>&lt;p&gt;二战的阴云笼罩欧洲，大洋彼岸的美国似乎还一派祥和。突如其来的连环命案震惊了华盛顿，两位女性的尸体均遭到意图不明的猎奇性损毁，而动机似乎与重力学研究及恐龙灭亡之谜有关…… 在全美安保最严密的监狱----恶魔岛，一次精心谋划的越狱行动在雨夜展开。三名逃犯似乎就要看到胜利的曙光，其中的一位阴差阳错地进入了恶魔岛的地下世界，那里竟然存在着一个诡异的南瓜王国……&lt;/p&gt;</dc:description>
+        <dc:publisher>新星出版社</dc:publisher>
+        <dc:identifier opf:scheme="ISBN">9787513315692</dc:identifier>
+        <dc:language>zh</dc:language>
+        <meta name="calibre:series" content="午夜文库·大师系列：岛田庄司非系列作品"/>
+        <meta name="calibre:series_index" content="0"/>
+        <meta name="calibre:rating" content="8"/>
+        <meta name="calibre:timestamp" content="2024-04-07T08:19:49+00:00"/>
+        <meta name="calibre:title_sort" content="恶魔岛幻想:岛田庄司作品集44"/>
+    </metadata>
+    <guide>
+        <reference type="cover" title="封面" href="cover.jpg"/>
+    </guide>
+</package>

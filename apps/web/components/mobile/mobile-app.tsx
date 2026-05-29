@@ -48,7 +48,6 @@ export function MobileApp() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [user, setUser] = useState<UserInfo | null>(null);
   const [health, setHealth] = useState<{ status: string } | null>(null);
-  const [readerText, setReaderText] = useState('');
   const [night, setNight] = useState(true);
   const [tools, setTools] = useState(true);
 
@@ -69,18 +68,6 @@ export function MobileApp() {
   }, []);
 
   const selectedBook = useMemo(() => books.find((book) => book.id === selectedId) ?? continueItem?.book ?? books[0] ?? null, [books, continueItem, selectedId]);
-
-  useEffect(() => {
-    if (mobilePage !== 'mreader' || !selectedBook) return;
-    if (selectedBook.formatValue !== 'TXT') {
-      setReaderText('');
-      return;
-    }
-    fetch(`/api/books/${selectedBook.id}/content`)
-      .then((response) => response.json())
-      .then((payload) => setReaderText(payload.ok ? payload.data.content : '文件读取失败'))
-      .catch(() => setReaderText('文件读取失败'));
-  }, [mobilePage, selectedBook]);
 
   function openBook(book: BookView) {
     setSelectedId(book.id);
@@ -120,7 +107,7 @@ export function MobileApp() {
               <div className="mt-7 space-y-3">
                 <h2 className="font-semibold">最近新增</h2>
                 {books.slice(0, 3).map((book) => <MobileBookRow key={book.id} book={book} onClick={() => openBook(book)} />)}
-                {books.length === 0 ? <Empty>暂无读物，请先添加书库路径并启动扫描。</Empty> : null}
+                {books.length === 0 ? <Empty>暂无读物，请上传 EPUB/CBZ/ZIP，或添加监控文件夹。</Empty> : null}
               </div>
             </div>
           ) : null}
@@ -131,7 +118,7 @@ export function MobileApp() {
               <div className="mt-5 grid grid-cols-2 gap-4">
                 {books.map((book) => <button key={book.id} onClick={() => openBook(book)} className="rounded-[24px] bg-white p-3 text-left shadow-sm"><Cover book={book} className="h-40 w-full" small /><div className="mt-3 line-clamp-1 text-sm font-semibold">{book.title}</div><div className="mt-1 text-xs text-slate-500">{book.progress}% · {book.author}</div></button>)}
               </div>
-              {books.length === 0 ? <div className="mt-5"><Empty>暂无读物，请先在系统设置中添加书库路径，然后启动扫描。</Empty></div> : null}
+              {books.length === 0 ? <div className="mt-5"><Empty>暂无读物，请上传 EPUB/CBZ/ZIP，或添加监控文件夹。</Empty></div> : null}
             </div>
           ) : null}
           {mobilePage === 'mdetail' && selectedBook ? (
@@ -143,14 +130,14 @@ export function MobileApp() {
               </div>
               <p className="mt-6 text-sm leading-7 text-slate-600">{selectedBook.desc}</p>
               <h2 className="mt-7 font-semibold">章节列表</h2>
-              <div className="mt-3 space-y-2">{selectedBook.files.length > 0 ? selectedBook.files.map((file) => <button key={file.id} onClick={() => setMobilePage('mreader')} className="flex w-full items-center justify-between rounded-2xl bg-white p-4 text-left shadow-sm"><span className="truncate">{file.path.split('/').at(-1)}</span><ChevronRight size={16} className="text-slate-400" /></button>) : <Empty>{selectedBook.formatValue === 'PDF' ? 'PDF 文档' : selectedBook.formatValue === 'TXT' || selectedBook.formatValue === 'EPUB' ? '全文阅读' : '暂无章节信息'}</Empty>}</div>
+              <div className="mt-3 space-y-2">{selectedBook.files.length > 0 ? selectedBook.files.map((file) => <button key={file.id} onClick={() => setMobilePage('mreader')} className="flex w-full items-center justify-between rounded-2xl bg-white p-4 text-left shadow-sm"><span className="truncate">{file.path.split('/').at(-1)}</span><ChevronRight size={16} className="text-slate-400" /></button>) : <Empty>{selectedBook.formatValue === 'EPUB' ? '全文阅读' : '暂无章节信息'}</Empty>}</div>
             </div>
           ) : null}
           {mobilePage === 'mreader' && selectedBook ? (
             <div onClick={() => setTools((value) => !value)} className={cn('relative h-full', night ? 'bg-[#111827] text-slate-100' : 'bg-[#F5F1E8] text-slate-900')}>
               {tools ? <div onClick={(event) => event.stopPropagation()} className="absolute inset-x-0 top-0 z-10 flex h-16 items-center justify-between bg-black/20 px-4 backdrop-blur"><button onClick={() => setMobilePage('mdetail')}><ChevronLeft /></button><div className="truncate text-sm font-medium">{selectedBook.title}</div><CheckCircle2 size={18} className="text-emerald-400" /></div> : null}
               <div className="px-7 pt-24 text-lg leading-[2.05]">
-                {selectedBook.formatValue === 'TXT' ? <pre className="whitespace-pre-wrap break-words font-sans">{readerText || '正在读取真实文本...'}</pre> : selectedBook.formatValue === 'EPUB' ? <iframe title={selectedBook.title} src={`/reader/${selectedBook.id}`} className="h-[620px] w-full rounded-2xl bg-slate-950" /> : selectedBook.formatValue === 'PDF' ? <iframe title={selectedBook.title} src={`/api/books/${selectedBook.id}/file`} className="h-[620px] w-full bg-white" /> : selectedBook.formatValue === 'COMIC' || selectedBook.formatValue === 'IMAGE' ? <img src={`/api/books/${selectedBook.id}/pages/1`} alt={selectedBook.title} className="w-full rounded-2xl" /> : <div className="rounded-3xl bg-white/10 p-5 text-sm">该读物没有可读内容，或文件格式暂不支持。</div>}
+                {selectedBook.formatValue === 'EPUB' ? <iframe title={selectedBook.title} src={`/reader/${selectedBook.id}`} className="h-[620px] w-full rounded-2xl bg-slate-950" /> : selectedBook.formatValue === 'COMIC' ? <img src={`/api/books/${selectedBook.id}/pages/1`} alt={selectedBook.title} className="w-full rounded-2xl" /> : <div className="rounded-3xl bg-white/10 p-5 text-sm">该读物没有可读内容，或文件格式暂不支持。</div>}
               </div>
               {tools ? <div onClick={(event) => event.stopPropagation()} className="absolute inset-x-0 bottom-0 z-10 bg-black/20 p-4 backdrop-blur"><div className="flex items-center gap-3"><Button variant="ghost" icon={ChevronLeft}>上一页</Button><Progress value={selectedBook.progress} className="flex-1" /><Button variant="ghost" icon={ChevronRight}>下一页</Button></div><div className="mt-4 grid grid-cols-4 gap-2 text-xs"><button className="rounded-2xl bg-white/10 p-3">字号</button><button className="rounded-2xl bg-white/10 p-3">亮度</button><button className="rounded-2xl bg-white/10 p-3">行距</button><button onClick={() => setNight((value) => !value)} className="rounded-2xl bg-white/10 p-3">{night ? '护眼' : '夜间'}</button></div></div> : null}
             </div>

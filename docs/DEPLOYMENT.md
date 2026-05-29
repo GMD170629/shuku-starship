@@ -9,7 +9,7 @@ DEMO_MODE=false
 NEXT_PUBLIC_DEMO_MODE=false
 ```
 
-系统不会在生产页面 import mock 数据。数据库为空时，Dashboard 显示 0，书库、扫描任务、移动端显示 empty state。
+系统不会在生产页面 import mock 数据。数据库为空时，Dashboard 显示 0，书库、导入任务、移动端显示 empty state。
 
 ## 生产启动
 
@@ -27,7 +27,7 @@ curl -fsSL https://raw.githubusercontent.com/GMD170629/shuku-starship/main/docke
 - `BOOKS_HOST_PATH`
 - `PUID` / `PGID`
 
-容器内书库路径固定是 `/books`。`BOOKS_HOST_PATH` 是宿主机或 NAS 上的真实书库目录，默认 `./books`。
+容器内监控根路径固定是 `/books`。`BOOKS_HOST_PATH` 是宿主机或 NAS 上的入站读物目录，默认 `./books`。
 
 ## 迁移与初始化
 
@@ -37,17 +37,16 @@ curl -fsSL https://raw.githubusercontent.com/GMD170629/shuku-starship/main/docke
 DEMO_MODE=true pnpm db:seed:demo
 ```
 
-生产部署不要运行 demo seed。真实读物来自 `/settings` 添加书库路径后，由 `/scan-tasks` 创建真实扫描任务写入数据库。
+生产部署不要运行 demo seed。真实读物来自 `/library` 手动上传，或 `/settings` 添加监控文件夹后由 Worker 实时导入。
 
 ## 启动检查
 
 Web 和 scan-worker 会检查：
 
 - `DATABASE_URL`
-- `REDIS_URL`
 - `SESSION_SECRET`
-- `BOOKS_ROOT`
-- `BOOKS_ROOT` 是否可读
+- `MONITOR_ROOT`
+- `MONITOR_ROOT` 是否可读
 - `STORAGE_ROOT` 是否可写
 
 `/api/system/health` 和 `/api/health` 会返回检查结果。`DEMO_MODE=false` 且数据库为空是合法状态。
@@ -60,17 +59,17 @@ Web 和 scan-worker 会检查：
 - 系统状态已改为 `/api/dashboard/system-status` 和 `/api/system/health`
 - 书库、书架、移动端列表已改为 `/api/books`
 - 详情页已改为 `/api/books/[id]`
-- 阅读器已改为 `/api/books/[id]/content`、`/api/books/[id]/file`、`/api/books/[id]/pages`
-- 扫描任务页使用真实扫描任务和 `ScanLog`
-- 设置页使用 `LibraryPath`、`SystemSetting`、真实 health 和真实阅读进度更新时间
+- 阅读器已改为 EPUB 文件流和 `/api/books/[id]/pages`
+- 导入任务页使用真实 `ImportTask` 和 `ImportLog`
+- 设置页使用 `MonitorFolder`、`SystemSetting`、真实 health 和真实阅读进度更新时间
 - Demo 数据保留在 `docs/demo/`、`scripts/demo/`，只能通过显式 `DEMO_MODE=true pnpm db:seed:demo` 写入。
 
 ## 验证结果
 
 本次代码整理已完成静态 grep：
 
-使用 `rg` 检查 mock 入口、固定统计和固定扫描目录。
+使用 `rg` 检查 mock 入口、固定统计和旧扫描入口。
 
 运行时代码不再 import mock 数据；命中项仅剩文档、环境开关和显式 opt-in 的 `scripts/demo/`。
 
-当前执行环境缺少 `pnpm` 可执行文件，未能在本机完成 `pnpm typecheck` 和端到端扫描验收。生产部署不依赖部署机安装 pnpm，请按 README 的远端 Docker Compose 命令完成最终验收。
+执行 `pnpm typecheck` 和 `pnpm acceptance` 完成最终验收。

@@ -1,9 +1,9 @@
-import type { Book, BookFile, LibraryPath, ReadingFormat, ReadingProgress, ReadingStatus } from '@prisma/client';
+import type { Book, BookFile, MonitorFolder, ReadingFormat, ReadingProgress, ReadingStatus } from '@prisma/client';
 import { formatLabels, statusLabels } from './book-metadata';
 
 export type BookView = {
   id: string;
-  libraryPathId: string | null;
+  monitorFolderId: string | null;
   title: string;
   author: string;
   type: 'ebook' | 'comic';
@@ -70,7 +70,7 @@ export function formatLabel(format: ReadingFormat) {
 
 function publicFormat(book: Book) {
   if (book.format === 'COMIC') {
-    const ext = book.sourcePath.split('.').pop()?.toLowerCase();
+    const ext = book.managedFilePath.split('.').pop()?.toLowerCase();
     if (ext === 'cbz') return 'CBZ';
     if (ext === 'zip') return 'ZIP';
     return '漫画';
@@ -79,13 +79,13 @@ function publicFormat(book: Book) {
 }
 
 function publicType(format: ReadingFormat): 'ebook' | 'comic' {
-  return format === 'COMIC' || format === 'IMAGE' ? 'comic' : 'ebook';
+  return format === 'COMIC' ? 'comic' : 'ebook';
 }
 
 export function toBookView(
   book: Book & {
     files?: BookFile[];
-    libraryPath?: LibraryPath | null;
+    monitorFolder?: MonitorFolder | null;
     progresses?: ReadingProgress[];
   }
 ): BookView {
@@ -93,7 +93,7 @@ export function toBookView(
   const percent = Math.max(0, Math.min(100, Math.round(progress?.percent ?? 0)));
   return {
     id: book.id,
-    libraryPathId: book.libraryPathId,
+    monitorFolderId: book.monitorFolderId,
     title: book.title,
     author: book.author ?? '未知作者',
     type: publicType(book.format),
@@ -112,12 +112,12 @@ export function toBookView(
     chapterCount: book.chapterCount,
     pageCount: book.pageCount,
     desc: book.description ?? '暂无简介，可在详情页补充元数据。',
-    path: book.sourcePath,
-    fileHash: book.sourceHash,
+    path: book.managedFilePath,
+    fileHash: book.contentHash,
     gradient: gradients[Math.abs(hashCode(book.id)) % gradients.length],
     coverStatus: book.coverStatus,
     coverUrl: `/api/books/${book.id}/cover?size=medium`,
-    totalUnits: book.format === 'COMIC' || book.format === 'IMAGE' ? (book.pageCount ?? 0) : (book.chapterCount ?? 0),
+    totalUnits: book.format === 'COMIC' ? (book.pageCount ?? 0) : (book.chapterCount ?? 0),
     readingProgress: percent,
     importStatus: book.importStatus,
     files: (book.files ?? []).map((file) => ({

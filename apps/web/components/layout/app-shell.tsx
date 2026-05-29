@@ -32,7 +32,7 @@ const navItems = [
   { href: '/library?filter=tags', icon: Tags, label: '标签' },
   { href: '/library?focus=search', icon: Search, label: '搜索' },
   { href: '/', icon: BarChart3, label: '阅读统计' },
-  { href: '/scan-tasks', icon: RefreshCw, label: '扫描任务' },
+  { href: '/import-tasks', icon: RefreshCw, label: '导入任务' },
   { href: '/settings', icon: Settings, label: '系统设置' }
 ];
 
@@ -49,7 +49,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const router = useRouter();
   const [summary, setSummary] = useState<{ storageUsedBytes: number; latestSyncAt: string | null } | null>(null);
   const [status, setStatus] = useState<{ status: string; checks: Array<{ name: string; status: string; message: string }> } | null>(null);
-  const [scan, setScan] = useState<{ progress: number } | null>(null);
+  const [importTask, setImportTask] = useState<{ progress: number } | null>(null);
   const [user, setUser] = useState<{ email: string; name: string; role: string } | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
   const accountRef = useRef<HTMLDivElement>(null);
@@ -70,7 +70,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       setUser(mePayload?.ok ? mePayload.data.user : null);
       if (summaryPayload?.ok) setSummary(summaryPayload.data);
       if (healthPayload?.ok) setStatus(healthPayload.data);
-      if (systemPayload?.ok) setScan(systemPayload.data.currentRunningScanTask);
+      if (systemPayload?.ok) setImportTask(systemPayload.data.currentImportTask);
     });
     return () => {
       active = false;
@@ -158,9 +158,9 @@ export function AppShell({ children }: { children: ReactNode }) {
               <CheckCircle2 size={13} className="mr-1" />
               {summary?.latestSyncAt ? '有进度' : '暂无同步'}
             </Badge>
-            <Badge tone={scan ? 'amber' : 'green'}>
-              <RefreshCw size={13} className={cn('mr-1', scan ? 'animate-spin' : '')} />
-              {scan ? `扫描 ${scan.progress}%` : '暂无扫描'}
+            <Badge tone={importTask ? 'amber' : 'green'}>
+              <RefreshCw size={13} className={cn('mr-1', importTask ? 'animate-spin' : '')} />
+              {importTask ? `导入 ${importTask.progress}%` : '暂无导入'}
             </Badge>
             <div ref={accountRef} className="relative">
               <button

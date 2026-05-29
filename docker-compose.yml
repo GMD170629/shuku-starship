@@ -13,13 +13,6 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
 
-  redis:
-    image: redis:7-alpine
-    container_name: shuku-redis
-    restart: unless-stopped
-    ports:
-      - "6379:6379"
-
   web:
     build:
       context: .
@@ -27,11 +20,9 @@ services:
     container_name: shuku-web
     depends_on:
       - mysql
-      - redis
     environment:
       DATABASE_URL: mysql://shuku:shuku@mysql:3306/shuku_starship
-      REDIS_URL: redis://redis:6379
-      BOOKS_ROOT: /books
+      MONITOR_ROOT: /monitor
       STORAGE_ROOT: /app/storage
       FILE_STREAMS_PER_USER: 4
       SLOW_FILE_REQUEST_MS: 1500
@@ -41,7 +32,7 @@ services:
     ports:
       - "${WEB_PORT:-3000}:3000"
     volumes:
-      - ./books:/books:ro
+      - ./monitor:/monitor:ro
       - ./storage:/app/storage
     command: sh -c "pnpm --filter @shuku/database exec prisma db push --accept-data-loss && pnpm --filter @shuku/web exec tsx ../../scripts/seed.ts && pnpm start"
 
@@ -52,15 +43,13 @@ services:
     container_name: shuku-scan-worker
     depends_on:
       - mysql
-      - redis
     environment:
       DATABASE_URL: mysql://shuku:shuku@mysql:3306/shuku_starship
-      REDIS_URL: redis://redis:6379
-      BOOKS_ROOT: /books
+      MONITOR_ROOT: /monitor
       STORAGE_ROOT: /app/storage
       SESSION_SECRET: dev-session-secret-change-me-at-least-32-chars
     volumes:
-      - ./books:/books:ro
+      - ./monitor:/monitor:ro
       - ./storage:/app/storage
 
 volumes:

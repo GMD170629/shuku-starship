@@ -1,15 +1,11 @@
 import type { ReadingFormat, ReadingStatus } from '@prisma/client';
 
-export const readingFormats = ['TXT', 'PDF', 'IMAGE', 'COMIC', 'EPUB', 'UNKNOWN'] as const satisfies readonly ReadingFormat[];
+export const readingFormats = ['COMIC', 'EPUB'] as const satisfies readonly ReadingFormat[];
 export const readingStatuses = ['WANT', 'READING', 'FINISHED'] as const satisfies readonly ReadingStatus[];
 
 export const formatLabels: Record<ReadingFormat, string> = {
-  TXT: 'TXT',
-  PDF: 'PDF',
-  IMAGE: '图片',
   COMIC: '漫画',
-  EPUB: 'EPUB',
-  UNKNOWN: '未知'
+  EPUB: 'EPUB'
 };
 
 export const statusLabels: Record<ReadingStatus, string> = {
@@ -19,15 +15,9 @@ export const statusLabels: Record<ReadingStatus, string> = {
 };
 
 const localizedFormatMap: Record<string, ReadingFormat> = {
-  TXT: 'TXT',
-  PDF: 'PDF',
-  IMAGE: 'IMAGE',
   COMIC: 'COMIC',
   EPUB: 'EPUB',
-  UNKNOWN: 'UNKNOWN',
-  漫画: 'COMIC',
-  图片: 'IMAGE',
-  未知: 'UNKNOWN'
+  漫画: 'COMIC'
 };
 
 export function parseReadingFormat(value: unknown): ReadingFormat | null {

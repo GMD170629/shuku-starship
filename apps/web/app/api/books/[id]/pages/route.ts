@@ -1,9 +1,7 @@
 import { extname } from 'node:path';
 import { stat } from 'node:fs/promises';
-import { PathSecurityError } from '@shuku/scanner/path-security-service';
 import { requireUser } from '../../../../../lib/auth';
 import { ensureArchiveIndex } from '../../../../../lib/archive-index';
-import { FileAccessService, fileSecurityStatus } from '../../../../../lib/file-access-service';
 import { fail, ok } from '../../../../../lib/http';
 import { prisma } from '../../../../../lib/prisma';
 
@@ -14,8 +12,7 @@ function isArchiveFile(path: string, mimeType: string) {
   return archiveExts.has(ext) || mimeType === 'application/vnd.comicbook+zip' || mimeType === 'application/zip';
 }
 
-async function readableArchivePath(path: string, libraryRoot?: string | null) {
-  if (libraryRoot) return (await new FileAccessService().validateReadableFile(path, libraryRoot)).realPath;
+async function readableArchivePath(path: string) {
   const fileStat = await stat(path);
   if (!fileStat.isFile()) throw new Error('漫画文件不可读');
   return path;
@@ -26,7 +23,6 @@ export async function GET(_request: Request, { params }: { params: { id: string 
   const book = await prisma.book.findFirst({
     where: { id: params.id, hidden: false },
     include: {
-      libraryPath: true,
       files: { orderBy: { sortOrder: 'asc' } },
       readingUnits: { where: { unitType: 'page' }, orderBy: { sortOrder: 'asc' } }
     }
@@ -47,25 +43,15 @@ export async function GET(_request: Request, { params }: { params: { id: string 
     });
   }
 
-  if (book.libraryPath && !book.libraryPath.enabled) return fail('读物不存在或无权访问', 404);
   const archiveFile = book.files.length === 1 && isArchiveFile(book.files[0].path, book.files[0].mimeType) ? book.files[0] : null;
   if (!archiveFile) {
-    const imageFiles = book.files.filter((file) => file.kind === 'IMAGE' || file.mimeType.startsWith('image/'));
-    if (imageFiles.length === 0) return fail('读物没有图片页面', 400);
-    return ok({
-      pageCount: imageFiles.length,
-      pages: imageFiles.map((page, index) => ({
-        pageIndex: index + 1,
-        mimeType: page.mimeType
-      }))
-    });
+    return fail('读物没有漫画页面', 400);
   }
 
   let realPath: string;
   try {
-    realPath = await readableArchivePath(archiveFile.path, book.libraryPath?.rootPath);
+    realPath = await readableArchivePath(archiveFile.path);
   } catch (error) {
-    if (error instanceof PathSecurityError) return fail(error.message, fileSecurityStatus(error));
     return fail('漫画文件不可读', 404);
   }
 

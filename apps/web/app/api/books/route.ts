@@ -24,7 +24,7 @@ export async function GET(request: Request) {
       { title: { contains: search } },
       { author: { contains: search } },
       { tags: { contains: search } },
-      { sourcePath: { contains: search } }
+      { managedFilePath: { contains: search } }
     ];
   }
   if (type === 'ebook') where.format = { in: ['EPUB'] };
@@ -33,10 +33,10 @@ export async function GET(request: Request) {
     const normalized = format.trim().toLowerCase();
     if (normalized === 'cbz') {
       where.format = 'COMIC';
-      where.sourcePath = { endsWith: '.cbz' };
+      where.managedFilePath = { endsWith: '.cbz' };
     } else if (normalized === 'zip') {
       where.format = 'COMIC';
-      where.sourcePath = { endsWith: '.zip' };
+      where.managedFilePath = { endsWith: '.zip' };
     } else {
       const parsedFormat = parseReadingFormat(format);
       if (parsedFormat) where.format = parsedFormat;
@@ -55,7 +55,7 @@ export async function GET(request: Request) {
       take: pageSize,
       include: {
         files: { orderBy: { sortOrder: 'asc' } },
-        libraryPath: true,
+        monitorFolder: true,
         progresses: { where: { userId: user.id }, take: 1 }
       }
     })

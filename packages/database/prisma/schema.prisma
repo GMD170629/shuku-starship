@@ -8,21 +8,8 @@ datasource db {
 }
 
 enum ReadingFormat {
-  TXT
-  PDF
-  IMAGE
   COMIC
   EPUB
-  UNKNOWN
-}
-
-enum ScanTaskStatus {
-  QUEUED
-  RUNNING
-  WAITING_RESUME
-  COMPLETED
-  FAILED
-  CANCELED
 }
 
 enum ReadingStatus {
@@ -50,9 +37,9 @@ enum BookImportStatus {
   FAILED
 }
 
-enum ScanTaskMode {
-  NORMAL
-  DRY_RUN
+enum BookOrigin {
+  MANUAL
+  WATCH
 }
 
 model User {
@@ -77,26 +64,26 @@ model Session {
   updatedAt DateTime @updatedAt
 }
 
-model LibraryPath {
+model MonitorFolder {
   id          String     @id @default(cuid())
   name        String
   rootPath    String     @unique
   enabled     Boolean    @default(true)
-  scanPolicy  String     @default("manual")
   ignorePatterns String?  @db.Text
   ignoreHidden Boolean    @default(true)
   minFileSizeBytes Int     @default(10240)
   description String?
   books       Book[]
-  scanTasks   ScanTask[]
+  importTasks ImportTask[]
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
 }
 
 model Book {
   id            String            @id @default(cuid())
-  libraryPathId String?
-  libraryPath   LibraryPath?      @relation(fields: [libraryPathId], references: [id], onDelete: SetNull)
+  monitorFolderId String?
+  monitorFolder   MonitorFolder?  @relation(fields: [monitorFolderId], references: [id], onDelete: SetNull)
+  origin        BookOrigin        @default(MANUAL)
   title         String
   author        String?
   description   String?           @db.Text
@@ -106,8 +93,8 @@ model Book {
   coverPath     String?
   coverStatus   CoverStatus       @default(PENDING)
   hidden        Boolean           @default(false)
-  sourcePath    String
-  sourceHash    String            @unique
+  managedFilePath String
+  contentHash   String            @unique
   sizeBytes     BigInt            @default(0)
   pageCount     Int?
   chapterCount  Int?
@@ -124,12 +111,14 @@ model Book {
   assets        BookAsset[]
   metadataItems BookMetadata[]
   progresses    ReadingProgress[]
+  importTasks   ImportTask[]
   createdAt     DateTime          @default(now())
   updatedAt     DateTime          @updatedAt
 
   @@index([format])
   @@index([title])
   @@index([hidden])
+  @@index([monitorFolderId])
 }
 
 model BookFile {
@@ -156,48 +145,43 @@ model BookFile {
   @@index([sizeBytes, mtimeMs])
 }
 
-model ScanTask {
+model ImportTask {
   id            String         @id @default(cuid())
-  libraryPathId String
-  libraryPath   LibraryPath    @relation(fields: [libraryPathId], references: [id], onDelete: Cascade)
-  status        ScanTaskStatus @default(QUEUED)
-  mode          ScanTaskMode   @default(NORMAL)
-  runningLockKey String?       @unique
+  monitorFolderId String?
+  monitorFolder   MonitorFolder? @relation(fields: [monitorFolderId], references: [id], onDelete: SetNull)
+  bookId        String?
+  book          Book?          @relation(fields: [bookId], references: [id], onDelete: SetNull)
+  origin        BookOrigin
+  status        BookImportStatus @default(PENDING)
+  originalName  String?
+  sourcePath    String
+  managedFilePath String?
+  contentHash   String?
   progress      Int            @default(0)
-  scannedCount  Int            @default(0)
-  processedCount Int           @default(0)
-  totalCount    Int            @default(0)
-  totalFiles    Int            @default(0)
-  processedFiles Int           @default(0)
-  createdCount  Int            @default(0)
-  updatedCount  Int            @default(0)
-  skippedCount  Int            @default(0)
-  errorCount    Int            @default(0)
-  duplicateCount Int           @default(0)
-  heartbeatAt   DateTime?
-  lastScannedPath String?
+  duplicate     Boolean        @default(false)
   duration      Int            @default(0)
   errorSummary  String?        @db.Text
   message       String?
   startedAt     DateTime?
   finishedAt    DateTime?
-  logs          ScanLog[]
+  logs          ImportLog[]
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
-  @@index([libraryPathId, status])
-  @@index([status, heartbeatAt])
+  @@index([monitorFolderId, status])
+  @@index([status, createdAt])
+  @@index([contentHash])
 }
 
-model ScanLog {
+model ImportLog {
   id         String   @id @default(cuid())
-  scanTaskId String
-  scanTask   ScanTask @relation(fields: [scanTaskId], references: [id], onDelete: Cascade)
+  importTaskId String
+  importTask   ImportTask @relation(fields: [importTaskId], references: [id], onDelete: Cascade)
   level      String   @default("info")
   message    String   @db.Text
   createdAt  DateTime @default(now())
 
-  @@index([scanTaskId, createdAt])
+  @@index([importTaskId, createdAt])
 }
 
 model ReadingProgress {

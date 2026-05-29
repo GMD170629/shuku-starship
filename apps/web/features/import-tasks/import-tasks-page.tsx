@@ -1,0 +1,118 @@
+'use client';
+
+import { AlertTriangle, CheckCircle2, Clock, FileArchive, RefreshCw } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { Badge } from '../../components/ui/badge';
+import type { BadgeTone } from '../../components/ui/badge';
+import { Button } from '../../components/ui/button';
+import { PageTitle } from '../../components/ui/page-title';
+import { Progress } from '../../components/ui/progress';
+
+type ImportTask = {
+  id: string;
+  origin: 'MANUAL' | 'WATCH';
+  status: 'PENDING' | 'PARSING' | 'COMPLETED' | 'FAILED';
+  originalName?: string | null;
+  sourcePath: string;
+  managedFilePath?: string | null;
+  contentHash?: string | null;
+  progress: number;
+  duplicate: boolean;
+  message?: string | null;
+  errorSummary?: string | null;
+  createdAt: string;
+  finishedAt?: string | null;
+  monitorFolder?: { name: string; rootPath: string } | null;
+  book?: { id: string; title: string } | null;
+  logs: Array<{ id: string; level: string; message: string; createdAt: string }>;
+};
+
+function statusTone(status: ImportTask['status']) {
+  if (status === 'COMPLETED') return 'green';
+  if (status === 'FAILED') return 'red';
+  if (status === 'PARSING') return 'amber';
+  return 'slate';
+}
+
+function statusLabel(status: ImportTask['status']) {
+  return { PENDING: '等待中', PARSING: '导入中', COMPLETED: '已完成', FAILED: '失败' }[status];
+}
+
+export function ImportTasksPage() {
+  const [tasks, setTasks] = useState<ImportTask[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const activeTask = useMemo(() => tasks.find((task) => task.status === 'PARSING' || task.status === 'PENDING') ?? null, [tasks]);
+
+  async function loadTasks() {
+    setLoading(true);
+    try {
+      const response = await fetch('/api/import-tasks');
+      const text = await response.text();
+      const payload = text ? JSON.parse(text) as { ok: boolean; data?: { tasks: ImportTask[] }; error?: { message: string } } : null;
+      if (!response.ok) throw new Error(payload?.error?.message ?? `读取导入任务失败：HTTP ${response.status}`);
+      if (!payload) throw new Error('读取导入任务失败：接口返回为空');
+      if (!payload.ok) throw new Error(payload.error?.message ?? '读取导入任务失败');
+      setTasks(payload.data?.tasks ?? []);
+      setError('');
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '读取导入任务失败');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadTasks();
+    const timer = window.setInterval(() => void loadTasks(), 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  return (
+    <div className="space-y-6">
+      <PageTitle title="导入任务" desc="查看手动上传和监控文件夹自动导入状态。" action={<Button variant="secondary" icon={RefreshCw} onClick={() => void loadTasks()}>刷新</Button>} />
+      {activeTask ? (
+        <div className="rounded-[28px] border border-amber-100 bg-amber-50 p-5 text-amber-800">
+          <div className="flex items-center gap-2 font-semibold"><Clock size={18} />{activeTask.message ?? '正在导入读物'}</div>
+          <Progress value={activeTask.progress} className="mt-4" />
+          <div className="mt-2 text-sm">{activeTask.originalName ?? activeTask.sourcePath}</div>
+        </div>
+      ) : null}
+      {loading ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取导入任务...</div> : null}
+      {error ? <div className="rounded-3xl border border-red-100 bg-red-50 p-8 text-sm text-red-700">{error}</div> : null}
+      {!loading && !error && tasks.length === 0 ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">暂无导入任务。</div> : null}
+      <div className="space-y-3">
+        {tasks.map((task) => (
+          <div key={task.id} className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <FileArchive size={18} className="text-blue-600" />
+                  <span className="font-semibold">{task.book?.title ?? task.originalName ?? task.sourcePath.split('/').at(-1)}</span>
+                  <Badge tone={statusTone(task.status) as BadgeTone}>{statusLabel(task.status)}</Badge>
+                  {task.duplicate ? <Badge tone="amber">重复</Badge> : null}
+                  <Badge>{task.origin === 'WATCH' ? '监控导入' : '手动上传'}</Badge>
+                </div>
+                <div className="mt-2 break-words text-sm text-slate-500">{task.monitorFolder?.name ? `${task.monitorFolder.name} · ` : ''}{task.sourcePath}</div>
+                {task.managedFilePath ? <div className="mt-1 break-words text-xs text-slate-400">托管文件：{task.managedFilePath}</div> : null}
+                {task.errorSummary ? <div className="mt-3 flex gap-2 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700"><AlertTriangle size={16} />{task.errorSummary}</div> : null}
+              </div>
+              <div className="text-sm text-slate-500">{new Date(task.createdAt).toLocaleString()}</div>
+            </div>
+            {task.status === 'PARSING' || task.status === 'PENDING' ? <Progress value={task.progress} className="mt-4" /> : null}
+            {task.logs.length > 0 ? (
+              <div className="mt-4 space-y-1 rounded-2xl bg-slate-50 p-3 font-mono text-xs text-slate-500">
+                {task.logs.slice(0, 5).map((log) => (
+                  <div key={log.id} className="break-words">
+                    <span className={log.level === 'error' ? 'text-red-600' : log.level === 'warn' ? 'text-amber-600' : 'text-slate-500'}>{log.level}</span> · {log.message}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {task.status === 'COMPLETED' ? <div className="mt-4 flex items-center gap-2 text-sm text-emerald-600"><CheckCircle2 size={16} />导入完成</div> : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

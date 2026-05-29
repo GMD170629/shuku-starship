@@ -15,22 +15,19 @@ type Summary = {
   totalBooks: number;
   comicBooks: number;
   novelBooks: number;
-  pdfBooks: number;
-  documentBooks: number;
   storageUsedBytes: number;
-  libraryPathCount: number;
-  lastScanAt: string | null;
+  monitorFolderCount: number;
+  lastImportAt: string | null;
   latestSyncAt: string | null;
 };
 type ContinueItem = { book: BookView; progress: number; lastReadAt: string; chapter: string | null; position: string } | null;
 type SystemStatus = {
   database: { status: string; message: string };
-  redis: { status: string; message: string };
   worker: { status: string; message: string };
-  currentRunningScanTask: { progress: number; libraryPath?: { rootPath: string }; status: string } | null;
-  latestScanTask: { status: string; progress: number; finishedAt?: string | null } | null;
+  currentImportTask: { progress: number; monitorFolder?: { rootPath: string }; status: string } | null;
+  latestImportTask: { status: string; progress: number; finishedAt?: string | null } | null;
   errorFileCount: number;
-  booksRootReadable: { status: string; message: string };
+  monitorRootReadable: { status: string; message: string };
   storageWritable: { status: string; message: string };
 };
 
@@ -98,7 +95,7 @@ export function DashboardPage() {
     };
   }, []);
 
-  const scan = status?.currentRunningScanTask;
+  const importTask = status?.currentImportTask;
 
   return (
     <div className="space-y-8">
@@ -107,7 +104,7 @@ export function DashboardPage() {
           <h1 className="text-3xl font-semibold tracking-tight">首页</h1>
           <p className="mt-2 text-slate-500">快速了解书库状态，并继续上次阅读。</p>
         </div>
-        <Button variant="secondary" icon={UploadCloud} onClick={() => router.push('/settings')}>导入读物</Button>
+        <Button variant="secondary" icon={UploadCloud} onClick={() => router.push('/library')}>导入读物</Button>
       </div>
       {loading ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取真实书库状态...</div> : null}
       {error ? <div className="rounded-3xl border border-red-100 bg-red-50 p-8 text-sm text-red-700">{error}</div> : null}
@@ -141,8 +138,8 @@ export function DashboardPage() {
             <div className="grid grid-cols-2 gap-4 xl:col-span-5">
               <StatCard icon={Library} label="总读物" value={String(summary?.totalBooks ?? 0)} hint="全部" />
               <StatCard icon={BookOpen} label="漫画" value={String(summary?.comicBooks ?? 0)} hint="COMIC" tone="green" />
-              <StatCard icon={FileText} label="小说" value={String(summary?.novelBooks ?? 0)} hint="TXT/EPUB" tone="amber" />
-              <StatCard icon={HardDrive} label="存储占用" value={formatBytes(summary?.storageUsedBytes ?? 0)} hint={`${summary?.libraryPathCount ?? 0} 个路径`} tone="slate" />
+              <StatCard icon={FileText} label="电子书" value={String(summary?.novelBooks ?? 0)} hint="EPUB" tone="amber" />
+              <StatCard icon={HardDrive} label="存储占用" value={formatBytes(summary?.storageUsedBytes ?? 0)} hint={`${summary?.monitorFolderCount ?? 0} 个监控文件夹`} tone="slate" />
             </div>
           </section>
           <section className="grid grid-cols-1 gap-6 xl:grid-cols-12">
@@ -156,7 +153,7 @@ export function DashboardPage() {
                   {recentBooks.map((book) => <BookCard key={book.id} book={book} compact onClick={() => router.push(`/books/${book.id}`)} />)}
                 </div>
               ) : (
-                <div className="mt-5 rounded-3xl bg-slate-50 p-8 text-sm text-slate-500">暂无读物，请先在系统设置中添加书库路径，然后启动扫描。</div>
+                <div className="mt-5 rounded-3xl bg-slate-50 p-8 text-sm text-slate-500">暂无读物，请上传 EPUB/CBZ/ZIP，或在系统设置中添加监控文件夹。</div>
               )}
             </div>
             <div className="space-y-6 xl:col-span-4">
@@ -164,8 +161,8 @@ export function DashboardPage() {
                 <h2 className="text-lg font-semibold">系统状态</h2>
                 <div className="mt-5 space-y-4 text-sm">
                   <StatusRow icon={Server} label="数据库" value={status?.database.message ?? '待检测'} status={status?.database.status} />
-                  <StatusRow icon={Server} label="Redis" value={status?.redis.message ?? '待检测'} status={status?.redis.status} />
-                  <StatusRow icon={RefreshCw} label="当前扫描" value={scan ? `${scan.libraryPath?.rootPath ?? '扫描中'} · ${scan.progress}%` : '暂无扫描任务'} status={scan ? 'unknown' : 'ok'} />
+                  <StatusRow icon={Server} label="导入 Worker" value={status?.worker.message ?? '待检测'} status={status?.worker.status} />
+                  <StatusRow icon={RefreshCw} label="当前导入" value={importTask ? `${importTask.monitorFolder?.rootPath ?? '导入中'} · ${importTask.progress}%` : '暂无导入任务'} status={importTask ? 'unknown' : 'ok'} />
                   <StatusRow icon={AlertTriangle} label="错误文件" value={`${status?.errorFileCount ?? 0} 个`} status={(status?.errorFileCount ?? 0) > 0 ? 'error' : 'ok'} />
                   <StatusRow icon={CheckCircle2} label="存储写入" value={status?.storageWritable.message ?? '待检测'} status={status?.storageWritable.status} />
                 </div>
@@ -173,7 +170,7 @@ export function DashboardPage() {
               <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
                 <h2 className="text-lg font-semibold">真实数据时间</h2>
                 <div className="mt-4 space-y-3 text-sm text-slate-600">
-                  <div>最近扫描：{summary?.lastScanAt ? new Date(summary.lastScanAt).toLocaleString() : '暂无'}</div>
+                  <div>最近导入：{summary?.lastImportAt ? new Date(summary.lastImportAt).toLocaleString() : '暂无'}</div>
                   <div>最近进度：{summary?.latestSyncAt ? new Date(summary.latestSyncAt).toLocaleString() : '暂无'}</div>
                 </div>
               </div>

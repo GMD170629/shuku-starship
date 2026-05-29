@@ -139,7 +139,7 @@ export function OrganizePage() {
         if (!active) return;
         if (!payload.ok) throw new Error(payload.error?.message ?? '搜索读物失败');
         const candidates = (payload.data?.books ?? []).filter(
-          (book) => book.id !== selected.id && book.libraryPathId === selected.libraryPathId
+          (book) => book.id !== selected.id && book.monitorFolderId === selected.monitorFolderId
         );
         setMergeCandidates(candidates);
       })

@@ -1,5 +1,4 @@
 import { constants } from 'node:fs';
-import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { access, realpath, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
@@ -7,10 +6,10 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 export type PathSecurityErrorCode =
   | 'EMPTY_PATH'
   | 'NOT_ABSOLUTE'
-  | 'BOOKS_ROOT_UNAVAILABLE'
+  | 'MONITOR_ROOT_UNAVAILABLE'
   | 'PATH_UNAVAILABLE'
   | 'SENSITIVE_PATH'
-  | 'OUTSIDE_BOOKS_ROOT'
+  | 'OUTSIDE_MONITOR_ROOT'
   | 'NOT_DIRECTORY'
   | 'NOT_FILE';
 
@@ -27,8 +26,8 @@ export class PathSecurityError extends Error {
 export type PathSecurityValidation = {
   inputPath: string;
   realPath: string;
-  booksRoot: string;
-  realBooksRoot: string;
+  monitorRoot: string;
+  realMonitorRoot: string;
 };
 
 const sensitivePaths = ['/', '/etc', '/root', '/proc', '/sys', '/dev', '/var', '/var/run', '/run', '/boot'];
@@ -65,15 +64,6 @@ export function normalizeConfiguredPath(path: string) {
   return resolve(base, trimmed);
 }
 
-export function configuredScanQueueName() {
-  const explicit = process.env.SCAN_QUEUE_NAME?.trim();
-  if (explicit) return explicit;
-
-  const booksRoot = process.env.BOOKS_ROOT ? normalizeConfiguredPath(process.env.BOOKS_ROOT) : 'default';
-  const scope = createHash('sha1').update(booksRoot).digest('hex').slice(0, 10);
-  return `scan-jobs-${scope}`;
-}
-
 async function realpathOrSecurityError(path: string, message: string, code: PathSecurityErrorCode) {
   try {
     return await realpath(path);
@@ -83,32 +73,32 @@ async function realpathOrSecurityError(path: string, message: string, code: Path
 }
 
 export class PathSecurityService {
-  private readonly booksRoot: string;
+  private readonly monitorRoot: string;
 
-  constructor(booksRoot = process.env.BOOKS_ROOT || '/books') {
-    this.booksRoot = normalizeConfiguredPath(booksRoot);
+  constructor(monitorRoot = process.env.MONITOR_ROOT || '/books') {
+    this.monitorRoot = normalizeConfiguredPath(monitorRoot);
   }
 
   static fromEnv() {
     return new PathSecurityService();
   }
 
-  static configuredBooksRoot() {
-    return normalizeConfiguredPath(process.env.BOOKS_ROOT || '/books');
+  static configuredMonitorRoot() {
+    return normalizeConfiguredPath(process.env.MONITOR_ROOT || '/books');
   }
 
-  async validateLibraryRoot(inputPath: string): Promise<PathSecurityValidation> {
-    const validation = await this.validatePathInsideBooksRoot(inputPath);
+  async validateMonitorFolder(inputPath: string): Promise<PathSecurityValidation> {
+    const validation = await this.validatePathInsideMonitorRoot(inputPath);
     const targetStat = await stat(validation.realPath).catch(() => null);
     if (!targetStat?.isDirectory()) {
-      throw new PathSecurityError(`书库路径不是目录：${inputPath}`, 'NOT_DIRECTORY');
+      throw new PathSecurityError(`监控文件夹不是目录：${inputPath}`, 'NOT_DIRECTORY');
     }
-    await this.ensureReadable(validation.realPath, `书库路径不存在或不可读：${inputPath}`);
+    await this.ensureReadable(validation.realPath, `监控文件夹不存在或不可读：${inputPath}`);
     return validation;
   }
 
   async validateFileAccess(inputPath: string): Promise<PathSecurityValidation> {
-    const validation = await this.validatePathInsideBooksRoot(inputPath);
+    const validation = await this.validatePathInsideMonitorRoot(inputPath);
     const targetStat = await stat(validation.realPath).catch(() => null);
     if (!targetStat?.isFile()) {
       throw new PathSecurityError(`文件不存在或不可读：${inputPath}`, 'NOT_FILE');
@@ -117,45 +107,45 @@ export class PathSecurityService {
     return validation;
   }
 
-  private async validatePathInsideBooksRoot(inputPath: string): Promise<PathSecurityValidation> {
+  private async validatePathInsideMonitorRoot(inputPath: string): Promise<PathSecurityValidation> {
     const trimmedPath = inputPath.trim();
     if (!trimmedPath) {
       throw new PathSecurityError('路径不能为空', 'EMPTY_PATH');
     }
     if (!isAbsolute(trimmedPath)) {
-      throw new PathSecurityError(`请输入 BOOKS_ROOT 下的绝对路径：${trimmedPath}`, 'NOT_ABSOLUTE');
+      throw new PathSecurityError(`请输入 MONITOR_ROOT 下的绝对路径：${trimmedPath}`, 'NOT_ABSOLUTE');
     }
     if (isSensitivePath(trimmedPath)) {
       throw new PathSecurityError(`禁止访问系统敏感路径：${trimmedPath}`, 'SENSITIVE_PATH');
     }
 
-    const trimmedBooksRoot = this.booksRoot.trim();
-    if (!trimmedBooksRoot || !isAbsolute(trimmedBooksRoot)) {
-      throw new PathSecurityError(`BOOKS_ROOT 必须是绝对路径：${trimmedBooksRoot || '(empty)'}`, 'BOOKS_ROOT_UNAVAILABLE');
+    const trimmedMonitorRoot = this.monitorRoot.trim();
+    if (!trimmedMonitorRoot || !isAbsolute(trimmedMonitorRoot)) {
+      throw new PathSecurityError(`MONITOR_ROOT 必须是绝对路径：${trimmedMonitorRoot || '(empty)'}`, 'MONITOR_ROOT_UNAVAILABLE');
     }
 
-    const realBooksRoot = await realpathOrSecurityError(
-      trimmedBooksRoot,
-      `BOOKS_ROOT 不存在或不可读：${trimmedBooksRoot}`,
-      'BOOKS_ROOT_UNAVAILABLE'
+    const realMonitorRoot = await realpathOrSecurityError(
+      trimmedMonitorRoot,
+      `MONITOR_ROOT 不存在或不可读：${trimmedMonitorRoot}`,
+      'MONITOR_ROOT_UNAVAILABLE'
     );
-    if (isSensitivePath(realBooksRoot)) {
-      throw new PathSecurityError(`BOOKS_ROOT 不能指向系统敏感路径：${realBooksRoot}`, 'BOOKS_ROOT_UNAVAILABLE');
+    if (isSensitivePath(realMonitorRoot)) {
+      throw new PathSecurityError(`MONITOR_ROOT 不能指向系统敏感路径：${realMonitorRoot}`, 'MONITOR_ROOT_UNAVAILABLE');
     }
 
     const realTargetPath = await realpathOrSecurityError(trimmedPath, `路径不存在或不可读：${trimmedPath}`, 'PATH_UNAVAILABLE');
     if (isSensitivePath(realTargetPath)) {
       throw new PathSecurityError(`禁止访问系统敏感路径：${realTargetPath}`, 'SENSITIVE_PATH');
     }
-    if (!isInside(realBooksRoot, realTargetPath)) {
-      throw new PathSecurityError(`路径真实位置不在 BOOKS_ROOT 内：${trimmedPath} -> ${realTargetPath}`, 'OUTSIDE_BOOKS_ROOT');
+    if (!isInside(realMonitorRoot, realTargetPath)) {
+      throw new PathSecurityError(`路径真实位置不在 MONITOR_ROOT 内：${trimmedPath} -> ${realTargetPath}`, 'OUTSIDE_MONITOR_ROOT');
     }
 
     return {
       inputPath: trimmedPath,
       realPath: realTargetPath,
-      booksRoot: trimmedBooksRoot,
-      realBooksRoot
+      monitorRoot: trimmedMonitorRoot,
+      realMonitorRoot
     };
   }
 

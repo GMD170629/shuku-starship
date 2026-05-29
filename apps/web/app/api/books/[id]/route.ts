@@ -11,7 +11,7 @@ export async function GET(_request: Request, { params }: { params: { id: string 
     where: { id: params.id },
     include: {
       files: { orderBy: { sortOrder: 'asc' } },
-      libraryPath: true,
+      monitorFolder: true,
       progresses: { where: { userId: user.id }, take: 1 },
       chapters: { orderBy: { sortOrder: 'asc' } },
       readingUnits: { orderBy: { sortOrder: 'asc' } },
@@ -32,7 +32,7 @@ export async function GET(_request: Request, { params }: { params: { id: string 
       importError: book.importError,
       items: metadataItems
     },
-    totalUnits: book.format === 'COMIC' || book.format === 'IMAGE' ? (book.pageCount ?? book.readingUnits.length) : (book.chapterCount ?? book.readingUnits.length),
+    totalUnits: book.format === 'COMIC' ? (book.pageCount ?? book.readingUnits.length) : (book.chapterCount ?? book.readingUnits.length),
     chapters: book.chapters,
     readingUnits: book.readingUnits.length ? book.readingUnits.map(serializeReadingUnit) : book.chapters.map((chapter) => ({ ...chapter, unitType: 'chapter' }))
   });
@@ -84,7 +84,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     where: { id: params.id },
     include: {
       files: { orderBy: { sortOrder: 'asc' } },
-      libraryPath: true,
+      monitorFolder: true,
       progresses: { where: { userId: user.id }, take: 1 },
       chapters: { orderBy: { sortOrder: 'asc' } },
       readingUnits: { orderBy: { sortOrder: 'asc' } },

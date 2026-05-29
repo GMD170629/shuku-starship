@@ -16,7 +16,6 @@ const coverWidths: Record<CoverSize, number> = {
 };
 
 const imageExts = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.avif', '.tif', '.tiff']);
-const textExts = new Set(['.txt', '.md', '.markdown']);
 
 function workspaceRoot() {
   if (process.env.STORAGE_ROOT) return resolve(process.env.STORAGE_ROOT);
@@ -82,7 +81,7 @@ function linesFor(text: string, maxChars: number, maxLines: number) {
 async function textCover(book: BookWithFiles) {
   const gradient = stableGradient(book.id);
   const titleLines = linesFor(book.title, 14, 4);
-  const author = book.author ?? basename(book.sourcePath);
+  const author = book.author ?? basename(book.managedFilePath);
   const titleSvg = titleLines
     .map((line, index) => `<text x="54" y="${240 + index * 58}" class="title">${escapeXml(line)}</text>`)
     .join('');
@@ -152,13 +151,11 @@ async function imageFileCover(filePath: string) {
 async function sourceCover(book: BookWithFiles) {
   const sortedFiles = [...book.files].sort((a, b) => a.sortOrder - b.sortOrder);
   const firstFile = sortedFiles[0];
-  const sourcePath = firstFile?.path ?? book.sourcePath;
+  const sourcePath = firstFile?.path ?? book.managedFilePath;
   const ext = extname(sourcePath).toLowerCase();
 
-  if (book.format === 'PDF' || ext === '.pdf') return pdfFirstPageCover(sourcePath);
   if (book.format === 'COMIC' && ['.cbz', '.zip'].includes(ext)) return zipFirstImageCover(sourcePath);
-  if (imageExts.has(ext)) return imageFileCover(sourcePath);
-  if (book.format === 'TXT' || textExts.has(ext)) return textCover(book);
+  if (book.format === 'EPUB') return textCover(book);
   throw new Error(`不支持的封面来源：${book.format}`);
 }
 

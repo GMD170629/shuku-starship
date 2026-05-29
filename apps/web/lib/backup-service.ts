@@ -2,7 +2,7 @@ import { createReadStream } from 'node:fs';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { Readable } from 'node:stream';
-import type { Book, BookFile, LibraryPath, ReadingProgress, ScanLog, ScanTask, User } from '@prisma/client';
+import type { Book, BookFile, ImportLog, ImportTask, MonitorFolder, ReadingProgress, User } from '@prisma/client';
 import yauzl from 'yauzl';
 import { prisma } from './prisma';
 
@@ -25,30 +25,29 @@ type BackupMetadata = {
   scope: string[];
   counts: {
     users: number;
-    libraryPaths: number;
+    monitorFolders: number;
     books: number;
     bookFiles: number;
     readingProgresses: number;
-    scanTasks: number;
-    scanLogs: number;
+    importTasks: number;
+    importLogs: number;
     coverIndexEntries: number;
   };
 };
 
 type DatabaseExport = {
   users: Array<Omit<User, 'createdAt' | 'updatedAt'> & { createdAt: string; updatedAt: string }>;
-  libraryPaths: Array<Omit<LibraryPath, 'createdAt' | 'updatedAt'> & { createdAt: string; updatedAt: string }>;
+  monitorFolders: Array<Omit<MonitorFolder, 'createdAt' | 'updatedAt'> & { createdAt: string; updatedAt: string }>;
   books: Array<Omit<Book, 'sizeBytes' | 'createdAt' | 'updatedAt'> & { sizeBytes: string; createdAt: string; updatedAt: string }>;
   bookFiles: Array<Omit<BookFile, 'sizeBytes' | 'mtimeMs' | 'createdAt' | 'updatedAt'> & { sizeBytes: string; mtimeMs: string; createdAt: string; updatedAt: string }>;
   readingProgresses: Array<Omit<ReadingProgress, 'createdAt' | 'updatedAt'> & { createdAt: string; updatedAt: string }>;
-  scanTasks: Array<Omit<ScanTask, 'createdAt' | 'updatedAt' | 'startedAt' | 'finishedAt' | 'heartbeatAt'> & {
+  importTasks: Array<Omit<ImportTask, 'createdAt' | 'updatedAt' | 'startedAt' | 'finishedAt'> & {
     createdAt: string;
     updatedAt: string;
     startedAt: string | null;
     finishedAt: string | null;
-    heartbeatAt: string | null;
   }>;
-  scanLogs: Array<Omit<ScanLog, 'createdAt'> & { createdAt: string }>;
+  importLogs: Array<Omit<ImportLog, 'createdAt'> & { createdAt: string }>;
   coverIndex: Array<{
     bookId: string;
     coverPath: string | null;
@@ -57,7 +56,7 @@ type DatabaseExport = {
 };
 
 type SettingsExport = {
-  libraryPaths: DatabaseExport['libraryPaths'];
+  monitorFolders: DatabaseExport['monitorFolders'];
   storageRoot: string;
   backupRoot: string;
   automaticBackup: {
@@ -290,24 +289,24 @@ export class BackupService {
     await mkdir(backupsRoot(), { recursive: true });
     const createdAt = new Date();
     const id = backupId(kind, createdAt);
-    const [users, libraryPaths, books, bookFiles, readingProgresses, scanTasks, scanLogs] = await Promise.all([
+    const [users, monitorFolders, books, bookFiles, readingProgresses, importTasks, importLogs] = await Promise.all([
       prisma.user.findMany({ orderBy: { createdAt: 'asc' } }),
-      prisma.libraryPath.findMany({ orderBy: { createdAt: 'asc' } }),
+      prisma.monitorFolder.findMany({ orderBy: { createdAt: 'asc' } }),
       prisma.book.findMany({ orderBy: { createdAt: 'asc' } }),
       prisma.bookFile.findMany({ orderBy: [{ bookId: 'asc' }, { sortOrder: 'asc' }] }),
       prisma.readingProgress.findMany({ orderBy: { updatedAt: 'desc' } }),
-      prisma.scanTask.findMany({ orderBy: { createdAt: 'asc' } }),
-      prisma.scanLog.findMany({ orderBy: { createdAt: 'asc' } })
+      prisma.importTask.findMany({ orderBy: { createdAt: 'asc' } }),
+      prisma.importLog.findMany({ orderBy: { createdAt: 'asc' } })
     ]);
 
     const databaseExport: DatabaseExport = {
       users: JSON.parse(jsonStringify(users)),
-      libraryPaths: JSON.parse(jsonStringify(libraryPaths)),
+      monitorFolders: JSON.parse(jsonStringify(monitorFolders)),
       books: JSON.parse(jsonStringify(books)),
       bookFiles: JSON.parse(jsonStringify(bookFiles)),
       readingProgresses: JSON.parse(jsonStringify(readingProgresses)),
-      scanTasks: JSON.parse(jsonStringify(scanTasks)),
-      scanLogs: JSON.parse(jsonStringify(scanLogs)),
+      importTasks: JSON.parse(jsonStringify(importTasks)),
+      importLogs: JSON.parse(jsonStringify(importLogs)),
       coverIndex: books.map((book) => ({
         bookId: book.id,
         coverPath: book.coverPath,
@@ -323,21 +322,21 @@ export class BackupService {
       createdAt: createdAt.toISOString(),
       format: 'zip',
       contents: backupContents,
-      scope: ['database', 'reading-metadata', 'tags', 'reading-progress', 'library-path-settings', 'cover-cache-index'],
+      scope: ['database', 'reading-metadata', 'tags', 'reading-progress', 'monitor-folder-settings', 'cover-cache-index'],
       counts: {
         users: users.length,
-        libraryPaths: libraryPaths.length,
+        monitorFolders: monitorFolders.length,
         books: books.length,
         bookFiles: bookFiles.length,
         readingProgresses: readingProgresses.length,
-        scanTasks: scanTasks.length,
-        scanLogs: scanLogs.length,
+        importTasks: importTasks.length,
+        importLogs: importLogs.length,
         coverIndexEntries: books.length
       }
     };
 
     const settings: SettingsExport = {
-      libraryPaths: databaseExport.libraryPaths,
+      monitorFolders: databaseExport.monitorFolders,
       storageRoot: storageRoot(),
       backupRoot: backupsRoot(),
       automaticBackup: {
@@ -404,11 +403,11 @@ export class BackupService {
 
     await prisma.$transaction(async (tx) => {
       await tx.readingProgress.deleteMany();
-      await tx.scanLog.deleteMany();
-      await tx.scanTask.deleteMany();
+      await tx.importLog.deleteMany();
+      await tx.importTask.deleteMany();
       await tx.bookFile.deleteMany();
       await tx.book.deleteMany();
-      await tx.libraryPath.deleteMany();
+      await tx.monitorFolder.deleteMany();
 
       for (const user of databaseExport.users) {
         await tx.user.upsert({
@@ -428,8 +427,8 @@ export class BackupService {
         });
       }
 
-      for (const path of databaseExport.libraryPaths) {
-        await tx.libraryPath.create({
+      for (const path of databaseExport.monitorFolders) {
+        await tx.monitorFolder.create({
           data: {
             ...path,
             createdAt: toDate(path.createdAt),
@@ -471,11 +470,10 @@ export class BackupService {
         });
       }
 
-      for (const task of databaseExport.scanTasks ?? []) {
-        await tx.scanTask.create({
+      for (const task of databaseExport.importTasks ?? []) {
+        await tx.importTask.create({
           data: {
             ...task,
-            heartbeatAt: task.heartbeatAt ? toDate(task.heartbeatAt) : null,
             startedAt: task.startedAt ? toDate(task.startedAt) : null,
             finishedAt: task.finishedAt ? toDate(task.finishedAt) : null,
             createdAt: toDate(task.createdAt),
@@ -484,8 +482,8 @@ export class BackupService {
         });
       }
 
-      for (const log of databaseExport.scanLogs ?? []) {
-        await tx.scanLog.create({
+      for (const log of databaseExport.importLogs ?? []) {
+        await tx.importLog.create({
           data: {
             ...log,
             createdAt: toDate(log.createdAt)

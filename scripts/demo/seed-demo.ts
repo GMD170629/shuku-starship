@@ -8,32 +8,27 @@ if (process.env.DEMO_MODE !== 'true') {
 }
 
 const demoBooks = [
-  { title: '星屑魔女与机械书库', author: 'Shuku Lab', format: 'COMIC' as const, sizeBytes: 326 * 1024 * 1024 },
-  { title: 'NAS 书库维护手册', author: 'Archive Ops', format: 'PDF' as const, sizeBytes: 18 * 1024 * 1024 },
-  { title: '阅读笔记合集', author: 'Gu', format: 'TXT' as const, sizeBytes: 128 * 1024 }
+  { title: '星屑魔女与机械书库', author: 'Shuku Lab', format: 'COMIC' as const, file: '/demo/managed/star-dust.cbz', sizeBytes: 326 * 1024 * 1024 },
+  { title: '星舰 EPUB 说明书', author: 'Archive Ops', format: 'EPUB' as const, file: '/demo/managed/starship.epub', sizeBytes: 18 * 1024 * 1024 }
 ];
 
 async function main() {
-  const libraryPath = await prisma.libraryPath.upsert({
-    where: { rootPath: '/demo/books' },
-    create: { name: 'Demo 书库', rootPath: '/demo/books', enabled: false, description: '仅 DEMO_MODE=true 使用' },
-    update: { enabled: false }
-  });
-
   for (const book of demoBooks) {
-    const sourcePath = `/demo/books/${book.title}`;
+    const contentHash = createHash('sha256').update(book.file).digest('hex');
     await prisma.book.upsert({
-      where: { sourceHash: createHash('sha256').update(sourcePath).digest('hex') },
+      where: { contentHash },
       create: {
-        libraryPathId: libraryPath.id,
         title: book.title,
         author: book.author,
         format: book.format,
         tags: JSON.stringify(['demo']),
-        sourcePath,
-        sourceHash: createHash('sha256').update(sourcePath).digest('hex'),
+        managedFilePath: book.file,
+        contentHash,
         sizeBytes: BigInt(book.sizeBytes),
-        coverStatus: 'FAILED'
+        origin: 'MANUAL',
+        coverStatus: 'FAILED',
+        pageCount: book.format === 'COMIC' ? 1 : null,
+        chapterCount: book.format === 'EPUB' ? 1 : null
       },
       update: {}
     });

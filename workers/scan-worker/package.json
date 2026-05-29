@@ -12,10 +12,10 @@
   "dependencies": {
     "@shuku/database": "workspace:*",
     "@shuku/scanner": "workspace:*",
-    "bullmq": "^5.12.15",
-    "ioredis": "^5.4.1"
+    "chokidar": "^4.0.3"
   },
   "devDependencies": {
+    "@types/node": "^22.7.6",
     "tsx": "^4.19.1",
     "typescript": "^5.6.3"
   }

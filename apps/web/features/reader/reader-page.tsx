@@ -32,7 +32,6 @@ export function ReaderPage({ bookId }: { bookId: string }) {
   const router = useRouter();
   const contentRef = useRef<HTMLDivElement>(null);
   const [book, setBook] = useState<BookView | null>(null);
-  const [text, setText] = useState('');
   const [error, setError] = useState('');
   const [tools, setTools] = useState(true);
   const [dark, setDark] = useState(true);
@@ -49,11 +48,9 @@ export function ReaderPage({ bookId }: { bookId: string }) {
   const firstFile = book?.files[0];
   const readerType = useMemo(() => {
     if (!book) return 'unknown';
-    if (book.formatValue === 'TXT') return 'txt';
     if (book.formatValue === 'EPUB') return 'epub';
-    if (book.formatValue === 'PDF') return 'pdf';
-    if (book.formatValue === 'COMIC' || book.formatValue === 'IMAGE') return 'comic';
-    return 'txt';
+    if (book.formatValue === 'COMIC') return 'comic';
+    return 'unknown';
   }, [book]);
   const archiveComic = readerType === 'comic' && book?.files.length === 1 && isArchiveComicFile(firstFile);
   const totalPages = archiveComic ? archivePageCount ?? 0 : book?.files.length ?? 0;
@@ -80,20 +77,6 @@ export function ReaderPage({ bookId }: { bookId: string }) {
     }
     load();
   }, [bookId]);
-
-  useEffect(() => {
-    if (readerType !== 'txt' || !book) return;
-    fetch(`/api/books/${book.id}/content`)
-      .then((response) => {
-        if (!response.ok) throw new Error('TXT 文件加载失败');
-        return response.json() as Promise<{ ok: boolean; data?: { content: string }; error?: { message: string } }>;
-      })
-      .then((payload) => {
-        if (!payload.ok || !payload.data) throw new Error(payload.error?.message ?? 'TXT 文件加载失败');
-        setText(payload.data.content);
-      })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : 'TXT 文件加载失败'));
-  }, [readerType, book]);
 
   useEffect(() => {
     if (!book || readerType !== 'comic' || !archiveComic) return;
@@ -152,7 +135,7 @@ export function ReaderPage({ bookId }: { bookId: string }) {
   if (error) return <div className="min-h-screen bg-slate-950 p-8 text-red-200">{error}</div>;
   if (!book) return <div className="min-h-screen bg-slate-950 p-8 text-slate-200">正在打开阅读器...</div>;
 
-  const currentFile = readerType === 'comic' && !archiveComic ? book.files[page - 1] : firstFile;
+  const currentFile = firstFile;
 
   return (
     <div className={cn('relative min-h-screen overflow-hidden transition', dark ? 'bg-[#0F172A] text-slate-100' : 'bg-[#F5F1E8] text-slate-900')}>
@@ -177,15 +160,6 @@ export function ReaderPage({ bookId }: { bookId: string }) {
       ) : null}
       <div ref={contentRef} onScroll={updateScrollProgress} onClick={() => setTools((value) => !value)} className="h-screen overflow-auto px-4 pb-40 pt-24 md:px-8">
         <div className="mx-auto flex min-h-full max-w-6xl items-start justify-center">
-          {readerType === 'txt' ? (
-            <article className={cn('w-full max-w-3xl rounded-[28px] p-6 shadow-2xl md:p-10', dark ? 'bg-slate-900/70' : 'bg-[#FDF9F0]')} style={{ fontSize, lineHeight }}>
-              <h1 className="mb-8 text-2xl font-semibold">{book.title}</h1>
-              <pre className="whitespace-pre-wrap break-words font-sans">{text || 'TXT 内容为空或正在加载...'}</pre>
-            </article>
-          ) : null}
-          {readerType === 'pdf' ? (
-            <iframe title={book.title} src={`/api/books/${book.id}/file#page=${page}&zoom=${Math.round(zoom * 100)}`} className="h-[calc(100vh-12rem)] w-full rounded-2xl border border-white/10 bg-white" />
-          ) : null}
           {readerType === 'epub' ? (
             <EpubReader
               bookId={book.id}
@@ -208,7 +182,7 @@ export function ReaderPage({ bookId }: { bookId: string }) {
           {readerType === 'comic' && archiveComic && archivePageCount === null ? (
             <div className="text-slate-300">正在建立漫画页面索引...</div>
           ) : null}
-          {readerType === 'comic' && currentFile && (!archiveComic || archivePageCount !== null) ? (
+          {readerType === 'comic' && currentFile && archivePageCount !== null ? (
             <div className="flex w-full justify-center">
               <img src={archiveComic ? archivePageUrl(book.id, page) : archivePageUrl(book.id, page)} alt={`${book.title} 第 ${page} 页`} className="max-h-none max-w-full rounded-2xl shadow-2xl" style={{ transform: `scale(${zoom})`, transformOrigin: 'top center' }} />
             </div>
@@ -223,10 +197,10 @@ export function ReaderPage({ bookId }: { bookId: string }) {
           <div className="mx-auto flex max-w-4xl flex-wrap items-center gap-3">
             <Button variant="ghost" icon={ChevronLeft} onClick={() => movePage(-1)}>上一页</Button>
             <Progress value={percent} className="min-w-40 flex-1" />
-            <span className="text-sm text-slate-400">{readerType === 'txt' ? `${percent}%` : readerType === 'epub' ? `${epubLabel} · ${percent}%` : `第 ${page} / ${Math.max(1, totalPages || 1)} 页 · ${percent}%`}</span>
+            <span className="text-sm text-slate-400">{readerType === 'epub' ? `${epubLabel} · ${percent}%` : `第 ${page} / ${Math.max(1, totalPages || 1)} 页 · ${percent}%`}</span>
             <Button variant="ghost" icon={ChevronRight} onClick={() => movePage(1)}>下一页</Button>
-            <Button variant="ghost" icon={Minus} onClick={() => readerType === 'txt' || readerType === 'epub' ? setFontSize((value) => Math.max(14, value - 1)) : setZoom((value) => Math.max(0.5, Number((value - 0.1).toFixed(1))))} />
-            <Button variant="ghost" icon={Plus} onClick={() => readerType === 'txt' || readerType === 'epub' ? setFontSize((value) => Math.min(28, value + 1)) : setZoom((value) => Math.min(2, Number((value + 0.1).toFixed(1))))} />
+            <Button variant="ghost" icon={Minus} onClick={() => readerType === 'epub' ? setFontSize((value) => Math.max(14, value - 1)) : setZoom((value) => Math.max(0.5, Number((value - 0.1).toFixed(1))))} />
+            <Button variant="ghost" icon={Plus} onClick={() => readerType === 'epub' ? setFontSize((value) => Math.min(28, value + 1)) : setZoom((value) => Math.min(2, Number((value + 0.1).toFixed(1))))} />
             <Button variant="ghost" icon={dark ? Sun : Moon} onClick={() => setDark((value) => !value)}>{dark ? '护眼' : '夜间'}</Button>
           </div>
           <div className="mx-auto mt-4 grid max-w-4xl grid-cols-2 gap-3 text-sm md:grid-cols-4">

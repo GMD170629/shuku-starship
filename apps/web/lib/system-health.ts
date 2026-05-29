@@ -1,7 +1,6 @@
 import { access, mkdir, stat, writeFile, rm } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { join } from 'node:path';
-import { Redis } from 'ioredis';
 import { prisma } from './prisma';
 
 export type CheckStatus = 'ok' | 'error' | 'unknown';
@@ -31,9 +30,8 @@ export function isDemoMode() {
 export async function runSystemHealthChecks(): Promise<SystemHealth> {
   const checks: HealthCheck[] = [
     envCheck('DATABASE_URL'),
-    envCheck('REDIS_URL'),
     envCheck('SESSION_SECRET', process.env.NODE_ENV === 'production'),
-    envCheck('BOOKS_ROOT')
+    envCheck('MONITOR_ROOT')
   ];
 
   try {
@@ -43,28 +41,14 @@ export async function runSystemHealthChecks(): Promise<SystemHealth> {
     checks.push({ name: 'database', status: 'error', message: `数据库不可用：${String(error)}` });
   }
 
-  const redisUrl = process.env.REDIS_URL;
-  if (redisUrl) {
-    const redis = new Redis(redisUrl, { lazyConnect: true, maxRetriesPerRequest: 1, connectTimeout: 1000 });
+  const monitorRoot = process.env.MONITOR_ROOT;
+  if (monitorRoot) {
     try {
-      await redis.connect();
-      await redis.ping();
-      checks.push({ name: 'redis', status: 'ok', message: 'Redis 可连接' });
+      const rootStat = await stat(monitorRoot);
+      await access(monitorRoot, constants.R_OK);
+      checks.push({ name: 'monitorRootReadable', status: rootStat.isDirectory() ? 'ok' : 'error', message: rootStat.isDirectory() ? 'MONITOR_ROOT 可读' : 'MONITOR_ROOT 不是目录' });
     } catch (error) {
-      checks.push({ name: 'redis', status: 'error', message: `Redis 不可用：${String(error)}` });
-    } finally {
-      redis.disconnect();
-    }
-  }
-
-  const booksRoot = process.env.BOOKS_ROOT;
-  if (booksRoot) {
-    try {
-      const rootStat = await stat(booksRoot);
-      await access(booksRoot, constants.R_OK);
-      checks.push({ name: 'booksRootReadable', status: rootStat.isDirectory() ? 'ok' : 'error', message: rootStat.isDirectory() ? 'BOOKS_ROOT 可读' : 'BOOKS_ROOT 不是目录' });
-    } catch (error) {
-      checks.push({ name: 'booksRootReadable', status: 'error', message: `BOOKS_ROOT 不可读：${String(error)}` });
+      checks.push({ name: 'monitorRootReadable', status: 'error', message: `MONITOR_ROOT 不可读：${String(error)}` });
     }
   }
 
@@ -89,7 +73,7 @@ export async function runSystemHealthChecks(): Promise<SystemHealth> {
 export async function assertProductionStartup() {
   if (process.env.NODE_ENV !== 'production') return;
   const health = await runSystemHealthChecks();
-  const requiredFailures = health.checks.filter((check) => ['DATABASE_URL', 'REDIS_URL', 'SESSION_SECRET', 'BOOKS_ROOT'].includes(check.name) && check.status === 'error');
+  const requiredFailures = health.checks.filter((check) => ['DATABASE_URL', 'SESSION_SECRET', 'MONITOR_ROOT'].includes(check.name) && check.status === 'error');
   if (requiredFailures.length > 0) {
     throw new Error(`生产启动检查失败：${requiredFailures.map((check) => check.message).join('；')}`);
   }

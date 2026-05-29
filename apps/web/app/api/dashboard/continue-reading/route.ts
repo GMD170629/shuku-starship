@@ -12,7 +12,7 @@ export async function GET() {
       book: {
         include: {
           files: { orderBy: { sortOrder: 'asc' } },
-          libraryPath: true,
+          monitorFolder: true,
           progresses: { where: { userId: user.id }, take: 1 }
         }
       }

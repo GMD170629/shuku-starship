@@ -1,6 +1,6 @@
 'use client';
 
-import { CheckCircle2, EyeOff, Filter, Grid3X3, List, Plus, RefreshCw, Search, Tags, Trash2, X } from 'lucide-react';
+import { CheckCircle2, ChevronDown, EyeOff, Filter, Grid3X3, List, Plus, RefreshCw, Search, Tags, Trash2, UploadCloud, X } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { BookCard } from '../../components/book/book-card';
@@ -65,6 +65,8 @@ export function LibraryPage() {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  const [uploading, setUploading] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
   const query = useMemo(() => {
     const params = new URLSearchParams();
@@ -113,6 +115,7 @@ export function LibraryPage() {
 
   const visibleBookIds = useMemo(() => books.map((book) => book.id), [books]);
   const allVisibleSelected = visibleBookIds.length > 0 && visibleBookIds.every((id) => selected.includes(id));
+  const activeFilterCount = [search.trim(), filter !== '全部', visibility !== 'active'].filter(Boolean).length;
 
   function setBookSelected(bookId: string, checked: boolean) {
     setSelected((current) => (checked ? [...new Set([...current, bookId])] : current.filter((id) => id !== bookId)));
@@ -156,55 +159,126 @@ export function LibraryPage() {
     }
   }
 
+  async function uploadBook(file: File | null) {
+    if (!file) return;
+    setUploading(true);
+    setError('');
+    setMessage('');
+    try {
+      const form = new FormData();
+      form.append('file', file);
+      const response = await fetch('/api/books/import', { method: 'POST', body: form });
+      const payload = (await response.json()) as { ok: boolean; data?: { title: string; duplicate?: boolean }; error?: { message: string } };
+      if (!payload.ok) throw new Error(payload.error?.message ?? '导入失败');
+      setMessage(payload.data?.duplicate ? `《${payload.data.title}》已存在` : `《${payload.data?.title ?? file.name}》已导入`);
+      setReloadKey((key) => key + 1);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '导入失败');
+    } finally {
+      setUploading(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
-      <PageTitle title="我的书库" desc="浏览、搜索、筛选和批量管理所有读物。" action={<Button icon={Plus} onClick={() => router.push('/settings')}>添加目录</Button>} />
-      <div className="rounded-[28px] border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="flex h-11 min-w-0 flex-1 items-center gap-3 rounded-2xl border border-slate-200 px-4 md:min-w-[360px]">
-            <Search size={17} className="text-slate-400" />
-            <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索标题、作者、标签、格式..." className="w-full bg-transparent text-sm outline-none" />
+      <PageTitle
+        title="我的书库"
+        desc="上传、浏览、搜索、筛选和批量管理 EPUB 与漫画读物。"
+        action={
+          <div className="flex flex-wrap gap-3">
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700">
+              <UploadCloud size={17} />
+              {uploading ? '导入中...' : '上传读物'}
+              <input type="file" accept=".epub,.cbz,.zip,application/epub+zip,application/zip" className="hidden" disabled={uploading} onChange={(event) => void uploadBook(event.target.files?.[0] ?? null)} />
+            </label>
+            <Button variant="secondary" icon={Plus} onClick={() => router.push('/settings')}>监控文件夹</Button>
           </div>
-          <Button variant="secondary" icon={Filter}>高级筛选</Button>
-          <Button variant={view === 'grid' ? 'primary' : 'secondary'} icon={Grid3X3} onClick={() => setView('grid')}>网格</Button>
-          <Button variant={view === 'list' ? 'primary' : 'secondary'} icon={List} onClick={() => setView('list')}>列表</Button>
-        </div>
-        <div className="mt-4 flex flex-wrap gap-2">
-          {formatOptions.map((option) => (
-            <button
-              key={option.value}
-              onClick={() => setFilter(option.value)}
-              className={cn(
-                'rounded-full border px-4 py-2 text-sm',
-                filter === option.value ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-600'
-              )}
-            >
-              {option.label}
-            </button>
-          ))}
-          {['EPUB', 'CBZ', 'ZIP'].map((item) => (
-            <button
-              key={item}
-              onClick={() => setFilter(item)}
-              className={cn(
-                'rounded-full border px-4 py-2 text-sm',
-                filter === item ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-600'
-              )}
-            >
-              {item}
-            </button>
-          ))}
-          <Select value={visibility} options={visibilityOptions} onChange={setVisibility} ariaLabel="可见性筛选" />
-          <Select value={sort} options={sortOptions} onChange={setSort} ariaLabel="排序方式" className="ml-auto" align="right" />
-        </div>
-        <div className="mt-4 flex flex-wrap items-center gap-3 text-sm text-slate-600">
-          <label className="flex items-center gap-2">
+        }
+      />
+      <div className="rounded-[22px] border border-slate-200 bg-white p-3 shadow-sm">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setFiltersOpen((open) => !open)}
+            className="inline-flex h-10 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 transition hover:bg-slate-50"
+            aria-expanded={filtersOpen}
+          >
+            <Search size={16} className="text-slate-500" />
+            <span>{activeFilterCount > 0 ? `搜索与筛选 · ${activeFilterCount}` : '搜索与筛选'}</span>
+            <ChevronDown size={15} className={cn('text-slate-400 transition', filtersOpen && 'rotate-180')} />
+          </button>
+          <label className="flex h-10 items-center gap-2 rounded-2xl border border-slate-200 px-3 text-sm text-slate-600">
             <input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleCurrentPage(event.target.checked)} className="h-4 w-4 accent-blue-600" />
             选择当前页
           </label>
-          {selected.length > 0 ? <button onClick={() => setSelected([])} className="inline-flex items-center gap-1 text-slate-500 hover:text-slate-900"><X size={14} />清空选择</button> : null}
-          {message ? <span className="text-emerald-600">{message}</span> : null}
+          {selected.length > 0 ? <button onClick={() => setSelected([])} className="inline-flex h-10 items-center gap-1 rounded-2xl px-2 text-sm text-slate-500 hover:bg-slate-50 hover:text-slate-900"><X size={14} />清空</button> : null}
+          {message ? <span className="px-2 text-sm text-emerald-600">{message}</span> : null}
+          <div className="ml-auto flex items-center gap-2">
+            <Select value={sort} options={sortOptions} onChange={setSort} ariaLabel="排序方式" size="sm" className="min-w-[116px]" align="right" />
+            <button
+              type="button"
+              title="网格"
+              aria-label="网格"
+              onClick={() => setView('grid')}
+              className={cn(
+                'inline-flex h-10 w-10 items-center justify-center rounded-2xl border transition',
+                view === 'grid' ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+              )}
+            >
+              <Grid3X3 size={16} />
+            </button>
+            <button
+              type="button"
+              title="列表"
+              aria-label="列表"
+              onClick={() => setView('list')}
+              className={cn(
+                'inline-flex h-10 w-10 items-center justify-center rounded-2xl border transition',
+                view === 'list' ? 'border-blue-600 bg-blue-600 text-white' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'
+              )}
+            >
+              <List size={16} />
+            </button>
+          </div>
         </div>
+        {filtersOpen ? (
+          <div className="mt-3 border-t border-slate-100 pt-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex h-10 min-w-0 flex-1 items-center gap-3 rounded-2xl border border-slate-200 px-3 md:min-w-[360px]">
+                <Search size={16} className="text-slate-400" />
+                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索标题、作者、标签、格式..." className="w-full bg-transparent text-sm outline-none" />
+              </div>
+              <Button variant="secondary" icon={Filter} className="h-10 px-3 py-0">高级筛选</Button>
+              <Select value={visibility} options={visibilityOptions} onChange={setVisibility} ariaLabel="可见性筛选" size="sm" />
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {formatOptions.map((option) => (
+                <button
+                  key={option.value}
+                  onClick={() => setFilter(option.value)}
+                  className={cn(
+                    'rounded-full border px-3 py-1.5 text-sm',
+                    filter === option.value ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-600'
+                  )}
+                >
+                  {option.label}
+                </button>
+              ))}
+              {['EPUB', 'CBZ', 'ZIP'].map((item) => (
+                <button
+                  key={item}
+                  onClick={() => setFilter(item)}
+                  className={cn(
+                    'rounded-full border px-3 py-1.5 text-sm',
+                    filter === item ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-600'
+                  )}
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+          </div>
+        ) : null}
         {selected.length > 0 ? (
           <div className="mt-4 space-y-3 rounded-2xl bg-blue-50 px-4 py-3 text-sm text-blue-700">
             <div className="flex flex-wrap items-center gap-3">
@@ -230,17 +304,20 @@ export function LibraryPage() {
       {error ? <div className="rounded-3xl border border-red-100 bg-red-50 p-8 text-sm text-red-700">{error}</div> : null}
       {!loading && !error && books.length === 0 ? (
         <div className="rounded-3xl border border-slate-200 bg-white p-8">
-          <div className="text-sm text-slate-500">暂无读物，请先在系统设置中添加书库路径，然后启动扫描。</div>
+          <div className="text-sm text-slate-500">暂无读物，请上传 EPUB/CBZ/ZIP，或在系统设置中添加监控文件夹。</div>
           <div className="mt-5 flex flex-wrap gap-3">
-            <Button icon={Plus} onClick={() => router.push('/settings')}>去添加书库路径</Button>
-            <Button variant="secondary" icon={RefreshCw} onClick={() => router.push('/scan-tasks')}>开始扫描</Button>
+            <label className="inline-flex cursor-pointer items-center gap-2 rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700">
+              <UploadCloud size={17} />上传读物
+              <input type="file" accept=".epub,.cbz,.zip,application/epub+zip,application/zip" className="hidden" disabled={uploading} onChange={(event) => void uploadBook(event.target.files?.[0] ?? null)} />
+            </label>
+            <Button variant="secondary" icon={RefreshCw} onClick={() => router.push('/settings')}>添加监控文件夹</Button>
           </div>
         </div>
       ) : null}
       {!loading && !error && books.length > 0 ? (
         <>
           {view === 'grid' ? (
-            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+            <div className="grid grid-cols-[repeat(auto-fill,minmax(140px,170px))] justify-start gap-4">
               {books.map((book) => (
                 <BookCard
                   key={book.id}

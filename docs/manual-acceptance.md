@@ -1,12 +1,10 @@
-# MVP 手工验收清单
+# 手工验收清单
 
-1. 访问 `/login`，使用 `admin@example.com` / `starshipnas` 登录。
-2. 未登录访问 `/library` 会跳转到登录页，登录后可进入书库。
-3. 在 `/settings` 保存一个可读书库路径，例如 Docker 中的 `/books`。
-4. 在 `/scan-tasks` 选择书库路径并创建扫描任务，Worker 完成后能看到新增、更新和日志。
-5. 在 `/library` 搜索、筛选 TXT/PDF/漫画，点击进入详情页。
-6. 从详情页进入阅读器，TXT、PDF、图片/漫画都通过 `/api/files/:fileId` 加载。
-7. 翻页或滚动后刷新阅读器，进度能恢复。
-8. 在 375px 宽度下检查登录、书库、详情、扫描、设置和阅读器无明显横向溢出。
-9. 本地开发执行 `docker compose up --build`，确认 Web、MySQL、Redis、Worker 可启动并连接。
-10. 生产发布后在空目录执行 `curl -fsSL https://raw.githubusercontent.com/GMD170629/shuku-starship/main/docker-compose.prod.yml | docker compose -f - up -d`，确认不下载代码也能拉取镜像并启动完整服务。
+1. 未登录访问 `/library` 会跳转到登录页，登录后可进入系统。
+2. 在 `/library` 上传 EPUB/CBZ/ZIP，导入完成后列表出现读物。
+3. 上传相同文件不会重复创建读物，导入任务显示重复。
+4. 在 `/settings` 添加 `/books` 下的监控文件夹，向该目录放入 EPUB/CBZ/ZIP 后 Worker 自动导入。
+5. 在 `/import-tasks` 可以看到手动上传和监控导入日志。
+6. 打开详情页并进入阅读器，EPUB 和漫画都能读取系统托管文件。
+7. 页面中只暴露上传、监控文件夹和导入任务，不再暴露旧格式入口。
+8. 在 375px 宽度下检查登录、书库、详情、导入任务、设置和阅读器无明显横向溢出。

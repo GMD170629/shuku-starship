@@ -19,19 +19,6 @@ services:
       retries: 10
       start_period: 30s
 
-  redis:
-    image: redis:7-alpine
-    container_name: shuku-prod-redis
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
-    volumes:
-      - ${REDIS_DATA_PATH:-./data/redis}:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 3s
-      retries: 10
-
   migrate:
     image: gamersgu/shuku-starship-migrator:prod
     platform: linux/amd64
@@ -56,13 +43,10 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-      redis:
-        condition: service_healthy
     environment:
       DATABASE_URL: ${DATABASE_URL:-mysql://${MYSQL_USER:-shuku}:${MYSQL_PASSWORD:-change-me}@mysql:3306/${MYSQL_DATABASE:-shuku_starship}}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       SESSION_SECRET: ${SESSION_SECRET:-replace-this-production-secret-before-real-use-32chars}
-      BOOKS_ROOT: ${BOOKS_ROOT:-/books}
+      MONITOR_ROOT: ${MONITOR_ROOT:-/monitor}
       DEMO_MODE: ${DEMO_MODE:-false}
       NEXT_PUBLIC_DEMO_MODE: ${NEXT_PUBLIC_DEMO_MODE:-false}
       STORAGE_ROOT: /app/storage
@@ -74,9 +58,9 @@ services:
       - "${WEB_PORT:-3000}:3000"
     volumes:
       - ${STORAGE_PATH:-./data/storage}:/app/storage
-      - ${BOOKS_HOST_PATH:-./books}:/books:ro
+      - ${MONITOR_HOST_PATH:-./monitor}:/monitor:ro
     command: >
-      sh -c "./scripts/require-env.sh DATABASE_URL REDIS_URL SESSION_SECRET BOOKS_ROOT
+      sh -c "./scripts/require-env.sh DATABASE_URL SESSION_SECRET MONITOR_ROOT
       && mkdir -p /app/storage/covers /app/storage/indexes /app/storage/temp /app/storage/logs
       && node scripts/seed.mjs
       && node apps/web/server.js"
@@ -97,20 +81,17 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-      redis:
-        condition: service_healthy
     environment:
       DATABASE_URL: ${DATABASE_URL:-mysql://${MYSQL_USER:-shuku}:${MYSQL_PASSWORD:-change-me}@mysql:3306/${MYSQL_DATABASE:-shuku_starship}}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       SESSION_SECRET: ${SESSION_SECRET:-replace-this-production-secret-before-real-use-32chars}
-      BOOKS_ROOT: ${BOOKS_ROOT:-/books}
+      MONITOR_ROOT: ${MONITOR_ROOT:-/monitor}
       DEMO_MODE: ${DEMO_MODE:-false}
       STORAGE_ROOT: /app/storage
     volumes:
       - ${STORAGE_PATH:-./data/storage}:/app/storage
-      - ${BOOKS_HOST_PATH:-./books}:/books:ro
+      - ${MONITOR_HOST_PATH:-./monitor}:/monitor:ro
     command: >
-      sh -c "/app/scripts/require-env.sh DATABASE_URL REDIS_URL SESSION_SECRET BOOKS_ROOT
+      sh -c "/app/scripts/require-env.sh DATABASE_URL SESSION_SECRET MONITOR_ROOT
       && mkdir -p /app/storage/covers /app/storage/indexes /app/storage/temp /app/storage/logs
       && node dist/index.js"
     healthcheck:
