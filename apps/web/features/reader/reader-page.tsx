@@ -3,9 +3,9 @@
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { BookView } from '../../lib/books';
-import { ComicReader, type ComicDirection, type ComicImageFit, type ComicMode } from './comic-reader';
+import { ComicReader, type ComicImageFit, type ComicMode } from './comic-reader';
 import { EbookReader } from './epub-reader';
-import { ReaderShell, type ReaderControls, type ReaderKind, type ReaderProgress, type ReaderSettings } from './reader-shell';
+import { ReaderShell, type EbookFlow, type ReaderControls, type ReaderFontFamily, type ReaderKind, type ReaderProgress, type ReaderSettings, type ReaderTheme } from './reader-shell';
 
 type ProgressPayload = {
   id: string;
@@ -25,14 +25,17 @@ const defaultProgress: ReaderProgress = {
 };
 
 const defaultSettings: ReaderSettings = {
-  dark: true,
+  theme: 'night',
   fontSize: 18,
   lineHeight: 1.9,
   pageWidth: 960,
+  fontFamily: 'system',
+  ebookFlow: 'paginated',
   zoom: 1,
   comicDirection: 'ltr',
   comicMode: 'single',
-  imageFit: 'width'
+  imageFit: 'width',
+  reversePages: false
 };
 
 function readerTypeForBook(book: BookView | null): ReaderKind | 'unknown' {
@@ -57,6 +60,7 @@ export function ReaderPage({ bookId }: { bookId: string }) {
   const [error, setError] = useState('');
   const [settings, setSettings] = useState<ReaderSettings>(defaultSettings);
   const [progress, setProgress] = useState<ReaderProgress>(defaultProgress);
+  const [progressExtra, setProgressExtra] = useState<Record<string, unknown>>({});
   const [controls, setControls] = useState<ReaderControls | null>(null);
 
   const readerType = useMemo(() => readerTypeForBook(book), [book]);
@@ -74,11 +78,12 @@ export function ReaderPage({ bookId }: { bookId: string }) {
         const savedProgress = progressPayload.data?.progress;
         if (savedProgress && active) {
           const extra = safeExtra(savedProgress.extra);
+          setProgressExtra(extra);
           setProgress({
             page: savedProgress.page ?? 1,
             total: null,
             percent: savedProgress.percent,
-            position: savedProgress.position ?? '',
+            position: typeof extra.cfi === 'string' ? extra.cfi : savedProgress.position ?? '',
             label: savedProgress.readerType === 'comic' && savedProgress.page ? `第 ${savedProgress.page} 页` : '正在定位'
           });
           setSettings((current) => ({
@@ -106,16 +111,40 @@ export function ReaderPage({ bookId }: { bookId: string }) {
       .then((payload) => {
         if (!active) return;
         const savedSettings = payload.data?.settings ?? {};
+        const savedTheme = typeof savedSettings.theme === 'string' && ['day', 'warm', 'night', 'black'].includes(savedSettings.theme)
+          ? savedSettings.theme as ReaderTheme
+          : savedSettings.theme === 'light'
+            ? 'day'
+            : savedSettings.theme === 'dark'
+              ? 'night'
+              : undefined;
+        const savedFont = typeof savedSettings.fontFamily === 'string' && ['system', 'serif', 'sans'].includes(savedSettings.fontFamily)
+          ? savedSettings.fontFamily as ReaderFontFamily
+          : undefined;
+        const savedFlow = savedSettings.ebookFlow === 'scrolled' || savedSettings.ebookFlow === 'paginated'
+          ? savedSettings.ebookFlow as EbookFlow
+          : undefined;
+        const savedComicMode = savedSettings.mode === 'continuous' || savedSettings.mode === 'single'
+          ? savedSettings.mode as ComicMode
+          : savedSettings.mode === 'scroll'
+            ? 'continuous'
+            : undefined;
+        const savedFit = savedSettings.imageFit === 'width' || savedSettings.imageFit === 'height' || savedSettings.imageFit === 'contain' || savedSettings.imageFit === 'original'
+          ? savedSettings.imageFit as ComicImageFit
+          : undefined;
         setSettings((current) => ({
           ...current,
           fontSize: typeof savedSettings.fontSize === 'number' ? savedSettings.fontSize : current.fontSize,
           lineHeight: typeof savedSettings.lineHeight === 'number' ? savedSettings.lineHeight : current.lineHeight,
           pageWidth: typeof savedSettings.pageWidth === 'number' ? savedSettings.pageWidth : current.pageWidth,
           zoom: typeof savedSettings.zoom === 'number' ? savedSettings.zoom : current.zoom,
-          dark: savedSettings.theme === 'light' ? false : savedSettings.theme === 'dark' ? true : current.dark,
+          theme: savedTheme ?? current.theme,
+          fontFamily: savedFont ?? current.fontFamily,
+          ebookFlow: savedFlow ?? current.ebookFlow,
           comicDirection: savedSettings.readingDirection === 'rtl' || savedSettings.readingDirection === 'ltr' ? savedSettings.readingDirection : current.comicDirection,
-          comicMode: savedSettings.mode === 'single' || savedSettings.mode === 'scroll' ? savedSettings.mode : current.comicMode,
-          imageFit: savedSettings.imageFit === 'width' || savedSettings.imageFit === 'height' || savedSettings.imageFit === 'contain' ? savedSettings.imageFit : current.imageFit
+          comicMode: savedComicMode ?? current.comicMode,
+          imageFit: savedFit ?? current.imageFit,
+          reversePages: typeof savedSettings.reversePages === 'boolean' ? savedSettings.reversePages : current.reversePages
         }));
       })
       .catch(() => undefined);
@@ -135,12 +164,12 @@ export function ReaderPage({ bookId }: { bookId: string }) {
           position: progress.position,
           page: progress.page,
           percent: progress.percent,
-          extra: { zoom: settings.zoom, fontSize: settings.fontSize, lineHeight: settings.lineHeight }
+          extra: progressExtra
         })
       }).catch(() => undefined);
     }, 700);
     return () => window.clearTimeout(timer);
-  }, [book, progress.page, progress.percent, progress.position, readerType, settings.fontSize, settings.lineHeight, settings.zoom]);
+  }, [book, progress.page, progress.percent, progress.position, progressExtra, readerType]);
 
   useEffect(() => {
     if (readerType === 'unknown') return;
@@ -151,13 +180,16 @@ export function ReaderPage({ bookId }: { bookId: string }) {
             mode: settings.comicMode,
             imageFit: settings.imageFit,
             zoom: settings.zoom,
-            theme: settings.dark ? 'dark' : 'light'
+            reversePages: settings.reversePages,
+            theme: settings.theme
           }
         : {
             fontSize: settings.fontSize,
             lineHeight: settings.lineHeight,
             pageWidth: settings.pageWidth,
-            theme: settings.dark ? 'dark' : 'light'
+            fontFamily: settings.fontFamily,
+            ebookFlow: settings.ebookFlow,
+            theme: settings.theme
           };
       fetch('/api/reader/preferences', {
         method: 'PUT',
@@ -168,8 +200,9 @@ export function ReaderPage({ bookId }: { bookId: string }) {
     return () => window.clearTimeout(timer);
   }, [readerType, settings]);
 
-  const handleProgress = useCallback((nextProgress: ReaderProgress) => {
+  const handleProgress = useCallback((nextProgress: ReaderProgress, nextExtra?: Record<string, unknown>) => {
     setProgress(nextProgress);
+    if (nextExtra) setProgressExtra((current) => ({ ...current, ...nextExtra }));
   }, []);
 
   const handleReaderError = useCallback((message: string) => {
@@ -199,11 +232,14 @@ export function ReaderPage({ bookId }: { bookId: string }) {
         <EbookReader
           bookId={book.id}
           title={book.title}
-          dark={settings.dark}
+          theme={settings.theme}
           fontSize={settings.fontSize}
           lineHeight={settings.lineHeight}
           pageWidth={settings.pageWidth}
+          fontFamily={settings.fontFamily}
+          ebookFlow={settings.ebookFlow}
           initialCfi={progress.position}
+          initialScrollTop={typeof progressExtra.scrollTop === 'number' ? progressExtra.scrollTop : 0}
           onControls={setControls}
           onProgress={handleProgress}
           onActivity={readerEvents.enterImmersive}
@@ -212,16 +248,18 @@ export function ReaderPage({ bookId }: { bookId: string }) {
       ) : (
         <ComicReader
           book={book}
-          dark={settings.dark}
+          dark={settings.theme === 'night' || settings.theme === 'black'}
           initialPage={progress.page}
           initialPosition={progress.position}
-          mode={settings.comicMode as ComicMode}
-          direction={settings.comicDirection as ComicDirection}
-          imageFit={settings.imageFit as ComicImageFit}
+          mode={settings.comicMode}
+          direction={settings.comicDirection}
+          imageFit={settings.imageFit}
           zoom={settings.zoom}
+          reversePages={settings.reversePages}
           onControls={setControls}
           onProgress={handleProgress}
           onActivity={readerEvents.enterImmersive}
+          onTap={readerEvents.toggleControls}
           onError={handleReaderError}
         />
       )}

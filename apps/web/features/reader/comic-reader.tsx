@@ -1,13 +1,13 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
 import { cn } from '../../components/ui/cn';
 import type { BookView } from '../../lib/books';
 import type { ReaderControls, ReaderProgress } from './reader-shell';
 
-export type ComicMode = 'single' | 'scroll';
+export type ComicMode = 'single' | 'continuous';
 export type ComicDirection = 'ltr' | 'rtl';
-export type ComicImageFit = 'width' | 'height' | 'contain';
+export type ComicImageFit = 'width' | 'height' | 'contain' | 'original';
 
 type ComicReaderProps = {
   book: BookView;
@@ -18,9 +18,11 @@ type ComicReaderProps = {
   direction: ComicDirection;
   imageFit: ComicImageFit;
   zoom: number;
+  reversePages: boolean;
   onControls: (controls: ReaderControls | null) => void;
-  onProgress: (progress: ReaderProgress) => void;
+  onProgress: (progress: ReaderProgress, extra?: Record<string, unknown>) => void;
   onActivity: () => void;
+  onTap: () => void;
   onError: (message: string) => void;
 };
 
@@ -47,18 +49,50 @@ function clamp(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
 
-function pagePercent(page: number, total: number) {
-  if (total <= 1) return 0;
-  return Math.round(((page - 1) / (total - 1)) * 100);
+function pagePercentByOrder(pageIndex: number, orderedPages: number[]) {
+  if (orderedPages.length <= 1) return 0;
+  const orderedIndex = Math.max(0, orderedPages.indexOf(pageIndex));
+  return Math.round((orderedIndex / (orderedPages.length - 1)) * 100);
 }
 
-export function ComicReader({ book, dark, initialPage, initialPosition, mode, direction, imageFit, zoom, onControls, onProgress, onActivity, onError }: ComicReaderProps) {
+function scrollPercent(element: HTMLElement) {
+  const max = Math.max(1, element.scrollHeight - element.clientHeight);
+  return clamp(Math.round((element.scrollTop / max) * 100), 0, 100);
+}
+
+export function ComicReader({
+  book,
+  dark,
+  initialPage,
+  initialPosition,
+  mode,
+  direction,
+  imageFit,
+  zoom,
+  reversePages,
+  onControls,
+  onProgress,
+  onActivity,
+  onTap,
+  onError
+}: ComicReaderProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
+  const pageRefs = useRef(new Map<number, HTMLDivElement>());
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [page, setPage] = useState(Math.max(1, initialPage || 1));
+  const [loadedPages, setLoadedPages] = useState<Set<number>>(() => new Set());
   const archiveComic = book.files.length === 1 && isArchiveComicFile(book.files[0]);
 
-  const pageNumbers = useMemo(() => Array.from({ length: pageCount ?? 0 }, (_, index) => index + 1), [pageCount]);
+  const orderedPages = useMemo(() => {
+    const pages = Array.from({ length: pageCount ?? 0 }, (_, index) => index + 1);
+    return reversePages ? pages.reverse() : pages;
+  }, [pageCount, reversePages]);
+
+  const preloadPages = useMemo(() => {
+    const currentIndex = orderedPages.indexOf(page);
+    if (currentIndex < 0) return [page];
+    return orderedPages.slice(Math.max(0, currentIndex - 3), currentIndex + 4);
+  }, [orderedPages, page]);
 
   useEffect(() => {
     let active = true;
@@ -84,7 +118,16 @@ export function ComicReader({ book, dark, initialPage, initialPosition, mode, di
   }, [book.id, initialPage, onError]);
 
   useEffect(() => {
-    if (mode !== 'scroll' || pageCount === null) return;
+    setLoadedPages((current) => {
+      if (mode === 'single') return new Set(preloadPages);
+      const next = new Set(current);
+      preloadPages.forEach((pageNumber) => next.add(pageNumber));
+      return next;
+    });
+  }, [mode, preloadPages]);
+
+  useEffect(() => {
+    if (mode !== 'continuous' || pageCount === null) return;
     const timer = window.setTimeout(() => {
       const top = Number(initialPosition);
       if (Number.isFinite(top)) scrollerRef.current?.scrollTo({ top });
@@ -93,69 +136,125 @@ export function ComicReader({ book, dark, initialPage, initialPosition, mode, di
   }, [initialPosition, mode, pageCount]);
 
   useEffect(() => {
-    const total = Math.max(1, pageCount ?? 1);
-    if (mode === 'single') {
-      onProgress({
-        page,
-        total,
-        percent: pagePercent(page, total),
-        position: String(page),
-        label: `第 ${page} / ${total} 页`
-      });
-    }
-  }, [mode, onProgress, page, pageCount]);
+    if (mode !== 'continuous' || !scrollerRef.current) return;
+    const root = scrollerRef.current;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
+        if (!visible) return;
+        const pageIndex = Number((visible.target as HTMLElement).dataset.pageIndex);
+        if (!Number.isFinite(pageIndex)) return;
+        setLoadedPages((current) => new Set(current).add(pageIndex));
+        setPage(pageIndex);
+        const percent = scrollPercent(root);
+        onProgress({
+          page: pageIndex,
+          total: Math.max(1, pageCount ?? 1),
+          percent,
+          position: String(Math.round(root.scrollTop)),
+          label: `第 ${pageIndex} / ${Math.max(1, pageCount ?? 1)} 页`
+        }, { pageIndex, totalPages: pageCount ?? 1, percentage: percent, mode, direction, fitMode: imageFit, reversePages });
+      },
+      { root, threshold: [0.35, 0.6, 0.85], rootMargin: '800px 0px' }
+    );
+    pageRefs.current.forEach((element) => observer.observe(element));
+    return () => observer.disconnect();
+  }, [direction, imageFit, mode, onProgress, orderedPages, pageCount, reversePages]);
 
   useEffect(() => {
-    const total = Math.max(1, pageCount ?? 1);
+    if (mode !== 'single') return;
+    onProgress({
+      page,
+      total: Math.max(1, pageCount ?? 1),
+      percent: pagePercentByOrder(page, orderedPages),
+      position: String(page),
+      label: `第 ${page} / ${Math.max(1, pageCount ?? 1)} 页`
+    }, { pageIndex: page, totalPages: pageCount ?? 1, percentage: pagePercentByOrder(page, orderedPages), mode, direction, fitMode: imageFit, reversePages });
+  }, [direction, imageFit, mode, onProgress, orderedPages, page, pageCount, reversePages]);
+
+  function moveOrdered(step: number) {
+    const currentIndex = Math.max(0, orderedPages.indexOf(page));
+    const next = orderedPages[clamp(currentIndex + step, 0, Math.max(0, orderedPages.length - 1))];
+    if (next) setPage(next);
+  }
+
+  useEffect(() => {
     onControls({
       next: async () => {
         onActivity();
-        setPage((current) => clamp(current + 1, 1, total));
+        const step = direction === 'rtl' ? -1 : 1;
+        moveOrdered(step);
       },
       prev: async () => {
         onActivity();
-        setPage((current) => clamp(current - 1, 1, total));
+        const step = direction === 'rtl' ? 1 : -1;
+        moveOrdered(step);
       },
       jumpToProgress: async (value) => {
         onActivity();
-        if (mode === 'scroll') {
+        if (mode === 'continuous') {
           const element = scrollerRef.current;
           if (!element) return;
           const max = Math.max(0, element.scrollHeight - element.clientHeight);
           element.scrollTo({ top: Math.round(max * (clamp(value, 0, 100) / 100)), behavior: 'smooth' });
           return;
         }
-        const nextPage = clamp(Math.round((clamp(value, 0, 100) / 100) * Math.max(0, total - 1)) + 1, 1, total);
-        setPage(nextPage);
+        const orderedIndex = clamp(Math.round((clamp(value, 0, 100) / 100) * Math.max(0, orderedPages.length - 1)), 0, Math.max(0, orderedPages.length - 1));
+        const next = orderedPages[orderedIndex];
+        if (next) setPage(next);
+      },
+      jumpToIndex: async (index) => {
+        onActivity();
+        const next = orderedPages.includes(index) ? index : orderedPages[0];
+        if (next) {
+          setPage(next);
+          if (mode === 'continuous') {
+            pageRefs.current.get(next)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }
       }
     });
     return () => onControls(null);
-  }, [mode, onActivity, onControls, pageCount]);
+  }, [direction, mode, onActivity, onControls, orderedPages, page]);
 
   function reportScrollProgress() {
     const element = scrollerRef.current;
-    const total = Math.max(1, pageCount ?? 1);
     if (!element) return;
-    const max = Math.max(1, element.scrollHeight - element.clientHeight);
-    const percent = clamp(Math.round((element.scrollTop / max) * 100), 0, 100);
-    const estimatedPage = clamp(Math.round((percent / 100) * Math.max(0, total - 1)) + 1, 1, total);
-    setPage(estimatedPage);
     onProgress({
-      page: estimatedPage,
-      total,
-      percent,
+      page,
+      total: Math.max(1, pageCount ?? 1),
+      percent: scrollPercent(element),
       position: String(Math.round(element.scrollTop)),
-      label: `第 ${estimatedPage} / ${total} 页`
-    });
+      label: `第 ${page} / ${Math.max(1, pageCount ?? 1)} 页`
+    }, { pageIndex: page, totalPages: pageCount ?? 1, percentage: scrollPercent(element), mode, direction, fitMode: imageFit, reversePages });
     onActivity();
   }
 
+  function handleSingleClick(event: MouseEvent<HTMLDivElement>) {
+    event.stopPropagation();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = event.clientX - rect.left;
+    if (x > rect.width * 0.33 && x < rect.width * 0.67) {
+      onTap();
+      return;
+    }
+    const clickedLeadingSide = x <= rect.width * 0.33;
+    const step = direction === 'rtl'
+      ? (clickedLeadingSide ? 1 : -1)
+      : (clickedLeadingSide ? -1 : 1);
+    onActivity();
+    moveOrdered(step);
+  }
+
   const imageClass = cn(
-    'block shadow-2xl',
+    'block',
     dark ? 'shadow-black/40' : 'shadow-slate-300/80',
     imageFit === 'height' ? 'h-[calc(100dvh-2rem)] w-auto max-w-none' : '',
     imageFit === 'contain' ? 'max-h-[calc(100dvh-2rem)] max-w-full object-contain' : '',
-    imageFit === 'width' ? 'w-full max-w-5xl' : ''
+    imageFit === 'width' ? 'w-full max-w-5xl' : '',
+    imageFit === 'original' ? 'h-auto w-auto max-w-none' : ''
   );
 
   if (!archiveComic) {
@@ -178,28 +277,49 @@ export function ComicReader({ book, dark, initialPage, initialPosition, mode, di
     <div
       ref={scrollerRef}
       className="h-full w-full overflow-auto overscroll-contain px-3 py-4 md:px-8 md:py-8"
-      onScroll={mode === 'scroll' ? reportScrollProgress : undefined}
+      onScroll={mode === 'continuous' ? reportScrollProgress : undefined}
       dir={direction}
     >
       {mode === 'single' ? (
-        <div className="flex min-h-full items-start justify-center">
+        <div className="flex min-h-full items-start justify-center" onClick={handleSingleClick}>
           <img
             src={archivePageUrl(book.id, page)}
             alt={`${book.title} 第 ${page} 页`}
-            className={imageClass}
+            className={cn(imageClass, 'shadow-2xl')}
             style={{ transform: `scale(${zoom})`, transformOrigin: 'top center' }}
           />
+          <div className="hidden">
+            {preloadPages.filter((pageNumber) => pageNumber !== page).map((pageNumber) => (
+              <img key={pageNumber} src={archivePageUrl(book.id, pageNumber)} alt="" aria-hidden="true" />
+            ))}
+          </div>
         </div>
       ) : (
         <div className="flex w-full flex-col items-center gap-4">
-          {pageNumbers.map((pageNumber) => (
-            <img
+          {orderedPages.map((pageNumber) => (
+            <div
               key={pageNumber}
-              src={archivePageUrl(book.id, pageNumber)}
-              alt={`${book.title} 第 ${pageNumber} 页`}
-              className={imageClass}
-              style={{ transform: `scale(${zoom})`, transformOrigin: 'top center' }}
-            />
+              ref={(element) => {
+                if (element) pageRefs.current.set(pageNumber, element);
+                else pageRefs.current.delete(pageNumber);
+              }}
+              data-page-index={pageNumber}
+              className="flex min-h-48 w-full justify-center"
+            >
+              {loadedPages.has(pageNumber) ? (
+                <img
+                  src={archivePageUrl(book.id, pageNumber)}
+                  alt={`${book.title} 第 ${pageNumber} 页`}
+                  className={cn(imageClass, 'shadow-2xl')}
+                  loading="lazy"
+                  style={{ transform: `scale(${zoom})`, transformOrigin: 'top center' }}
+                />
+              ) : (
+                <div className="flex h-80 w-full max-w-5xl items-center justify-center rounded-xl bg-white/5 text-sm opacity-60">
+                  第 {pageNumber} 页
+                </div>
+              )}
+            </div>
           ))}
         </div>
       )}

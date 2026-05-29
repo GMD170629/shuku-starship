@@ -7,6 +7,9 @@ import { cn } from '../../components/ui/cn';
 import type { ComicDirection, ComicImageFit, ComicMode } from './comic-reader';
 
 export type ReaderKind = 'epub' | 'comic';
+export type ReaderTheme = 'day' | 'warm' | 'night' | 'black';
+export type ReaderFontFamily = 'system' | 'serif' | 'sans';
+export type EbookFlow = 'paginated' | 'scrolled';
 
 export type ReaderProgress = {
   page: number;
@@ -20,17 +23,26 @@ export type ReaderControls = {
   next: () => Promise<void>;
   prev: () => Promise<void>;
   jumpToProgress: (value: number) => Promise<void>;
+  jumpToIndex?: (index: number) => Promise<void>;
 };
 
 export type ReaderSettings = {
-  dark: boolean;
+  theme: ReaderTheme;
   fontSize: number;
   lineHeight: number;
   pageWidth: number;
+  fontFamily: ReaderFontFamily;
+  ebookFlow: EbookFlow;
   zoom: number;
   comicDirection: ComicDirection;
   comicMode: ComicMode;
   imageFit: ComicImageFit;
+  reversePages: boolean;
+};
+
+export type ReaderShellEvents = {
+  enterImmersive: () => void;
+  toggleControls: () => void;
 };
 
 type ReaderShellProps = {
@@ -45,11 +57,6 @@ type ReaderShellProps = {
   children: ReactNode | ((events: ReaderShellEvents) => ReactNode);
 };
 
-export type ReaderShellEvents = {
-  enterImmersive: () => void;
-  toggleControls: () => void;
-};
-
 type NavigationItem = {
   index: number;
   title: string;
@@ -58,7 +65,7 @@ type NavigationItem = {
 type ReadingUnitsPayload = {
   ok: boolean;
   data?: {
-    readingUnits: Array<{ title: string; sortOrder: number }>;
+    readingUnits: Array<{ title: string; sortOrder: number; href?: string }>;
   };
 };
 
@@ -70,8 +77,19 @@ type ComicPagesPayload = {
   };
 };
 
+const themeClasses: Record<ReaderTheme, string> = {
+  day: 'bg-[#F7F7F4] text-slate-950',
+  warm: 'bg-[#F5F1E8] text-slate-950',
+  night: 'bg-[#0F172A] text-slate-100',
+  black: 'bg-black text-slate-100'
+};
+
 function clampPercent(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function isDarkTheme(theme: ReaderTheme) {
+  return theme === 'night' || theme === 'black';
 }
 
 function stopControlEvent(event: MouseEvent) {
@@ -90,7 +108,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
   const [panel, setPanel] = useState<'toc' | 'settings' | null>(null);
   const [navItems, setNavItems] = useState<NavigationItem[]>([]);
   const [navLoading, setNavLoading] = useState(false);
-  const dark = settings.dark;
+  const dark = isDarkTheme(settings.theme);
 
   function clearHideTimer() {
     if (hideTimerRef.current) {
@@ -139,6 +157,10 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
   }, [panel]);
 
   useEffect(() => {
+    setNavItems([]);
+  }, [bookId, readerType, settings.reversePages]);
+
+  useEffect(() => {
     if (panel !== 'toc' || navItems.length > 0) return;
     let active = true;
     setNavLoading(true);
@@ -150,7 +172,8 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
         if (readerType === 'comic') {
           const data = payload.data as ComicPagesPayload['data'];
           const pages: Array<{ pageIndex: number; title?: string }> = data?.pages?.length ? data.pages : Array.from({ length: data?.pageCount ?? 0 }, (_, index) => ({ pageIndex: index + 1 }));
-          setNavItems(pages.map((page) => ({ index: page.pageIndex, title: page.title || `第 ${page.pageIndex} 页` })));
+          const orderedPages = settings.reversePages ? [...pages].reverse() : pages;
+          setNavItems(orderedPages.map((page) => ({ index: page.pageIndex, title: page.title || `第 ${page.pageIndex} 页` })));
         } else {
           const data = payload.data as ReadingUnitsPayload['data'];
           setNavItems((data?.readingUnits ?? []).map((unit) => ({ index: unit.sortOrder, title: unit.title || `第 ${unit.sortOrder} 章` })));
@@ -162,7 +185,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
     return () => {
       active = false;
     };
-  }, [bookId, navItems.length, panel, readerType]);
+  }, [bookId, navItems.length, panel, readerType, settings.reversePages]);
 
   async function jumpToPercent(value: number) {
     await controls?.jumpToProgress(clampPercent(value));
@@ -170,6 +193,11 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
   }
 
   async function jumpToItem(item: NavigationItem) {
+    if (controls?.jumpToIndex) {
+      await controls.jumpToIndex(item.index);
+      enterImmersive();
+      return;
+    }
     const total = progress.total ?? navItems.length;
     const percent = total > 1 ? ((item.index - 1) / (total - 1)) * 100 : 0;
     await jumpToPercent(percent);
@@ -182,7 +210,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
 
   return (
     <div
-      className={cn('fixed inset-0 z-50 h-[100dvh] overflow-hidden transition-colors', dark ? 'bg-[#0F172A] text-slate-100' : 'bg-[#F5F1E8] text-slate-950')}
+      className={cn('fixed inset-0 z-50 h-[100dvh] overflow-hidden transition-colors', themeClasses[settings.theme])}
       style={{
         paddingTop: 'env(safe-area-inset-top)',
         paddingBottom: 'env(safe-area-inset-bottom)',
@@ -308,38 +336,61 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
 
           {panel === 'settings' ? (
             <div className="mt-5 space-y-5 text-sm">
-              <div className="flex items-center justify-between gap-3">
-                <span>主题</span>
-                <button type="button" onClick={() => updateSettings({ dark: !settings.dark })} className="flex h-10 items-center gap-2 rounded-xl bg-white/10 px-3 transition hover:bg-white/15">
-                  {settings.dark ? <Sun size={16} /> : <Moon size={16} />}
-                  {settings.dark ? '护眼' : '夜间'}
-                </button>
-              </div>
-
               {readerType === 'epub' ? (
                 <>
-                  <SettingStepper label="字号" value={`${settings.fontSize}px`} onMinus={() => updateSettings({ fontSize: Math.max(14, settings.fontSize - 1) })} onPlus={() => updateSettings({ fontSize: Math.min(28, settings.fontSize + 1) })} />
+                  <SegmentedSetting
+                    label="主题"
+                    value={settings.theme}
+                    options={[
+                      { value: 'day', label: '白天' },
+                      { value: 'warm', label: '暖色' },
+                      { value: 'night', label: '夜间' },
+                      { value: 'black', label: '纯黑' }
+                    ]}
+                    onChange={(value) => updateSettings({ theme: value as ReaderTheme })}
+                  />
+                  <SettingStepper label="字号" value={`${settings.fontSize}px`} onMinus={() => updateSettings({ fontSize: Math.max(14, settings.fontSize - 1) })} onPlus={() => updateSettings({ fontSize: Math.min(30, settings.fontSize + 1) })} />
                   <SettingStepper label="行距" value={settings.lineHeight.toFixed(1)} onMinus={() => updateSettings({ lineHeight: Math.max(1.4, Number((settings.lineHeight - 0.1).toFixed(1))) })} onPlus={() => updateSettings({ lineHeight: Math.min(2.4, Number((settings.lineHeight + 0.1).toFixed(1))) })} />
+                  <SegmentedSetting
+                    label="字体"
+                    value={settings.fontFamily}
+                    options={[{ value: 'system', label: '默认' }, { value: 'serif', label: '衬线' }, { value: 'sans', label: '无衬线' }]}
+                    onChange={(value) => updateSettings({ fontFamily: value as ReaderFontFamily })}
+                  />
                   <SegmentedSetting
                     label="页宽"
                     value={String(settings.pageWidth)}
                     options={[760, 960, 1180].map((value) => ({ value: String(value), label: `${value}px` }))}
                     onChange={(value) => updateSettings({ pageWidth: Number(value) })}
                   />
+                  <SegmentedSetting
+                    label="模式"
+                    value={settings.ebookFlow}
+                    options={[{ value: 'paginated', label: '分页' }, { value: 'scrolled', label: '滚动' }]}
+                    onChange={(value) => updateSettings({ ebookFlow: value as EbookFlow })}
+                  />
                 </>
               ) : (
                 <>
-                  <SettingStepper label="缩放" value={`${Math.round(settings.zoom * 100)}%`} onMinus={() => updateSettings({ zoom: Math.max(0.5, Number((settings.zoom - 0.1).toFixed(1))) })} onPlus={() => updateSettings({ zoom: Math.min(2, Number((settings.zoom + 0.1).toFixed(1))) })} />
+                  <button type="button" onClick={() => updateSettings({ theme: settings.theme === 'black' ? 'night' : 'black' })} className="flex h-10 items-center gap-2 rounded-xl bg-white/10 px-3 transition hover:bg-white/15">
+                    {settings.theme === 'black' ? <Sun size={16} /> : <Moon size={16} />}
+                    {settings.theme === 'black' ? '夜间' : '纯黑'}
+                  </button>
                   <SegmentedSetting
                     label="模式"
                     value={settings.comicMode}
-                    options={[{ value: 'single', label: '单页' }, { value: 'scroll', label: '连续' }]}
+                    options={[{ value: 'single', label: '单页' }, { value: 'continuous', label: '连续' }]}
                     onChange={(value) => updateSettings({ comicMode: value as ComicMode })}
                   />
                   <SegmentedSetting
                     label="适配"
                     value={settings.imageFit}
-                    options={[{ value: 'width', label: '宽度' }, { value: 'height', label: '高度' }, { value: 'contain', label: '完整' }]}
+                    options={[
+                      { value: 'width', label: '宽度' },
+                      { value: 'height', label: '高度' },
+                      { value: 'contain', label: '完整' },
+                      { value: 'original', label: '原始' }
+                    ]}
                     onChange={(value) => updateSettings({ imageFit: value as ComicImageFit })}
                   />
                   <SegmentedSetting
@@ -348,6 +399,10 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
                     options={[{ value: 'ltr', label: '左至右' }, { value: 'rtl', label: '右至左' }]}
                     onChange={(value) => updateSettings({ comicDirection: value as ComicDirection })}
                   />
+                  <label className="flex items-center justify-between gap-3 rounded-xl bg-white/10 px-3 py-2.5">
+                    <span>倒序页码</span>
+                    <input type="checkbox" checked={settings.reversePages} onChange={(event) => updateSettings({ reversePages: event.target.checked })} className="h-5 w-5 accent-blue-500" />
+                  </label>
                 </>
               )}
             </div>
@@ -379,7 +434,7 @@ function SegmentedSetting({ label, value, options, onChange }: { label: string; 
   return (
     <div className="space-y-2">
       <div>{label}</div>
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2">
         {options.map((option) => (
           <button
             key={option.value}
