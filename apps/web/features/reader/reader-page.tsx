@@ -1,19 +1,38 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { BookView } from '../../lib/books';
 import { ComicReader, type ComicImageFit, type ComicMode } from './comic-reader';
 import { EbookReader } from './epub-reader';
-import { ReaderShell, type EbookFlow, type ReaderControls, type ReaderFontFamily, type ReaderKind, type ReaderProgress, type ReaderSettings, type ReaderTheme } from './reader-shell';
+import { ReaderShell, type EbookFlow, type ReaderControls, type ReaderFontFamily, type ReaderKind, type ReaderNavigationItem, type ReaderProgress, type ReaderSettings, type ReaderTheme } from './reader-shell';
 
 type ProgressPayload = {
-  id: string;
+  id?: string;
   readerType: string;
   position: string;
   page?: number | null;
   percent: number;
-  extra: string;
+  extra: string | Record<string, unknown>;
+};
+
+type BootstrapPayload = {
+  ok: boolean;
+  data?: {
+    book: BookView;
+    readerType: 'ebook' | 'comic' | 'unknown';
+    progress: ProgressPayload | null;
+    preferences: {
+      global?: Record<string, unknown>;
+      ebook?: Record<string, unknown>;
+      comic?: Record<string, unknown>;
+      pdf?: Record<string, unknown>;
+    };
+    readingUnits?: Array<{ title: string; sortOrder: number }>;
+    pages?: Array<{ pageIndex: number; title?: string }>;
+    pageCount?: number;
+  };
+  error?: { message: string };
 };
 
 const defaultProgress: ReaderProgress = {
@@ -45,13 +64,106 @@ function readerTypeForBook(book: BookView | null): ReaderKind | 'unknown' {
   return 'unknown';
 }
 
-function safeExtra(value: string) {
-  try {
-    const parsed = JSON.parse(value);
-    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
-  } catch {
-    return {};
+function preferenceTypeForReader(readerType: ReaderKind | 'unknown') {
+  if (readerType === 'epub') return 'ebook';
+  if (readerType === 'comic') return 'comic';
+  return null;
+}
+
+function safeRecord(value: unknown) {
+  if (!value) return {};
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
+    } catch {
+      return {};
+    }
   }
+  return typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function readCache<T>(key: string): T | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) as T : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(key: string, value: unknown) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // Storage may be unavailable in private browsing.
+  }
+}
+
+function progressCacheKey(bookId: string) {
+  return `shuku:reader:progress:${bookId}`;
+}
+
+function settingsCacheKey(type: string) {
+  return `shuku:reader:preferences:${type}`;
+}
+
+function coerceSettings(current: ReaderSettings, savedSettings: Record<string, unknown>) {
+  const savedTheme = typeof savedSettings.theme === 'string' && ['day', 'warm', 'night', 'black'].includes(savedSettings.theme)
+    ? savedSettings.theme as ReaderTheme
+    : savedSettings.theme === 'light'
+      ? 'day'
+      : savedSettings.theme === 'dark'
+        ? 'night'
+        : undefined;
+  const savedFont = typeof savedSettings.fontFamily === 'string' && ['system', 'serif', 'sans'].includes(savedSettings.fontFamily)
+    ? savedSettings.fontFamily as ReaderFontFamily
+    : undefined;
+  const savedFlow = savedSettings.ebookFlow === 'scrolled' || savedSettings.ebookFlow === 'paginated'
+    ? savedSettings.ebookFlow as EbookFlow
+    : undefined;
+  const savedComicMode = savedSettings.mode === 'continuous' || savedSettings.mode === 'single'
+    ? savedSettings.mode as ComicMode
+    : savedSettings.mode === 'scroll'
+      ? 'continuous'
+      : undefined;
+  const savedFit = savedSettings.imageFit === 'width' || savedSettings.imageFit === 'height' || savedSettings.imageFit === 'contain' || savedSettings.imageFit === 'original'
+    ? savedSettings.imageFit as ComicImageFit
+    : undefined;
+
+  return {
+    ...current,
+    fontSize: typeof savedSettings.fontSize === 'number' ? savedSettings.fontSize : current.fontSize,
+    lineHeight: typeof savedSettings.lineHeight === 'number' ? savedSettings.lineHeight : current.lineHeight,
+    pageWidth: typeof savedSettings.pageWidth === 'number' ? savedSettings.pageWidth : current.pageWidth,
+    zoom: typeof savedSettings.zoom === 'number' ? savedSettings.zoom : current.zoom,
+    theme: savedTheme ?? current.theme,
+    fontFamily: savedFont ?? current.fontFamily,
+    ebookFlow: savedFlow ?? current.ebookFlow,
+    comicDirection: savedSettings.readingDirection === 'rtl' || savedSettings.readingDirection === 'ltr' ? savedSettings.readingDirection : current.comicDirection,
+    comicMode: savedComicMode ?? current.comicMode,
+    imageFit: savedFit ?? current.imageFit,
+    reversePages: typeof savedSettings.reversePages === 'boolean' ? savedSettings.reversePages : current.reversePages
+  };
+}
+
+function progressFromPayload(savedProgress: ProgressPayload | null | undefined) {
+  if (!savedProgress) return null;
+  const extra = safeRecord(savedProgress.extra);
+  return {
+    progress: {
+      page: savedProgress.page ?? (typeof extra.pageIndex === 'number' ? extra.pageIndex : 1),
+      total: typeof extra.totalPages === 'number' ? extra.totalPages : null,
+      percent: savedProgress.percent,
+      position: typeof extra.cfi === 'string' ? extra.cfi : savedProgress.position ?? '',
+      label: savedProgress.readerType === 'comic' && (savedProgress.page || extra.pageIndex)
+        ? `第 ${savedProgress.page ?? extra.pageIndex} 页`
+        : '正在定位'
+    } satisfies ReaderProgress,
+    extra
+  };
 }
 
 export function ReaderPage({ bookId }: { bookId: string }) {
@@ -62,143 +174,169 @@ export function ReaderPage({ bookId }: { bookId: string }) {
   const [progress, setProgress] = useState<ReaderProgress>(defaultProgress);
   const [progressExtra, setProgressExtra] = useState<Record<string, unknown>>({});
   const [controls, setControls] = useState<ReaderControls | null>(null);
+  const [navigationItems, setNavigationItems] = useState<ReaderNavigationItem[]>([]);
+  const [hydrated, setHydrated] = useState(false);
+
+  const bookRef = useRef<BookView | null>(null);
+  const readerTypeRef = useRef<ReaderKind | 'unknown'>('unknown');
+  const settingsRef = useRef(settings);
+  const progressRef = useRef(progress);
+  const progressExtraRef = useRef(progressExtra);
+  const preferenceTypeRef = useRef<string | null>(null);
+  const progressSyncTimerRef = useRef<number | null>(null);
+  const settingsSyncTimerRef = useRef<number | null>(null);
+  const lastProgressPayloadRef = useRef('');
+  const lastSettingsPayloadRef = useRef('');
 
   const readerType = useMemo(() => readerTypeForBook(book), [book]);
+  const preferenceType = preferenceTypeForReader(readerType);
 
   useEffect(() => {
-    let active = true;
-    async function load() {
-      try {
-        const bookPayload = (await fetch(`/api/books/${bookId}`).then((response) => response.json())) as { ok: boolean; data?: { book: BookView }; error?: { message: string } };
-        if (!bookPayload.ok || !bookPayload.data?.book) throw new Error(bookPayload.error?.message ?? '读取读物失败');
-        if (!active) return;
-        setBook(bookPayload.data.book);
+    bookRef.current = book;
+    readerTypeRef.current = readerType;
+    settingsRef.current = settings;
+    progressRef.current = progress;
+    progressExtraRef.current = progressExtra;
+    preferenceTypeRef.current = preferenceType;
+  }, [book, preferenceType, progress, progressExtra, readerType, settings]);
 
-        const progressPayload = (await fetch(`/api/books/${bookId}/progress`).then((response) => response.json())) as { ok: boolean; data?: { progress: ProgressPayload | null } };
-        const savedProgress = progressPayload.data?.progress;
-        if (savedProgress && active) {
-          const extra = safeExtra(savedProgress.extra);
-          setProgressExtra(extra);
-          setProgress({
-            page: savedProgress.page ?? 1,
-            total: null,
-            percent: savedProgress.percent,
-            position: typeof extra.cfi === 'string' ? extra.cfi : savedProgress.position ?? '',
-            label: savedProgress.readerType === 'comic' && savedProgress.page ? `第 ${savedProgress.page} 页` : '正在定位'
-          });
-          setSettings((current) => ({
-            ...current,
-            zoom: typeof extra.zoom === 'number' ? extra.zoom : current.zoom,
-            fontSize: typeof extra.fontSize === 'number' ? extra.fontSize : current.fontSize,
-            lineHeight: typeof extra.lineHeight === 'number' ? extra.lineHeight : current.lineHeight
-          }));
-        }
-      } catch (reason) {
-        if (active) setError(reason instanceof Error ? reason.message : '读取读物失败');
-      }
+  useEffect(() => {
+    const cached = readCache<{ progress: ReaderProgress; extra: Record<string, unknown> }>(progressCacheKey(bookId));
+    if (cached) {
+      setProgress(cached.progress);
+      setProgressExtra(cached.extra ?? {});
     }
-    load();
+
+    let active = true;
+    fetch(`/api/reader/${bookId}/bootstrap`)
+      .then((response) => response.json() as Promise<BootstrapPayload>)
+      .then((payload) => {
+        if (!active) return;
+        if (!payload.ok || !payload.data) throw new Error(payload.error?.message ?? '读取阅读器启动信息失败');
+        const { book: nextBook, progress: savedProgress, preferences, readerType: bootstrapReaderType } = payload.data;
+        setBook(nextBook);
+
+        const nextReaderType = bootstrapReaderType === 'comic' ? 'comic' : bootstrapReaderType === 'ebook' ? 'epub' : 'unknown';
+        const nextPreferenceType = preferenceTypeForReader(nextReaderType);
+        if (nextPreferenceType) {
+          const cachedSettings = readCache<ReaderSettings>(settingsCacheKey(nextPreferenceType));
+          const serverSettings = safeRecord(preferences[nextPreferenceType]);
+          setSettings(coerceSettings(cachedSettings ?? defaultSettings, serverSettings));
+        }
+
+        const parsedProgress = progressFromPayload(savedProgress);
+        if (parsedProgress) {
+          setProgress(parsedProgress.progress);
+          setProgressExtra(parsedProgress.extra);
+        }
+
+        if (nextReaderType === 'comic') {
+          const pages: Array<{ pageIndex: number; title?: string }> = payload.data.pages?.length ? payload.data.pages : Array.from({ length: payload.data.pageCount ?? 0 }, (_, index) => ({ pageIndex: index + 1 }));
+          setNavigationItems(pages.map((page) => ({ index: page.pageIndex, title: page.title || `第 ${page.pageIndex} 页` })));
+        } else {
+          setNavigationItems((payload.data.readingUnits ?? []).map((unit) => ({ index: unit.sortOrder, title: unit.title || `第 ${unit.sortOrder} 章` })));
+        }
+        setHydrated(true);
+      })
+      .catch((reason) => {
+        if (active) setError(reason instanceof Error ? reason.message : '读取阅读器启动信息失败');
+      });
     return () => {
       active = false;
     };
   }, [bookId]);
 
-  useEffect(() => {
-    if (readerType === 'unknown') return;
-    let active = true;
-    fetch(`/api/reader/preferences?readerType=${readerType}`)
-      .then((response) => response.json() as Promise<{ ok: boolean; data?: { settings: Record<string, unknown> } }>)
-      .then((payload) => {
-        if (!active) return;
-        const savedSettings = payload.data?.settings ?? {};
-        const savedTheme = typeof savedSettings.theme === 'string' && ['day', 'warm', 'night', 'black'].includes(savedSettings.theme)
-          ? savedSettings.theme as ReaderTheme
-          : savedSettings.theme === 'light'
-            ? 'day'
-            : savedSettings.theme === 'dark'
-              ? 'night'
-              : undefined;
-        const savedFont = typeof savedSettings.fontFamily === 'string' && ['system', 'serif', 'sans'].includes(savedSettings.fontFamily)
-          ? savedSettings.fontFamily as ReaderFontFamily
-          : undefined;
-        const savedFlow = savedSettings.ebookFlow === 'scrolled' || savedSettings.ebookFlow === 'paginated'
-          ? savedSettings.ebookFlow as EbookFlow
-          : undefined;
-        const savedComicMode = savedSettings.mode === 'continuous' || savedSettings.mode === 'single'
-          ? savedSettings.mode as ComicMode
-          : savedSettings.mode === 'scroll'
-            ? 'continuous'
-            : undefined;
-        const savedFit = savedSettings.imageFit === 'width' || savedSettings.imageFit === 'height' || savedSettings.imageFit === 'contain' || savedSettings.imageFit === 'original'
-          ? savedSettings.imageFit as ComicImageFit
-          : undefined;
-        setSettings((current) => ({
-          ...current,
-          fontSize: typeof savedSettings.fontSize === 'number' ? savedSettings.fontSize : current.fontSize,
-          lineHeight: typeof savedSettings.lineHeight === 'number' ? savedSettings.lineHeight : current.lineHeight,
-          pageWidth: typeof savedSettings.pageWidth === 'number' ? savedSettings.pageWidth : current.pageWidth,
-          zoom: typeof savedSettings.zoom === 'number' ? savedSettings.zoom : current.zoom,
-          theme: savedTheme ?? current.theme,
-          fontFamily: savedFont ?? current.fontFamily,
-          ebookFlow: savedFlow ?? current.ebookFlow,
-          comicDirection: savedSettings.readingDirection === 'rtl' || savedSettings.readingDirection === 'ltr' ? savedSettings.readingDirection : current.comicDirection,
-          comicMode: savedComicMode ?? current.comicMode,
-          imageFit: savedFit ?? current.imageFit,
-          reversePages: typeof savedSettings.reversePages === 'boolean' ? savedSettings.reversePages : current.reversePages
-        }));
-      })
-      .catch(() => undefined);
-    return () => {
-      active = false;
+  function progressPayload() {
+    const currentBook = bookRef.current;
+    const currentReaderType = readerTypeRef.current;
+    if (!currentBook || currentReaderType === 'unknown') return null;
+    const currentProgress = progressRef.current;
+    return {
+      readerType: currentReaderType,
+      position: currentProgress.position,
+      page: currentProgress.page,
+      percent: currentProgress.percent,
+      extra: progressExtraRef.current
     };
-  }, [readerType]);
+  }
+
+  function sendProgress(useBeacon = false) {
+    if (progressSyncTimerRef.current) {
+      window.clearTimeout(progressSyncTimerRef.current);
+      progressSyncTimerRef.current = null;
+    }
+    const currentBook = bookRef.current;
+    const payload = progressPayload();
+    if (!currentBook || !payload) return;
+    const serialized = JSON.stringify(payload);
+    if (serialized === lastProgressPayloadRef.current && !useBeacon) return;
+    lastProgressPayloadRef.current = serialized;
+    const url = `/api/books/${currentBook.id}/progress`;
+    if (useBeacon && typeof navigator !== 'undefined' && navigator.sendBeacon) {
+      navigator.sendBeacon(url, new Blob([serialized], { type: 'application/json' }));
+      return;
+    }
+    fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: serialized,
+      keepalive: useBeacon
+    }).catch(() => undefined);
+  }
+
+  function scheduleProgressSync() {
+    if (progressSyncTimerRef.current) return;
+    progressSyncTimerRef.current = window.setTimeout(() => sendProgress(false), 7000);
+  }
+
+  function sendSettings() {
+    if (settingsSyncTimerRef.current) {
+      window.clearTimeout(settingsSyncTimerRef.current);
+      settingsSyncTimerRef.current = null;
+    }
+    const currentPreferenceType = preferenceTypeRef.current;
+    if (!currentPreferenceType) return;
+    const payload = JSON.stringify({ settings: settingsRef.current });
+    if (payload === lastSettingsPayloadRef.current) return;
+    lastSettingsPayloadRef.current = payload;
+    fetch(`/api/reader/preferences/${currentPreferenceType}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: payload
+    }).catch(() => undefined);
+  }
+
+  function scheduleSettingsSync() {
+    if (settingsSyncTimerRef.current) return;
+    settingsSyncTimerRef.current = window.setTimeout(sendSettings, 1500);
+  }
 
   useEffect(() => {
     if (!book || readerType === 'unknown') return;
-    const timer = window.setTimeout(() => {
-      fetch(`/api/books/${book.id}/progress`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          readerType,
-          position: progress.position,
-          page: progress.page,
-          percent: progress.percent,
-          extra: progressExtra
-        })
-      }).catch(() => undefined);
-    }, 700);
-    return () => window.clearTimeout(timer);
-  }, [book, progress.page, progress.percent, progress.position, progressExtra, readerType]);
+    writeCache(progressCacheKey(book.id), { progress, extra: progressExtra });
+    scheduleProgressSync();
+  }, [book, progress, progressExtra, readerType]);
 
   useEffect(() => {
-    if (readerType === 'unknown') return;
-    const timer = window.setTimeout(() => {
-      const payload = readerType === 'comic'
-        ? {
-            readingDirection: settings.comicDirection,
-            mode: settings.comicMode,
-            imageFit: settings.imageFit,
-            zoom: settings.zoom,
-            reversePages: settings.reversePages,
-            theme: settings.theme
-          }
-        : {
-            fontSize: settings.fontSize,
-            lineHeight: settings.lineHeight,
-            pageWidth: settings.pageWidth,
-            fontFamily: settings.fontFamily,
-            ebookFlow: settings.ebookFlow,
-            theme: settings.theme
-          };
-      fetch('/api/reader/preferences', {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ readerType, settings: payload })
-      }).catch(() => undefined);
-    }, 500);
-    return () => window.clearTimeout(timer);
-  }, [readerType, settings]);
+    if (!hydrated || !preferenceType) return;
+    writeCache(settingsCacheKey(preferenceType), settings);
+    scheduleSettingsSync();
+  }, [hydrated, preferenceType, settings]);
+
+  useEffect(() => {
+    function flushOnHidden() {
+      if (document.visibilityState === 'hidden') sendProgress(true);
+    }
+    function flushOnPageHide() {
+      sendProgress(true);
+    }
+    document.addEventListener('visibilitychange', flushOnHidden);
+    window.addEventListener('pagehide', flushOnPageHide);
+    return () => {
+      document.removeEventListener('visibilitychange', flushOnHidden);
+      window.removeEventListener('pagehide', flushOnPageHide);
+    };
+  }, []);
 
   const handleProgress = useCallback((nextProgress: ReaderProgress, nextExtra?: Record<string, unknown>) => {
     setProgress(nextProgress);
@@ -213,6 +351,11 @@ export function ReaderPage({ bookId }: { bookId: string }) {
     setSettings(nextSettings);
   }
 
+  function leaveReader() {
+    sendProgress(true);
+    if (bookRef.current) router.push(`/books/${bookRef.current.id}`);
+  }
+
   if (error) return <div className="flex min-h-[100dvh] items-center justify-center bg-slate-950 p-8 text-center text-red-200">{error}</div>;
   if (!book) return <div className="flex min-h-[100dvh] items-center justify-center bg-slate-950 p-8 text-slate-200">正在打开阅读器...</div>;
   if (readerType === 'unknown') return <div className="flex min-h-[100dvh] items-center justify-center bg-slate-950 p-8 text-center text-slate-200">该读物没有可读内容，或文件格式暂不支持。</div>;
@@ -225,7 +368,8 @@ export function ReaderPage({ bookId }: { bookId: string }) {
       progress={progress}
       controls={controls}
       settings={settings}
-      onBack={() => router.push(`/books/${book.id}`)}
+      navigationItems={navigationItems}
+      onBack={leaveReader}
       onSettingsChange={updateSettings}
     >
       {(readerEvents) => readerType === 'epub' ? (

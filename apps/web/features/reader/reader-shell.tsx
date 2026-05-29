@@ -54,10 +54,11 @@ type ReaderShellProps = {
   settings: ReaderSettings;
   onBack: () => void;
   onSettingsChange: (settings: ReaderSettings) => void;
+  navigationItems?: ReaderNavigationItem[];
   children: ReactNode | ((events: ReaderShellEvents) => ReactNode);
 };
 
-type NavigationItem = {
+export type ReaderNavigationItem = {
   index: number;
   title: string;
 };
@@ -102,11 +103,11 @@ function isCenterPointer(clientX: number, clientY: number) {
   return clientX >= width * 0.18 && clientX <= width * 0.82 && clientY >= height * 0.28 && clientY <= height * 0.72;
 }
 
-export function ReaderShell({ bookId, title, readerType, progress, controls, settings, onBack, onSettingsChange, children }: ReaderShellProps) {
+export function ReaderShell({ bookId, title, readerType, progress, controls, settings, onBack, onSettingsChange, navigationItems, children }: ReaderShellProps) {
   const hideTimerRef = useRef<number | null>(null);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [panel, setPanel] = useState<'toc' | 'settings' | null>(null);
-  const [navItems, setNavItems] = useState<NavigationItem[]>([]);
+  const [navItems, setNavItems] = useState<ReaderNavigationItem[]>(navigationItems ?? []);
   const [navLoading, setNavLoading] = useState(false);
   const dark = isDarkTheme(settings.theme);
 
@@ -157,11 +158,11 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
   }, [panel]);
 
   useEffect(() => {
-    setNavItems([]);
-  }, [bookId, readerType, settings.reversePages]);
+    setNavItems(navigationItems ?? []);
+  }, [bookId, navigationItems, readerType, settings.reversePages]);
 
   useEffect(() => {
-    if (panel !== 'toc' || navItems.length > 0) return;
+    if (navigationItems || panel !== 'toc' || navItems.length > 0) return;
     let active = true;
     setNavLoading(true);
     const endpoint = readerType === 'comic' ? `/api/books/${bookId}/pages` : `/api/books/${bookId}/reading-units`;
@@ -185,14 +186,14 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
     return () => {
       active = false;
     };
-  }, [bookId, navItems.length, panel, readerType, settings.reversePages]);
+  }, [bookId, navigationItems, navItems.length, panel, readerType, settings.reversePages]);
 
   async function jumpToPercent(value: number) {
     await controls?.jumpToProgress(clampPercent(value));
     enterImmersive();
   }
 
-  async function jumpToItem(item: NavigationItem) {
+  async function jumpToItem(item: ReaderNavigationItem) {
     if (controls?.jumpToIndex) {
       await controls.jumpToIndex(item.index);
       enterImmersive();
