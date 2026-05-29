@@ -61,11 +61,19 @@ export function AppShell({ children }: { children: ReactNode }) {
   const accountRef = useRef<HTMLDivElement>(null);
   const isReader = pathname.startsWith('/reader/');
   const isLogin = pathname === '/login';
+  const isMobileReader = pathname === '/mobile';
   const isMobilePreview = pathname === '/mobile-preview';
   const isOffline = pathname === '/offline';
 
   useEffect(() => {
-    if (isReader || isLogin || isMobilePreview || isOffline) return;
+    if (pathname !== '/' || new URLSearchParams(window.location.search).get('source') !== 'pwa') return;
+    const standalone = window.matchMedia('(display-mode: standalone)').matches || ('standalone' in navigator && Boolean((navigator as Navigator & { standalone?: boolean }).standalone));
+    const mobileViewport = window.matchMedia('(max-width: 767px)').matches;
+    if (standalone || mobileViewport) router.replace('/mobile?source=pwa');
+  }, [pathname, router]);
+
+  useEffect(() => {
+    if (isReader || isLogin || isMobileReader || isMobilePreview || isOffline) return;
     let active = true;
     Promise.all([
       fetch('/api/auth/me').then((response) => response.json()).catch(() => null),
@@ -82,7 +90,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     return () => {
       active = false;
     };
-  }, [isLogin, isMobilePreview, isOffline, isReader, pathname]);
+  }, [isLogin, isMobilePreview, isMobileReader, isOffline, isReader, pathname]);
 
   useEffect(() => {
     if (!accountOpen) return;
@@ -108,7 +116,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const storageLabel = storage > 0 ? `${(storage / 1024 / 1024 / 1024).toFixed(1)} GB` : '0 B';
   const healthOk = status?.status === 'ok';
 
-  if (isReader || isLogin || isMobilePreview || isOffline) {
+  if (isReader || isLogin || isMobileReader || isMobilePreview || isOffline) {
     return (
       <>
         {children}

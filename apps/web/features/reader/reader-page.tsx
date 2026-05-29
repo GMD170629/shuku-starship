@@ -6,7 +6,26 @@ import type { BookView } from '../../lib/books';
 import { enqueuePreference, enqueueProgress, flushPreferenceQueue, flushProgressQueue } from '../../lib/pwa/progressQueue';
 import { ComicReader, type ComicImageFit, type ComicMode } from './comic-reader';
 import { EbookReader } from './epub-reader';
-import { ReaderShell, type EbookFlow, type ReaderControls, type ReaderFontFamily, type ReaderKind, type ReaderNavigationItem, type ReaderProgress, type ReaderSettings, type ReaderTheme } from './reader-shell';
+import { ReaderShell, type EbookFlow, type EbookPageTurnAnimation, type ReaderControls, type ReaderFontFamily, type ReaderKind, type ReaderNavigationItem, type ReaderProgress, type ReaderSettings, type ReaderTheme } from './reader-shell';
+
+const readerOpeningStorageKey = 'shuku:reader:opening';
+
+type ReaderOpeningRect = {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+};
+
+type ReaderOpeningContext = {
+  bookId: string;
+  title: string;
+  author: string;
+  format: string;
+  coverUrl: string;
+  gradient: string;
+  rect: ReaderOpeningRect | null;
+};
 
 type ProgressPayload = {
   id?: string;
@@ -51,6 +70,7 @@ const defaultSettings: ReaderSettings = {
   pageWidth: 960,
   fontFamily: 'system',
   ebookFlow: 'paginated',
+  ebookPageTurnAnimation: 'kindle',
   zoom: 1,
   comicDirection: 'ltr',
   comicMode: 'single',
@@ -111,6 +131,35 @@ function settingsCacheKey(type: string) {
   return `shuku:reader:preferences:${type}`;
 }
 
+function safeOpeningContext(bookId: string) {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(readerOpeningStorageKey);
+    if (!raw) return null;
+    window.sessionStorage.removeItem(readerOpeningStorageKey);
+    const parsed = JSON.parse(raw) as Partial<ReaderOpeningContext>;
+    if (parsed.bookId !== bookId || !parsed.title || !parsed.coverUrl || !parsed.gradient) return null;
+    const rect = parsed.rect && typeof parsed.rect.left === 'number' && typeof parsed.rect.top === 'number' && typeof parsed.rect.width === 'number' && typeof parsed.rect.height === 'number'
+      ? parsed.rect
+      : null;
+    return {
+      bookId: parsed.bookId,
+      title: parsed.title,
+      author: typeof parsed.author === 'string' ? parsed.author : '',
+      format: typeof parsed.format === 'string' ? parsed.format : '',
+      coverUrl: parsed.coverUrl,
+      gradient: parsed.gradient,
+      rect
+    } satisfies ReaderOpeningContext;
+  } catch {
+    return null;
+  }
+}
+
+function largeCoverUrl(book: BookView) {
+  return book.coverUrl ? book.coverUrl.replace(/size=(small|medium|large)/, 'size=large') : `/api/books/${book.id}/cover?size=large`;
+}
+
 function coerceSettings(current: ReaderSettings, savedSettings: Record<string, unknown>) {
   const savedTheme = typeof savedSettings.theme === 'string' && ['day', 'warm', 'night', 'black'].includes(savedSettings.theme)
     ? savedSettings.theme as ReaderTheme
@@ -124,6 +173,9 @@ function coerceSettings(current: ReaderSettings, savedSettings: Record<string, u
     : undefined;
   const savedFlow = savedSettings.ebookFlow === 'scrolled' || savedSettings.ebookFlow === 'paginated'
     ? savedSettings.ebookFlow as EbookFlow
+    : undefined;
+  const savedPageTurnAnimation = savedSettings.ebookPageTurnAnimation === 'kindle' || savedSettings.ebookPageTurnAnimation === 'off'
+    ? savedSettings.ebookPageTurnAnimation as EbookPageTurnAnimation
     : undefined;
   const savedComicMode = savedSettings.mode === 'continuous' || savedSettings.mode === 'single'
     ? savedSettings.mode as ComicMode
@@ -143,6 +195,7 @@ function coerceSettings(current: ReaderSettings, savedSettings: Record<string, u
     theme: savedTheme ?? current.theme,
     fontFamily: savedFont ?? current.fontFamily,
     ebookFlow: savedFlow ?? current.ebookFlow,
+    ebookPageTurnAnimation: savedPageTurnAnimation ?? current.ebookPageTurnAnimation ?? defaultSettings.ebookPageTurnAnimation,
     comicDirection: savedSettings.readingDirection === 'rtl' || savedSettings.readingDirection === 'ltr' ? savedSettings.readingDirection : current.comicDirection,
     comicMode: savedComicMode ?? current.comicMode,
     imageFit: savedFit ?? current.imageFit,
@@ -169,6 +222,7 @@ function progressFromPayload(savedProgress: ProgressPayload | null | undefined) 
 
 export function ReaderPage({ bookId }: { bookId: string }) {
   const router = useRouter();
+  const [openingContext] = useState<ReaderOpeningContext | null>(() => safeOpeningContext(bookId));
   const [book, setBook] = useState<BookView | null>(null);
   const [error, setError] = useState('');
   const [settings, setSettings] = useState<ReaderSettings>(defaultSettings);
@@ -177,6 +231,7 @@ export function ReaderPage({ bookId }: { bookId: string }) {
   const [controls, setControls] = useState<ReaderControls | null>(null);
   const [navigationItems, setNavigationItems] = useState<ReaderNavigationItem[]>([]);
   const [hydrated, setHydrated] = useState(false);
+  const [readerReady, setReaderReady] = useState(false);
   const [bootstrapRetryToken, setBootstrapRetryToken] = useState(0);
 
   const bookRef = useRef<BookView | null>(null);
@@ -201,6 +256,10 @@ export function ReaderPage({ bookId }: { bookId: string }) {
     progressExtraRef.current = progressExtra;
     preferenceTypeRef.current = preferenceType;
   }, [book, preferenceType, progress, progressExtra, readerType, settings]);
+
+  useEffect(() => {
+    setReaderReady(false);
+  }, [bookId, bootstrapRetryToken]);
 
   useEffect(() => {
     const cached = readCache<{ progress: ReaderProgress; extra: Record<string, unknown> }>(progressCacheKey(bookId));
@@ -339,6 +398,12 @@ export function ReaderPage({ bookId }: { bookId: string }) {
   }, [book, progress, progressExtra, readerType]);
 
   useEffect(() => {
+    if (!book || readerType !== 'comic') return undefined;
+    const timer = window.setTimeout(() => setReaderReady(true), 320);
+    return () => window.clearTimeout(timer);
+  }, [book, readerType]);
+
+  useEffect(() => {
     if (!hydrated || !preferenceType) return;
     writeCache(settingsCacheKey(preferenceType), settings);
     scheduleSettingsSync();
@@ -374,6 +439,10 @@ export function ReaderPage({ bookId }: { bookId: string }) {
 
   function leaveReader() {
     sendProgress(true);
+    if (new URLSearchParams(window.location.search).get('from') === 'mobile') {
+      router.push('/mobile');
+      return;
+    }
     if (bookRef.current) router.push(`/books/${bookRef.current.id}`);
   }
 
@@ -394,75 +463,143 @@ export function ReaderPage({ bookId }: { bookId: string }) {
       </div>
     );
   }
-  if (!book) return <ReaderOpeningSkeleton />;
+  if (!book) return <ReaderOpeningOverlay context={openingContext} book={null} ready={false} />;
   if (readerType === 'unknown') return <div className="flex min-h-[100dvh] items-center justify-center bg-slate-950 p-8 text-center text-slate-200">该读物没有可读内容，或文件格式暂不支持。</div>;
 
   return (
-    <ReaderShell
-      bookId={book.id}
-      title={book.title}
-      readerType={readerType}
-      progress={progress}
-      controls={controls}
-      settings={settings}
-      navigationItems={navigationItems}
-      onBack={leaveReader}
-      onSettingsChange={updateSettings}
-    >
-      {(readerEvents) => readerType === 'epub' ? (
-        <EbookReader
-          bookId={book.id}
-          title={book.title}
-          theme={settings.theme}
-          fontSize={settings.fontSize}
-          lineHeight={settings.lineHeight}
-          pageWidth={settings.pageWidth}
-          fontFamily={settings.fontFamily}
-          ebookFlow={settings.ebookFlow}
-          initialCfi={progress.position}
-          initialScrollTop={typeof progressExtra.scrollTop === 'number' ? progressExtra.scrollTop : 0}
-          onControls={setControls}
-          onProgress={handleProgress}
-          onActivity={readerEvents.enterImmersive}
-          onTap={readerEvents.toggleControls}
-        />
-      ) : (
-        <ComicReader
-          book={book}
-          dark={settings.theme === 'night' || settings.theme === 'black'}
-          initialPage={progress.page}
-          initialPosition={progress.position}
-          mode={settings.comicMode}
-          direction={settings.comicDirection}
-          imageFit={settings.imageFit}
-          zoom={settings.zoom}
-          reversePages={settings.reversePages}
-          onControls={setControls}
-          onProgress={handleProgress}
-          onActivity={readerEvents.enterImmersive}
-          onTap={readerEvents.toggleControls}
-          onError={handleReaderError}
-        />
-      )}
-    </ReaderShell>
+    <>
+      <ReaderShell
+        bookId={book.id}
+        title={book.title}
+        readerType={readerType}
+        progress={progress}
+        controls={controls}
+        settings={settings}
+        navigationItems={navigationItems}
+        onBack={leaveReader}
+        onSettingsChange={updateSettings}
+      >
+        {(readerEvents) => readerType === 'epub' ? (
+          <EbookReader
+            bookId={book.id}
+            title={book.title}
+            theme={settings.theme}
+            fontSize={settings.fontSize}
+            lineHeight={settings.lineHeight}
+            pageWidth={settings.pageWidth}
+            fontFamily={settings.fontFamily}
+            ebookFlow={settings.ebookFlow}
+            ebookPageTurnAnimation={settings.ebookPageTurnAnimation}
+            initialCfi={progress.position}
+            initialScrollTop={typeof progressExtra.scrollTop === 'number' ? progressExtra.scrollTop : 0}
+            onControls={setControls}
+            onProgress={handleProgress}
+            onActivity={() => undefined}
+            onTap={readerEvents.toggleControls}
+            onReady={() => setReaderReady(true)}
+          />
+        ) : (
+          <ComicReader
+            book={book}
+            dark={settings.theme === 'night' || settings.theme === 'black'}
+            initialPage={progress.page}
+            initialPosition={progress.position}
+            mode={settings.comicMode}
+            direction={settings.comicDirection}
+            imageFit={settings.imageFit}
+            zoom={settings.zoom}
+            reversePages={settings.reversePages}
+            onControls={setControls}
+            onProgress={handleProgress}
+            onActivity={() => undefined}
+            onTap={readerEvents.toggleControls}
+            onError={handleReaderError}
+          />
+        )}
+      </ReaderShell>
+      <ReaderOpeningOverlay context={openingContext} book={book} ready={readerReady} />
+    </>
   );
 }
 
-function ReaderOpeningSkeleton() {
+function prefersReducedReaderMotion() {
+  return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
+function ReaderOpeningOverlay({ context, book, ready }: { context: ReaderOpeningContext | null; book: BookView | null; ready: boolean }) {
+  const source = book
+    ? { title: book.title, author: book.author, format: book.format, coverUrl: largeCoverUrl(book), gradient: book.gradient, rect: context?.rect ?? null }
+    : context;
+  const reducedMotion = prefersReducedReaderMotion();
+  const [opened, setOpened] = useState(() => !source?.rect || reducedMotion);
+  const [hidden, setHidden] = useState(false);
+  const [imageFailed, setImageFailed] = useState(false);
+
+  useEffect(() => {
+    if (!source?.rect || reducedMotion) {
+      setOpened(true);
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => setOpened(true));
+    return () => window.cancelAnimationFrame(frame);
+  }, [reducedMotion, source?.rect]);
+
+  useEffect(() => {
+    setImageFailed(false);
+  }, [source?.coverUrl]);
+
+  useEffect(() => {
+    if (!ready) return undefined;
+    const timer = window.setTimeout(() => setHidden(true), 240);
+    return () => window.clearTimeout(timer);
+  }, [ready]);
+
+  if (hidden) return null;
+
+  const width = typeof window === 'undefined' ? 190 : Math.min(240, Math.max(170, window.innerWidth * 0.48));
+  const height = width * 1.42;
+  const target = {
+    left: typeof window === 'undefined' ? 0 : (window.innerWidth - width) / 2,
+    top: typeof window === 'undefined' ? 120 : Math.max(88, (window.innerHeight - height) / 2 - 24),
+    width,
+    height
+  };
+  const rect = opened || !source?.rect ? target : source.rect;
+  const showCover = source && !imageFailed;
+
   return (
-    <div className="min-h-[100dvh] bg-slate-950 p-4 text-slate-200 md:p-8">
-      <div className="mx-auto flex min-h-[calc(100dvh-2rem)] max-w-5xl animate-pulse flex-col justify-between">
-        <div className="flex items-center justify-between gap-4">
-          <div className="h-11 w-11 rounded-full bg-white/10" />
-          <div className="h-4 flex-1 rounded-full bg-white/10" />
-          <div className="h-11 w-24 rounded-2xl bg-white/10" />
+    <div
+      className="fixed inset-0 z-[80] overflow-hidden bg-slate-950 transition-opacity duration-200"
+      style={{ opacity: ready ? 0 : 1, pointerEvents: ready ? 'none' : 'auto' }}
+      aria-hidden="true"
+    >
+      {source ? (
+        <div
+          className="fixed overflow-hidden rounded-[18px] bg-slate-900 shadow-2xl shadow-black/45"
+          style={{
+            left: rect.left,
+            top: rect.top,
+            width: rect.width,
+            height: rect.height,
+            transition: opened && !reducedMotion ? 'left 420ms cubic-bezier(0.22, 1, 0.36, 1), top 420ms cubic-bezier(0.22, 1, 0.36, 1), width 420ms cubic-bezier(0.22, 1, 0.36, 1), height 420ms cubic-bezier(0.22, 1, 0.36, 1), border-radius 420ms cubic-bezier(0.22, 1, 0.36, 1)' : undefined,
+            borderRadius: opened ? 24 : 18
+          }}
+        >
+          {showCover ? (
+            <img src={source.coverUrl} alt="" className="h-full w-full object-cover" onError={() => setImageFailed(true)} />
+          ) : (
+            <div className={`relative h-full w-full bg-gradient-to-br ${source.gradient}`}>
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,.34),transparent_30%),linear-gradient(135deg,rgba(255,255,255,.18),transparent_38%)]" />
+              <div className="absolute inset-x-4 bottom-4">
+                <div className="line-clamp-3 text-sm font-semibold leading-tight text-white">{source.title}</div>
+                <div className="mt-1 truncate text-xs text-white/75">{source.author}</div>
+              </div>
+            </div>
+          )}
         </div>
-        <div className="mx-auto h-[62dvh] w-full max-w-3xl rounded-2xl bg-white/5" />
-        <div className="space-y-3">
-          <div className="h-11 rounded-2xl bg-white/10" />
-          <div className="h-3 w-36 rounded-full bg-white/10" />
-        </div>
-      </div>
+      ) : (
+        <div className="absolute left-1/2 top-1/2 h-56 w-40 -translate-x-1/2 -translate-y-1/2 animate-pulse rounded-[24px] bg-white/10" />
+      )}
     </div>
   );
 }

@@ -10,6 +10,7 @@ export type ReaderKind = 'epub' | 'comic';
 export type ReaderTheme = 'day' | 'warm' | 'night' | 'black';
 export type ReaderFontFamily = 'system' | 'serif' | 'sans';
 export type EbookFlow = 'paginated' | 'scrolled';
+export type EbookPageTurnAnimation = 'kindle' | 'off';
 
 export type ReaderProgress = {
   page: number;
@@ -33,6 +34,7 @@ export type ReaderSettings = {
   pageWidth: number;
   fontFamily: ReaderFontFamily;
   ebookFlow: EbookFlow;
+  ebookPageTurnAnimation: EbookPageTurnAnimation;
   zoom: number;
   comicDirection: ComicDirection;
   comicMode: ComicMode;
@@ -43,6 +45,7 @@ export type ReaderSettings = {
 export type ReaderShellEvents = {
   enterImmersive: () => void;
   toggleControls: () => void;
+  shouldIgnoreInteraction: (target: EventTarget | null) => boolean;
 };
 
 type ReaderShellProps = {
@@ -103,64 +106,130 @@ function isCenterPointer(clientX: number, clientY: number) {
   return clientX >= width * 0.18 && clientX <= width * 0.82 && clientY >= height * 0.28 && clientY <= height * 0.72;
 }
 
-function isStandaloneDisplay() {
-  if (typeof window === 'undefined') return false;
-  return window.matchMedia('(display-mode: standalone)').matches || ('standalone' in navigator && Boolean((navigator as Navigator & { standalone?: boolean }).standalone));
+function isEditableTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  const tagName = target.tagName.toLowerCase();
+  return target.isContentEditable || tagName === 'input' || tagName === 'textarea' || tagName === 'select' || tagName === 'button';
+}
+
+function shouldIgnoreReaderInteraction(target: EventTarget | null) {
+  if (!(target instanceof Element)) return false;
+  return isEditableTarget(target) || Boolean(target.closest('[data-reader-control="true"]'));
 }
 
 export function ReaderShell({ bookId, title, readerType, progress, controls, settings, onBack, onSettingsChange, navigationItems, children }: ReaderShellProps) {
-  const hideTimerRef = useRef<number | null>(null);
-  const [controlsVisible, setControlsVisible] = useState(() => !isStandaloneDisplay());
+  const controlsVisibleRef = useRef(false);
+  const controlsRef = useRef<ReaderControls | null>(null);
+  const panelRef = useRef<'toc' | 'settings' | null>(null);
+  const touchRef = useRef({ x: 0, y: 0, time: 0 });
+  const suppressClickUntilRef = useRef(0);
+  const [controlsVisible, setControlsVisible] = useState(false);
   const [panel, setPanel] = useState<'toc' | 'settings' | null>(null);
   const [navItems, setNavItems] = useState<ReaderNavigationItem[]>(navigationItems ?? []);
   const [navLoading, setNavLoading] = useState(false);
   const dark = isDarkTheme(settings.theme);
 
-  function clearHideTimer() {
-    if (hideTimerRef.current) {
-      window.clearTimeout(hideTimerRef.current);
-      hideTimerRef.current = null;
-    }
+  function setControlsVisibility(visible: boolean) {
+    controlsVisibleRef.current = visible;
+    setControlsVisible(visible);
   }
 
-  function scheduleHide() {
-    clearHideTimer();
-    hideTimerRef.current = window.setTimeout(() => {
-      setControlsVisible(false);
-      setPanel(null);
-    }, 3000);
-  }
-
-  function showTemporarily() {
-    setControlsVisible(true);
-    scheduleHide();
-  }
-
-  function keepVisibleIfShown() {
-    if (controlsVisible) scheduleHide();
+  function keepControlsOpen() {
+    setControlsVisibility(true);
   }
 
   function enterImmersive() {
-    clearHideTimer();
-    setControlsVisible(false);
+    setControlsVisibility(false);
     setPanel(null);
   }
 
   function toggleControls() {
-    if (controlsVisible) enterImmersive();
-    else showTemporarily();
+    if (controlsVisibleRef.current) enterImmersive();
+    else keepControlsOpen();
+  }
+
+  function closePanelOrImmersive() {
+    if (panelRef.current) {
+      setPanel(null);
+      return;
+    }
+    enterImmersive();
+  }
+
+  async function goNext() {
+    await controlsRef.current?.next();
+  }
+
+  async function goPrev() {
+    await controlsRef.current?.prev();
+  }
+
+  async function jumpToStart() {
+    await controlsRef.current?.jumpToProgress(0);
+  }
+
+  async function jumpToEnd() {
+    await controlsRef.current?.jumpToProgress(100);
+  }
+
+  function handleReaderTap(clientX: number, clientY: number) {
+    if (isCenterPointer(clientX, clientY)) {
+      toggleControls();
+      return;
+    }
+    const width = window.innerWidth;
+    if (clientX < width * 0.33) void goPrev();
+    else if (clientX > width * 0.67) void goNext();
   }
 
   useEffect(() => {
-    if (isStandaloneDisplay()) enterImmersive();
-    else scheduleHide();
-    return clearHideTimer;
+    controlsRef.current = controls;
+  }, [controls]);
+
+  useEffect(() => {
+    controlsVisibleRef.current = controlsVisible;
+  }, [controlsVisible]);
+
+  useEffect(() => {
+    panelRef.current = panel;
+  }, [panel]);
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (shouldIgnoreReaderInteraction(event.target)) return;
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closePanelOrImmersive();
+        return;
+      }
+      if (event.key === 'ArrowLeft' || event.key === 'PageUp' || (event.key === ' ' && event.shiftKey)) {
+        event.preventDefault();
+        void goPrev();
+        return;
+      }
+      if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' ') {
+        event.preventDefault();
+        void goNext();
+        return;
+      }
+      if (event.key === 'Home') {
+        event.preventDefault();
+        void jumpToStart();
+        return;
+      }
+      if (event.key === 'End') {
+        event.preventDefault();
+        void jumpToEnd();
+      }
+    }
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
   }, []);
 
   useEffect(() => {
     if (!panel) return;
-    setControlsVisible(true);
-    clearHideTimer();
+    setControlsVisibility(true);
   }, [panel]);
 
   useEffect(() => {
@@ -196,13 +265,11 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
 
   async function jumpToPercent(value: number) {
     await controls?.jumpToProgress(clampPercent(value));
-    enterImmersive();
   }
 
   async function jumpToItem(item: ReaderNavigationItem) {
     if (controls?.jumpToIndex) {
       await controls.jumpToIndex(item.index);
-      enterImmersive();
       return;
     }
     const total = progress.total ?? navItems.length;
@@ -212,7 +279,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
 
   function updateSettings(next: Partial<ReaderSettings>) {
     onSettingsChange({ ...settings, ...next });
-    showTemporarily();
+    keepControlsOpen();
   }
 
   return (
@@ -225,14 +292,37 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
         paddingRight: 'env(safe-area-inset-right)'
       }}
       onClick={(event) => {
-        if (isCenterPointer(event.clientX, event.clientY)) toggleControls();
+        if (Date.now() < suppressClickUntilRef.current || shouldIgnoreReaderInteraction(event.target)) return;
+        handleReaderTap(event.clientX, event.clientY);
       }}
-      onMouseMove={keepVisibleIfShown}
-      onTouchStart={keepVisibleIfShown}
-      onWheel={enterImmersive}
+      onTouchStart={(event) => {
+        if (shouldIgnoreReaderInteraction(event.target)) return;
+        const touch = event.changedTouches[0];
+        if (!touch) return;
+        touchRef.current = { x: touch.clientX, y: touch.clientY, time: Date.now() };
+      }}
+      onTouchEnd={(event) => {
+        if (shouldIgnoreReaderInteraction(event.target)) return;
+        const touch = event.changedTouches[0];
+        if (!touch) return;
+        const deltaX = touch.clientX - touchRef.current.x;
+        const deltaY = touch.clientY - touchRef.current.y;
+        const elapsed = Date.now() - touchRef.current.time;
+        if (Math.abs(deltaX) >= 48 && Math.abs(deltaX) > Math.abs(deltaY) * 1.4 && elapsed < 900) {
+          suppressClickUntilRef.current = Date.now() + 450;
+          if (deltaX < 0) void goNext();
+          else void goPrev();
+          return;
+        }
+        if (Math.abs(deltaX) < 12 && Math.abs(deltaY) < 12) {
+          suppressClickUntilRef.current = Date.now() + 450;
+          handleReaderTap(touch.clientX, touch.clientY);
+        }
+      }}
+      tabIndex={-1}
     >
-      <main className="h-full w-full" onScroll={enterImmersive}>
-        {typeof children === 'function' ? children({ enterImmersive, toggleControls }) : children}
+      <main className="h-full w-full">
+        {typeof children === 'function' ? children({ enterImmersive, toggleControls, shouldIgnoreInteraction: shouldIgnoreReaderInteraction }) : children}
       </main>
 
       <div
@@ -242,6 +332,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
           controlsVisible ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0'
         )}
         style={{ paddingTop: 'max(0.5rem, env(safe-area-inset-top))' }}
+        data-reader-control="true"
         onClick={stopControlEvent}
       >
         <div className="mx-auto flex h-12 max-w-6xl items-center justify-between gap-2">
@@ -275,11 +366,12 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
           controlsVisible ? 'translate-y-0 opacity-100' : 'translate-y-full opacity-0'
         )}
         style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}
+        data-reader-control="true"
         onClick={stopControlEvent}
       >
         <div className="mx-auto flex max-w-5xl flex-col gap-3">
           <div className="flex items-center gap-2">
-            <Button variant="ghost" icon={ChevronLeft} className={cn('min-h-11 shrink-0 px-3', dark ? 'text-slate-100 hover:bg-white/10' : '')} onClick={() => { void controls?.prev(); enterImmersive(); }}>
+            <Button variant="ghost" icon={ChevronLeft} className={cn('min-h-11 shrink-0 px-3', dark ? 'text-slate-100 hover:bg-white/10' : '')} onClick={() => { void controls?.prev(); keepControlsOpen(); }}>
               <span className="hidden sm:inline">上一页</span>
             </Button>
             <input
@@ -291,7 +383,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
               onChange={(event) => { void jumpToPercent(Number(event.target.value)); }}
               className="h-11 min-w-0 flex-1 accent-blue-500"
             />
-            <Button variant="ghost" icon={ChevronRight} className={cn('min-h-11 shrink-0 px-3', dark ? 'text-slate-100 hover:bg-white/10' : '')} onClick={() => { void controls?.next(); enterImmersive(); }}>
+            <Button variant="ghost" icon={ChevronRight} className={cn('min-h-11 shrink-0 px-3', dark ? 'text-slate-100 hover:bg-white/10' : '')} onClick={() => { void controls?.next(); keepControlsOpen(); }}>
               <span className="hidden sm:inline">下一页</span>
             </Button>
           </div>
@@ -309,6 +401,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
             dark ? 'border-white/10 bg-slate-950/94' : 'border-slate-200 bg-white/94'
           )}
           style={{ paddingTop: 'max(1rem, env(safe-area-inset-top))', paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}
+          data-reader-control="true"
           onClick={stopControlEvent}
         >
           <div className="flex items-center justify-between gap-3">
@@ -316,7 +409,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
               <div className="text-sm font-semibold">{panel === 'toc' ? (readerType === 'comic' ? '页码' : '目录') : '阅读设置'}</div>
               <div className="mt-0.5 text-xs opacity-60">{progress.label}</div>
             </div>
-            <button type="button" onClick={() => { setPanel(null); scheduleHide(); }} className="flex h-11 w-11 items-center justify-center rounded-full transition active:scale-[0.98] hover:bg-white/10" aria-label="关闭面板">
+            <button type="button" onClick={() => { setPanel(null); keepControlsOpen(); }} className="flex h-11 w-11 items-center justify-center rounded-full transition active:scale-[0.98] hover:bg-white/10" aria-label="关闭面板">
               <X size={18} />
             </button>
           </div>
@@ -375,6 +468,12 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
                     value={settings.ebookFlow}
                     options={[{ value: 'paginated', label: '分页' }, { value: 'scrolled', label: '滚动' }]}
                     onChange={(value) => updateSettings({ ebookFlow: value as EbookFlow })}
+                  />
+                  <SegmentedSetting
+                    label="翻页动画"
+                    value={settings.ebookPageTurnAnimation}
+                    options={[{ value: 'kindle', label: 'Kindle' }, { value: 'off', label: '关闭' }]}
+                    onChange={(value) => updateSettings({ ebookPageTurnAnimation: value as EbookPageTurnAnimation })}
                   />
                 </>
               ) : (

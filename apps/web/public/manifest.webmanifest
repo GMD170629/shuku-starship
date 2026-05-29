@@ -2,12 +2,12 @@
   "name": "书库星舰",
   "short_name": "书库星舰",
   "description": "自托管 NAS 读物管理与移动阅读系统",
-  "start_url": "/?source=pwa",
+  "start_url": "/mobile?source=pwa",
   "scope": "/",
   "display": "standalone",
   "orientation": "any",
-  "theme_color": "#0F172A",
-  "background_color": "#020617",
+  "theme_color": "#FFFFFF",
+  "background_color": "#F7F7F8",
   "categories": ["books", "productivity", "utilities"],
   "icons": [
     {

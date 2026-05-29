@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type TouchEvent } from 'react';
 import { cn } from '../../components/ui/cn';
 import type { BookView } from '../../lib/books';
 import type { ReaderControls, ReaderProgress } from './reader-shell';
@@ -89,6 +89,8 @@ export function ComicReader({
 }: ComicReaderProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef(new Map<number, HTMLDivElement>());
+  const touchRef = useRef({ x: 0, y: 0, time: 0 });
+  const suppressClickUntilRef = useRef(0);
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [pageMeta, setPageMeta] = useState<Record<number, ComicPageMeta>>({});
   const [page, setPage] = useState(Math.max(1, initialPage || 1));
@@ -227,20 +229,66 @@ export function ComicReader({
   function moveOrdered(step: number) {
     const currentIndex = Math.max(0, orderedPages.indexOf(page));
     const next = orderedPages[clamp(currentIndex + step, 0, Math.max(0, orderedPages.length - 1))];
-    if (next) setPage(next);
+    if (!next) return;
+    setPage(next);
+    if (mode === 'continuous') {
+      pageRefs.current.get(next)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }
+
+  function moveByReaderIntent(intent: 'next' | 'prev') {
+    const step = direction === 'rtl'
+      ? (intent === 'next' ? -1 : 1)
+      : (intent === 'next' ? 1 : -1);
+    onActivity();
+    moveOrdered(step);
+  }
+
+  function handleContentTap(clientX: number, width: number) {
+    if (clientX > width * 0.33 && clientX < width * 0.67) {
+      onTap();
+      return;
+    }
+    const clickedLeadingSide = clientX <= width * 0.33;
+    const intent = direction === 'rtl'
+      ? (clickedLeadingSide ? 'next' : 'prev')
+      : (clickedLeadingSide ? 'prev' : 'next');
+    moveByReaderIntent(intent);
+  }
+
+  function handleTouchStart(event: TouchEvent<HTMLDivElement>) {
+    const touch = event.changedTouches[0];
+    if (!touch) return;
+    touchRef.current = { x: touch.clientX, y: touch.clientY, time: Date.now() };
+  }
+
+  function handleTouchEnd(event: TouchEvent<HTMLDivElement>) {
+    const touch = event.changedTouches[0];
+    if (!touch) return;
+    const deltaX = touch.clientX - touchRef.current.x;
+    const deltaY = touch.clientY - touchRef.current.y;
+    const elapsed = Date.now() - touchRef.current.time;
+    if (Math.abs(deltaX) >= 48 && Math.abs(deltaX) > Math.abs(deltaY) * 1.4 && elapsed < 900) {
+      event.stopPropagation();
+      suppressClickUntilRef.current = Date.now() + 450;
+      moveByReaderIntent(deltaX < 0 ? 'next' : 'prev');
+      return;
+    }
+    if (Math.abs(deltaX) < 12 && Math.abs(deltaY) < 12) {
+      event.stopPropagation();
+      suppressClickUntilRef.current = Date.now() + 450;
+      const rect = event.currentTarget.getBoundingClientRect();
+      handleContentTap(touch.clientX - rect.left, rect.width);
+    }
   }
 
   useEffect(() => {
     onControls({
       next: async () => {
-        onActivity();
-        const step = direction === 'rtl' ? -1 : 1;
-        moveOrdered(step);
+        moveByReaderIntent('next');
       },
       prev: async () => {
-        onActivity();
-        const step = direction === 'rtl' ? 1 : -1;
-        moveOrdered(step);
+        moveByReaderIntent('prev');
       },
       jumpToProgress: async (value) => {
         onActivity();
@@ -284,18 +332,10 @@ export function ComicReader({
 
   function handleSingleClick(event: MouseEvent<HTMLDivElement>) {
     event.stopPropagation();
+    if (Date.now() < suppressClickUntilRef.current) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const x = event.clientX - rect.left;
-    if (x > rect.width * 0.33 && x < rect.width * 0.67) {
-      onTap();
-      return;
-    }
-    const clickedLeadingSide = x <= rect.width * 0.33;
-    const step = direction === 'rtl'
-      ? (clickedLeadingSide ? 1 : -1)
-      : (clickedLeadingSide ? -1 : 1);
-    onActivity();
-    moveOrdered(step);
+    handleContentTap(x, rect.width);
   }
 
   function markImageFailed(pageNumber: number) {
@@ -389,7 +429,7 @@ export function ComicReader({
       dir={direction}
     >
       {mode === 'single' ? (
-        <div className="flex min-h-full items-start justify-center" onClick={handleSingleClick}>
+        <div className="flex min-h-full items-start justify-center" onClick={handleSingleClick} onTouchStart={handleTouchStart} onTouchEnd={handleTouchEnd}>
           {renderPageImage(page)}
           <div className="hidden">
             {singlePreloadPages.filter((pageNumber) => pageNumber !== page).map((pageNumber) => (
@@ -398,7 +438,16 @@ export function ComicReader({
           </div>
         </div>
       ) : (
-        <div className="flex w-full flex-col items-center gap-4">
+        <div
+          className="flex w-full flex-col items-center gap-4"
+          onClick={(event) => {
+            if (Date.now() < suppressClickUntilRef.current) return;
+            const rect = event.currentTarget.getBoundingClientRect();
+            handleContentTap(event.clientX - rect.left, rect.width);
+          }}
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+        >
           {orderedPages.map((pageNumber) => (
             <div
               key={pageNumber}
