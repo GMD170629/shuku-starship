@@ -1,10 +1,31 @@
 import './globals.css';
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 import { AppShell } from '../components/layout/app-shell';
 
 export const metadata: Metadata = {
   title: '书库星舰',
-  description: 'NAS 自托管读物管理系统'
+  description: '自托管 NAS 读物管理与移动阅读系统',
+  manifest: '/manifest.webmanifest',
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: 'black-translucent',
+    title: '书库星舰'
+  },
+  icons: {
+    icon: [
+      { url: '/icons/icon-192.svg', sizes: '192x192', type: 'image/svg+xml' },
+      { url: '/icons/icon-512.svg', sizes: '512x512', type: 'image/svg+xml' }
+    ],
+    apple: [{ url: '/icons/icon-192.svg', sizes: '192x192', type: 'image/svg+xml' }]
+  }
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: '(prefers-color-scheme: light)', color: '#0F172A' },
+    { media: '(prefers-color-scheme: dark)', color: '#0F172A' }
+  ],
+  colorScheme: 'light dark'
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

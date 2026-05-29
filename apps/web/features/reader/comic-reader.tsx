@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent } from 'react';
 import { cn } from '../../components/ui/cn';
 import type { BookView } from '../../lib/books';
 import type { ReaderControls, ReaderProgress } from './reader-shell';
@@ -35,8 +35,15 @@ type ComicPageIndexPayload = {
   error?: { message: string };
 };
 
-function archivePageUrl(bookId: string, pageIndex: number) {
-  return `/api/books/${bookId}/pages/${pageIndex}`;
+type ComicPageMeta = {
+  pageIndex: number;
+  width?: number | null;
+  height?: number | null;
+};
+
+function archivePageUrl(bookId: string, pageIndex: number, retryToken = 0) {
+  const retry = retryToken > 0 ? `?retry=${retryToken}` : '';
+  return `/api/books/${bookId}/pages/${pageIndex}${retry}`;
 }
 
 function isArchiveComicFile(file: BookView['files'][number] | undefined) {
@@ -60,6 +67,10 @@ function scrollPercent(element: HTMLElement) {
   return clamp(Math.round((element.scrollTop / max) * 100), 0, 100);
 }
 
+function compactSet(values: number[]) {
+  return new Set(values.filter((value) => Number.isFinite(value)));
+}
+
 export function ComicReader({
   book,
   dark,
@@ -79,8 +90,11 @@ export function ComicReader({
   const scrollerRef = useRef<HTMLDivElement>(null);
   const pageRefs = useRef(new Map<number, HTMLDivElement>());
   const [pageCount, setPageCount] = useState<number | null>(null);
+  const [pageMeta, setPageMeta] = useState<Record<number, ComicPageMeta>>({});
   const [page, setPage] = useState(Math.max(1, initialPage || 1));
   const [loadedPages, setLoadedPages] = useState<Set<number>>(() => new Set());
+  const [failedPages, setFailedPages] = useState<Set<number>>(() => new Set());
+  const [retryTokens, setRetryTokens] = useState<Record<number, number>>({});
   const archiveComic = book.files.length === 1 && isArchiveComicFile(book.files[0]);
 
   const orderedPages = useMemo(() => {
@@ -88,15 +102,31 @@ export function ComicReader({
     return reversePages ? pages.reverse() : pages;
   }, [pageCount, reversePages]);
 
-  const preloadPages = useMemo(() => {
+  const singlePreloadPages = useMemo(() => {
     const currentIndex = orderedPages.indexOf(page);
     if (currentIndex < 0) return [page];
-    return orderedPages.slice(Math.max(0, currentIndex - 3), currentIndex + 4);
+    return orderedPages.slice(Math.max(0, currentIndex - 1), currentIndex + 2);
+  }, [orderedPages, page]);
+
+  const continuousWarmPages = useMemo(() => {
+    const currentIndex = orderedPages.indexOf(page);
+    if (currentIndex < 0) return [page];
+    return orderedPages.slice(Math.max(0, currentIndex - 2), currentIndex + 3);
+  }, [orderedPages, page]);
+
+  const continuousRenderPages = useMemo(() => {
+    const currentIndex = orderedPages.indexOf(page);
+    if (currentIndex < 0) return compactSet([page]);
+    return compactSet(orderedPages.slice(Math.max(0, currentIndex - 5), currentIndex + 6));
   }, [orderedPages, page]);
 
   useEffect(() => {
     let active = true;
     setPageCount(null);
+    setPageMeta({});
+    setLoadedPages(new Set());
+    setFailedPages(new Set());
+    setRetryTokens({});
     fetch(`/api/books/${book.id}/pages`)
       .then((response) => {
         if (!response.ok) throw new Error('漫画页面索引加载失败');
@@ -107,6 +137,7 @@ export function ComicReader({
         const data = payload.data;
         if (!payload.ok || !data) throw new Error(payload.error?.message ?? '漫画页面索引加载失败');
         setPageCount(data.pageCount);
+        setPageMeta(Object.fromEntries((data.pages ?? []).map((item) => [item.pageIndex, item])));
         setPage((current) => clamp(current || initialPage || 1, 1, Math.max(1, data.pageCount)));
       })
       .catch((reason) => {
@@ -119,12 +150,24 @@ export function ComicReader({
 
   useEffect(() => {
     setLoadedPages((current) => {
-      if (mode === 'single') return new Set(preloadPages);
+      if (mode === 'single') return new Set(singlePreloadPages);
       const next = new Set(current);
-      preloadPages.forEach((pageNumber) => next.add(pageNumber));
+      continuousWarmPages.forEach((pageNumber) => next.add(pageNumber));
       return next;
     });
-  }, [mode, preloadPages]);
+  }, [continuousWarmPages, mode, singlePreloadPages]);
+
+  useEffect(() => {
+    if (mode !== 'continuous') return;
+    setLoadedPages((current) => {
+      const next = new Set<number>();
+      current.forEach((pageNumber) => {
+        if (continuousRenderPages.has(pageNumber)) next.add(pageNumber);
+      });
+      continuousWarmPages.forEach((pageNumber) => next.add(pageNumber));
+      return next;
+    });
+  }, [continuousRenderPages, continuousWarmPages, mode]);
 
   useEffect(() => {
     if (mode !== 'continuous' || pageCount === null) return;
@@ -146,7 +189,14 @@ export function ComicReader({
         if (!visible) return;
         const pageIndex = Number((visible.target as HTMLElement).dataset.pageIndex);
         if (!Number.isFinite(pageIndex)) return;
-        setLoadedPages((current) => new Set(current).add(pageIndex));
+        setLoadedPages((current) => {
+          const next = new Set<number>();
+          current.forEach((pageNumber) => {
+            if (continuousRenderPages.has(pageNumber) || pageNumber === pageIndex) next.add(pageNumber);
+          });
+          next.add(pageIndex);
+          return next;
+        });
         setPage(pageIndex);
         const percent = scrollPercent(root);
         onProgress({
@@ -161,7 +211,7 @@ export function ComicReader({
     );
     pageRefs.current.forEach((element) => observer.observe(element));
     return () => observer.disconnect();
-  }, [direction, imageFit, mode, onProgress, orderedPages, pageCount, reversePages]);
+  }, [continuousRenderPages, direction, imageFit, mode, onProgress, pageCount, reversePages]);
 
   useEffect(() => {
     if (mode !== 'single') return;
@@ -248,14 +298,69 @@ export function ComicReader({
     moveOrdered(step);
   }
 
+  function markImageFailed(pageNumber: number) {
+    setFailedPages((current) => new Set(current).add(pageNumber));
+  }
+
+  function markImageLoaded(pageNumber: number) {
+    setFailedPages((current) => {
+      if (!current.has(pageNumber)) return current;
+      const next = new Set(current);
+      next.delete(pageNumber);
+      return next;
+    });
+  }
+
+  function retryImage(pageNumber: number) {
+    setFailedPages((current) => {
+      const next = new Set(current);
+      next.delete(pageNumber);
+      return next;
+    });
+    setLoadedPages((current) => new Set(current).add(pageNumber));
+    setRetryTokens((current) => ({ ...current, [pageNumber]: (current[pageNumber] ?? 0) + 1 }));
+  }
+
+  function pagePlaceholderStyle(pageNumber: number) {
+    const meta = pageMeta[pageNumber];
+    if (meta?.width && meta.height) return { aspectRatio: `${meta.width} / ${meta.height}` };
+    return undefined;
+  }
+
   const imageClass = cn(
     'block',
     dark ? 'shadow-black/40' : 'shadow-slate-300/80',
-    imageFit === 'height' ? 'h-[calc(100dvh-2rem)] w-auto max-w-none' : '',
-    imageFit === 'contain' ? 'max-h-[calc(100dvh-2rem)] max-w-full object-contain' : '',
-    imageFit === 'width' ? 'w-full max-w-5xl' : '',
+    imageFit === 'height' ? 'h-[calc(100dvh-1rem)] w-auto max-w-none md:h-[calc(100dvh-2rem)]' : '',
+    imageFit === 'contain' ? 'max-h-[calc(100dvh-1rem)] max-w-full object-contain md:max-h-[calc(100dvh-2rem)]' : '',
+    imageFit === 'width' ? 'w-full max-w-6xl landscape:max-w-none' : '',
     imageFit === 'original' ? 'h-auto w-auto max-w-none' : ''
   );
+
+  function renderPageImage(pageNumber: number, hidden = false) {
+    if (failedPages.has(pageNumber) && !hidden) {
+      return (
+        <ComicImageFallback
+          dark={dark}
+          pageNumber={pageNumber}
+          style={pagePlaceholderStyle(pageNumber)}
+          onRetry={() => retryImage(pageNumber)}
+        />
+      );
+    }
+
+    return (
+      <img
+        src={archivePageUrl(book.id, pageNumber, retryTokens[pageNumber] ?? 0)}
+        alt={hidden ? '' : `${book.title} 第 ${pageNumber} 页`}
+        aria-hidden={hidden ? 'true' : undefined}
+        className={hidden ? '' : cn(imageClass, 'shadow-2xl')}
+        loading={hidden ? 'eager' : 'lazy'}
+        style={hidden ? undefined : { transform: `scale(${zoom})`, transformOrigin: 'top center' }}
+        onLoad={() => markImageLoaded(pageNumber)}
+        onError={() => markImageFailed(pageNumber)}
+      />
+    );
+  }
 
   if (!archiveComic) {
     return (
@@ -267,8 +372,11 @@ export function ComicReader({
 
   if (pageCount === null) {
     return (
-      <div className="flex h-full items-center justify-center p-6 text-sm opacity-70">
-        正在建立漫画页面索引...
+      <div className="flex h-full items-center justify-center p-4 md:p-8">
+        <div className={cn('w-full max-w-3xl animate-pulse rounded-2xl p-4', dark ? 'bg-white/5' : 'bg-slate-200/70')}>
+          <div className={cn('mx-auto h-[68dvh] rounded-xl', dark ? 'bg-white/10' : 'bg-white/80')} />
+          <div className={cn('mt-4 h-4 w-40 rounded-full', dark ? 'bg-white/10' : 'bg-slate-300')} />
+        </div>
       </div>
     );
   }
@@ -276,21 +384,16 @@ export function ComicReader({
   return (
     <div
       ref={scrollerRef}
-      className="h-full w-full overflow-auto overscroll-contain px-3 py-4 md:px-8 md:py-8"
+      className="h-full w-full overflow-auto overscroll-contain px-2 py-2 landscape:px-1 landscape:py-1 md:px-8 md:py-8"
       onScroll={mode === 'continuous' ? reportScrollProgress : undefined}
       dir={direction}
     >
       {mode === 'single' ? (
         <div className="flex min-h-full items-start justify-center" onClick={handleSingleClick}>
-          <img
-            src={archivePageUrl(book.id, page)}
-            alt={`${book.title} 第 ${page} 页`}
-            className={cn(imageClass, 'shadow-2xl')}
-            style={{ transform: `scale(${zoom})`, transformOrigin: 'top center' }}
-          />
+          {renderPageImage(page)}
           <div className="hidden">
-            {preloadPages.filter((pageNumber) => pageNumber !== page).map((pageNumber) => (
-              <img key={pageNumber} src={archivePageUrl(book.id, pageNumber)} alt="" aria-hidden="true" />
+            {singlePreloadPages.filter((pageNumber) => pageNumber !== page).map((pageNumber) => (
+              <span key={pageNumber}>{renderPageImage(pageNumber, true)}</span>
             ))}
           </div>
         </div>
@@ -306,16 +409,16 @@ export function ComicReader({
               data-page-index={pageNumber}
               className="flex min-h-48 w-full justify-center"
             >
-              {loadedPages.has(pageNumber) ? (
-                <img
-                  src={archivePageUrl(book.id, pageNumber)}
-                  alt={`${book.title} 第 ${pageNumber} 页`}
-                  className={cn(imageClass, 'shadow-2xl')}
-                  loading="lazy"
-                  style={{ transform: `scale(${zoom})`, transformOrigin: 'top center' }}
-                />
+              {loadedPages.has(pageNumber) && continuousRenderPages.has(pageNumber) ? (
+                renderPageImage(pageNumber)
               ) : (
-                <div className="flex h-80 w-full max-w-5xl items-center justify-center rounded-xl bg-white/5 text-sm opacity-60">
+                <div
+                  className={cn(
+                    'flex min-h-80 w-full max-w-6xl items-center justify-center rounded-xl text-sm opacity-60 landscape:max-w-none',
+                    dark ? 'bg-white/5' : 'bg-slate-200/70'
+                  )}
+                  style={pagePlaceholderStyle(pageNumber)}
+                >
                   第 {pageNumber} 页
                 </div>
               )}
@@ -323,6 +426,33 @@ export function ComicReader({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function ComicImageFallback({ dark, pageNumber, style, onRetry }: { dark: boolean; pageNumber: number; style?: CSSProperties; onRetry: () => void }) {
+  return (
+    <div
+      className={cn(
+        'flex min-h-80 w-full max-w-6xl flex-col items-center justify-center gap-3 rounded-xl border px-4 text-center text-sm landscape:max-w-none',
+        dark ? 'border-white/10 bg-white/5 text-slate-200' : 'border-slate-200 bg-white/80 text-slate-700'
+      )}
+      style={style}
+    >
+      <div>第 {pageNumber} 页加载失败</div>
+      <button
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation();
+          onRetry();
+        }}
+        className={cn(
+          'min-h-11 rounded-xl px-4 text-sm font-medium transition active:scale-[0.98]',
+          dark ? 'bg-white/10 text-white hover:bg-white/15' : 'bg-slate-900 text-white hover:bg-slate-700'
+        )}
+      >
+        重试
+      </button>
     </div>
   );
 }

@@ -103,9 +103,14 @@ function isCenterPointer(clientX: number, clientY: number) {
   return clientX >= width * 0.18 && clientX <= width * 0.82 && clientY >= height * 0.28 && clientY <= height * 0.72;
 }
 
+function isStandaloneDisplay() {
+  if (typeof window === 'undefined') return false;
+  return window.matchMedia('(display-mode: standalone)').matches || ('standalone' in navigator && Boolean((navigator as Navigator & { standalone?: boolean }).standalone));
+}
+
 export function ReaderShell({ bookId, title, readerType, progress, controls, settings, onBack, onSettingsChange, navigationItems, children }: ReaderShellProps) {
   const hideTimerRef = useRef<number | null>(null);
-  const [controlsVisible, setControlsVisible] = useState(true);
+  const [controlsVisible, setControlsVisible] = useState(() => !isStandaloneDisplay());
   const [panel, setPanel] = useState<'toc' | 'settings' | null>(null);
   const [navItems, setNavItems] = useState<ReaderNavigationItem[]>(navigationItems ?? []);
   const [navLoading, setNavLoading] = useState(false);
@@ -147,7 +152,8 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
   }
 
   useEffect(() => {
-    scheduleHide();
+    if (isStandaloneDisplay()) enterImmersive();
+    else scheduleHide();
     return clearHideTimer;
   }, []);
 
@@ -240,7 +246,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
       >
         <div className="mx-auto flex h-12 max-w-6xl items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">
-            <button type="button" onClick={onBack} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full transition hover:bg-white/10" aria-label="返回详情页">
+            <button type="button" onClick={onBack} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition active:scale-[0.98] hover:bg-white/10" aria-label="返回详情页">
               <ChevronLeft size={22} />
             </button>
             <div className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/10 md:flex">
@@ -252,10 +258,10 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
-            <button type="button" onClick={() => setPanel((value) => (value === 'toc' ? null : 'toc'))} className="flex h-10 w-10 items-center justify-center rounded-full transition hover:bg-white/10" aria-label={readerType === 'comic' ? '页码' : '目录'}>
+            <button type="button" onClick={() => setPanel((value) => (value === 'toc' ? null : 'toc'))} className="flex h-11 w-11 items-center justify-center rounded-full transition active:scale-[0.98] hover:bg-white/10" aria-label={readerType === 'comic' ? '页码' : '目录'}>
               <ListTree size={19} />
             </button>
-            <button type="button" onClick={() => setPanel((value) => (value === 'settings' ? null : 'settings'))} className="flex h-10 w-10 items-center justify-center rounded-full transition hover:bg-white/10" aria-label="阅读设置">
+            <button type="button" onClick={() => setPanel((value) => (value === 'settings' ? null : 'settings'))} className="flex h-11 w-11 items-center justify-center rounded-full transition active:scale-[0.98] hover:bg-white/10" aria-label="阅读设置">
               <Settings size={19} />
             </button>
           </div>
@@ -273,7 +279,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
       >
         <div className="mx-auto flex max-w-5xl flex-col gap-3">
           <div className="flex items-center gap-2">
-            <Button variant="ghost" icon={ChevronLeft} className={cn('h-10 shrink-0 px-3', dark ? 'text-slate-100 hover:bg-white/10' : '')} onClick={() => { void controls?.prev(); enterImmersive(); }}>
+            <Button variant="ghost" icon={ChevronLeft} className={cn('min-h-11 shrink-0 px-3', dark ? 'text-slate-100 hover:bg-white/10' : '')} onClick={() => { void controls?.prev(); enterImmersive(); }}>
               <span className="hidden sm:inline">上一页</span>
             </Button>
             <input
@@ -283,9 +289,9 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
               max={100}
               value={clampPercent(progress.percent)}
               onChange={(event) => { void jumpToPercent(Number(event.target.value)); }}
-              className="h-8 min-w-0 flex-1 accent-blue-500"
+              className="h-11 min-w-0 flex-1 accent-blue-500"
             />
-            <Button variant="ghost" icon={ChevronRight} className={cn('h-10 shrink-0 px-3', dark ? 'text-slate-100 hover:bg-white/10' : '')} onClick={() => { void controls?.next(); enterImmersive(); }}>
+            <Button variant="ghost" icon={ChevronRight} className={cn('min-h-11 shrink-0 px-3', dark ? 'text-slate-100 hover:bg-white/10' : '')} onClick={() => { void controls?.next(); enterImmersive(); }}>
               <span className="hidden sm:inline">下一页</span>
             </Button>
           </div>
@@ -299,7 +305,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
       {panel ? (
         <aside
           className={cn(
-            'absolute bottom-0 right-0 top-0 z-30 w-full max-w-sm border-l p-4 shadow-2xl backdrop-blur-xl md:p-5',
+            'absolute inset-x-0 bottom-0 z-30 max-h-[82dvh] w-full overflow-hidden rounded-t-3xl border-t p-4 shadow-2xl backdrop-blur-xl md:inset-y-0 md:left-auto md:right-0 md:max-h-none md:max-w-sm md:rounded-none md:border-l md:border-t-0 md:p-5',
             dark ? 'border-white/10 bg-slate-950/94' : 'border-slate-200 bg-white/94'
           )}
           style={{ paddingTop: 'max(1rem, env(safe-area-inset-top))', paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}
@@ -310,13 +316,13 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
               <div className="text-sm font-semibold">{panel === 'toc' ? (readerType === 'comic' ? '页码' : '目录') : '阅读设置'}</div>
               <div className="mt-0.5 text-xs opacity-60">{progress.label}</div>
             </div>
-            <button type="button" onClick={() => { setPanel(null); scheduleHide(); }} className="flex h-9 w-9 items-center justify-center rounded-full transition hover:bg-white/10" aria-label="关闭面板">
+            <button type="button" onClick={() => { setPanel(null); scheduleHide(); }} className="flex h-11 w-11 items-center justify-center rounded-full transition active:scale-[0.98] hover:bg-white/10" aria-label="关闭面板">
               <X size={18} />
             </button>
           </div>
 
           {panel === 'toc' ? (
-            <div className="mt-5 h-[calc(100%-4rem)] overflow-auto pr-1">
+            <div className="mt-5 max-h-[calc(82dvh-6rem)] overflow-auto pr-1 md:h-[calc(100%-4rem)] md:max-h-none">
               {navLoading ? <div className="py-6 text-sm opacity-60">正在读取...</div> : null}
               {!navLoading && navItems.length === 0 ? <div className="py-6 text-sm opacity-60">暂无可跳转条目</div> : null}
               <div className="space-y-1">
@@ -325,7 +331,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
                     key={`${item.index}-${item.title}`}
                     type="button"
                     onClick={() => { void jumpToItem(item); }}
-                    className={cn('flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition', item.index === progress.page ? 'bg-blue-500 text-white' : 'hover:bg-white/10')}
+                    className={cn('flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition active:scale-[0.99]', item.index === progress.page ? 'bg-blue-500 text-white' : 'hover:bg-white/10')}
                   >
                     <span className="w-9 shrink-0 tabular-nums opacity-60">{item.index}</span>
                     <span className="line-clamp-2">{item.title}</span>
@@ -336,7 +342,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
           ) : null}
 
           {panel === 'settings' ? (
-            <div className="mt-5 space-y-5 text-sm">
+            <div className="mt-5 max-h-[calc(82dvh-6rem)] space-y-5 overflow-auto pr-1 text-sm md:max-h-none">
               {readerType === 'epub' ? (
                 <>
                   <SegmentedSetting
@@ -373,7 +379,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
                 </>
               ) : (
                 <>
-                  <button type="button" onClick={() => updateSettings({ theme: settings.theme === 'black' ? 'night' : 'black' })} className="flex h-10 items-center gap-2 rounded-xl bg-white/10 px-3 transition hover:bg-white/15">
+                  <button type="button" onClick={() => updateSettings({ theme: settings.theme === 'black' ? 'night' : 'black' })} className="flex min-h-11 items-center gap-2 rounded-xl bg-white/10 px-3 transition active:scale-[0.98] hover:bg-white/15">
                     {settings.theme === 'black' ? <Sun size={16} /> : <Moon size={16} />}
                     {settings.theme === 'black' ? '夜间' : '纯黑'}
                   </button>
@@ -400,7 +406,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
                     options={[{ value: 'ltr', label: '左至右' }, { value: 'rtl', label: '右至左' }]}
                     onChange={(value) => updateSettings({ comicDirection: value as ComicDirection })}
                   />
-                  <label className="flex items-center justify-between gap-3 rounded-xl bg-white/10 px-3 py-2.5">
+                  <label className="flex min-h-11 items-center justify-between gap-3 rounded-xl bg-white/10 px-3 py-2.5">
                     <span>倒序页码</span>
                     <input type="checkbox" checked={settings.reversePages} onChange={(event) => updateSettings({ reversePages: event.target.checked })} className="h-5 w-5 accent-blue-500" />
                   </label>
@@ -419,11 +425,11 @@ function SettingStepper({ label, value, onMinus, onPlus }: { label: string; valu
     <div className="flex items-center justify-between gap-3">
       <span>{label}</span>
       <div className="flex items-center gap-2">
-        <button type="button" onClick={onMinus} className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 transition hover:bg-white/15" aria-label={`${label}减少`}>
+        <button type="button" onClick={onMinus} className="flex h-11 w-11 items-center justify-center rounded-xl bg-white/10 transition active:scale-[0.98] hover:bg-white/15" aria-label={`${label}减少`}>
           <Minus size={15} />
         </button>
         <span className="w-14 text-center tabular-nums">{value}</span>
-        <button type="button" onClick={onPlus} className="flex h-9 w-9 items-center justify-center rounded-xl bg-white/10 transition hover:bg-white/15" aria-label={`${label}增加`}>
+        <button type="button" onClick={onPlus} className="flex h-11 w-11 items-center justify-center rounded-xl bg-white/10 transition active:scale-[0.98] hover:bg-white/15" aria-label={`${label}增加`}>
           <Plus size={15} />
         </button>
       </div>
@@ -441,7 +447,7 @@ function SegmentedSetting({ label, value, options, onChange }: { label: string; 
             key={option.value}
             type="button"
             onClick={() => onChange(option.value)}
-            className={cn('h-10 rounded-xl px-2 text-sm transition', value === option.value ? 'bg-blue-500 text-white' : 'bg-white/10 hover:bg-white/15')}
+            className={cn('min-h-11 rounded-xl px-2 text-sm transition active:scale-[0.98]', value === option.value ? 'bg-blue-500 text-white' : 'bg-white/10 hover:bg-white/15')}
           >
             {option.label}
           </button>

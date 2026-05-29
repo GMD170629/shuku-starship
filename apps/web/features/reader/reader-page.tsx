@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { BookView } from '../../lib/books';
+import { enqueuePreference, enqueueProgress, flushPreferenceQueue, flushProgressQueue } from '../../lib/pwa/progressQueue';
 import { ComicReader, type ComicImageFit, type ComicMode } from './comic-reader';
 import { EbookReader } from './epub-reader';
 import { ReaderShell, type EbookFlow, type ReaderControls, type ReaderFontFamily, type ReaderKind, type ReaderNavigationItem, type ReaderProgress, type ReaderSettings, type ReaderTheme } from './reader-shell';
@@ -176,6 +177,7 @@ export function ReaderPage({ bookId }: { bookId: string }) {
   const [controls, setControls] = useState<ReaderControls | null>(null);
   const [navigationItems, setNavigationItems] = useState<ReaderNavigationItem[]>([]);
   const [hydrated, setHydrated] = useState(false);
+  const [bootstrapRetryToken, setBootstrapRetryToken] = useState(0);
 
   const bookRef = useRef<BookView | null>(null);
   const readerTypeRef = useRef<ReaderKind | 'unknown'>('unknown');
@@ -244,7 +246,7 @@ export function ReaderPage({ bookId }: { bookId: string }) {
     return () => {
       active = false;
     };
-  }, [bookId]);
+  }, [bookId, bootstrapRetryToken]);
 
   function progressPayload() {
     const currentBook = bookRef.current;
@@ -273,7 +275,12 @@ export function ReaderPage({ bookId }: { bookId: string }) {
     lastProgressPayloadRef.current = serialized;
     const url = `/api/books/${currentBook.id}/progress`;
     if (useBeacon && typeof navigator !== 'undefined' && navigator.sendBeacon) {
+      void enqueueProgress(currentBook.id, payload);
       navigator.sendBeacon(url, new Blob([serialized], { type: 'application/json' }));
+      return;
+    }
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      void enqueueProgress(currentBook.id, payload);
       return;
     }
     fetch(url, {
@@ -281,7 +288,12 @@ export function ReaderPage({ bookId }: { bookId: string }) {
       headers: { 'Content-Type': 'application/json' },
       body: serialized,
       keepalive: useBeacon
-    }).catch(() => undefined);
+    }).then((response) => {
+      if (!response.ok) throw new Error('阅读进度同步失败');
+      void flushProgressQueue();
+    }).catch(() => {
+      void enqueueProgress(currentBook.id, payload);
+    });
   }
 
   function scheduleProgressSync() {
@@ -299,11 +311,20 @@ export function ReaderPage({ bookId }: { bookId: string }) {
     const payload = JSON.stringify({ settings: settingsRef.current });
     if (payload === lastSettingsPayloadRef.current) return;
     lastSettingsPayloadRef.current = payload;
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
+      void enqueuePreference(currentPreferenceType, settingsRef.current as unknown as Record<string, unknown>);
+      return;
+    }
     fetch(`/api/reader/preferences/${currentPreferenceType}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: payload
-    }).catch(() => undefined);
+    }).then((response) => {
+      if (!response.ok) throw new Error('阅读偏好同步失败');
+      void flushPreferenceQueue();
+    }).catch(() => {
+      void enqueuePreference(currentPreferenceType, settingsRef.current as unknown as Record<string, unknown>);
+    });
   }
 
   function scheduleSettingsSync() {
@@ -356,8 +377,24 @@ export function ReaderPage({ bookId }: { bookId: string }) {
     if (bookRef.current) router.push(`/books/${bookRef.current.id}`);
   }
 
-  if (error) return <div className="flex min-h-[100dvh] items-center justify-center bg-slate-950 p-8 text-center text-red-200">{error}</div>;
-  if (!book) return <div className="flex min-h-[100dvh] items-center justify-center bg-slate-950 p-8 text-slate-200">正在打开阅读器...</div>;
+  if (error) {
+    return (
+      <div className="flex min-h-[100dvh] flex-col items-center justify-center gap-4 bg-slate-950 p-8 text-center text-red-200">
+        <div>{error}</div>
+        <button
+          type="button"
+          onClick={() => {
+            setError('');
+            setBootstrapRetryToken((value) => value + 1);
+          }}
+          className="min-h-11 rounded-xl bg-white/10 px-5 text-sm font-medium text-white transition active:scale-[0.98] hover:bg-white/15"
+        >
+          重试
+        </button>
+      </div>
+    );
+  }
+  if (!book) return <ReaderOpeningSkeleton />;
   if (readerType === 'unknown') return <div className="flex min-h-[100dvh] items-center justify-center bg-slate-950 p-8 text-center text-slate-200">该读物没有可读内容，或文件格式暂不支持。</div>;
 
   return (
@@ -408,5 +445,24 @@ export function ReaderPage({ bookId }: { bookId: string }) {
         />
       )}
     </ReaderShell>
+  );
+}
+
+function ReaderOpeningSkeleton() {
+  return (
+    <div className="min-h-[100dvh] bg-slate-950 p-4 text-slate-200 md:p-8">
+      <div className="mx-auto flex min-h-[calc(100dvh-2rem)] max-w-5xl animate-pulse flex-col justify-between">
+        <div className="flex items-center justify-between gap-4">
+          <div className="h-11 w-11 rounded-full bg-white/10" />
+          <div className="h-4 flex-1 rounded-full bg-white/10" />
+          <div className="h-11 w-24 rounded-2xl bg-white/10" />
+        </div>
+        <div className="mx-auto h-[62dvh] w-full max-w-3xl rounded-2xl bg-white/5" />
+        <div className="space-y-3">
+          <div className="h-11 rounded-2xl bg-white/10" />
+          <div className="h-3 w-36 rounded-full bg-white/10" />
+        </div>
+      </div>
+    </div>
   );
 }

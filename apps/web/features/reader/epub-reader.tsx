@@ -112,6 +112,7 @@ export function EbookReader({
   const currentViewRef = useRef<EpubView | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [retryToken, setRetryToken] = useState(0);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -231,7 +232,7 @@ export function EbookReader({
       bookRef.current = null;
       currentViewRef.current = null;
     };
-  }, [bookId, ebookFlow]);
+  }, [bookId, ebookFlow, retryToken]);
 
   useEffect(() => {
     const rendition = renditionRef.current;
@@ -257,8 +258,15 @@ export function EbookReader({
           </div>
         ) : null}
         {error ? (
-          <div className="absolute inset-0 flex items-center justify-center bg-red-950/90 p-6 text-center text-sm text-red-100">
-            {error}
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-red-950/90 p-6 text-center text-sm text-red-100">
+            <div>{error}</div>
+            <button
+              type="button"
+              onClick={() => setRetryToken((value) => value + 1)}
+              className="min-h-11 rounded-xl bg-white/10 px-4 font-medium text-white transition active:scale-[0.98] hover:bg-white/15"
+            >
+              重试
+            </button>
           </div>
         ) : null}
       </div>

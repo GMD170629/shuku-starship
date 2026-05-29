@@ -19,6 +19,7 @@ import {
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { PwaClient, clearPrivatePwaStorage } from '../system/pwa-client';
 import { Badge } from '../ui/badge';
 import { cn } from '../ui/cn';
 import { Progress } from '../ui/progress';
@@ -61,9 +62,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   const isReader = pathname.startsWith('/reader/');
   const isLogin = pathname === '/login';
   const isMobilePreview = pathname === '/mobile-preview';
+  const isOffline = pathname === '/offline';
 
   useEffect(() => {
-    if (isReader || isLogin || isMobilePreview) return;
+    if (isReader || isLogin || isMobilePreview || isOffline) return;
     let active = true;
     Promise.all([
       fetch('/api/auth/me').then((response) => response.json()).catch(() => null),
@@ -80,7 +82,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     return () => {
       active = false;
     };
-  }, [isLogin, isMobilePreview, isReader, pathname]);
+  }, [isLogin, isMobilePreview, isOffline, isReader, pathname]);
 
   useEffect(() => {
     if (!accountOpen) return;
@@ -95,6 +97,7 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   async function logout() {
     await fetch('/api/auth/logout', { method: 'POST' }).catch(() => null);
+    await clearPrivatePwaStorage();
     setAccountOpen(false);
     setUser(null);
     router.replace('/login');
@@ -105,8 +108,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   const storageLabel = storage > 0 ? `${(storage / 1024 / 1024 / 1024).toFixed(1)} GB` : '0 B';
   const healthOk = status?.status === 'ok';
 
-  if (isReader || isLogin || isMobilePreview) {
-    return <>{children}</>;
+  if (isReader || isLogin || isMobilePreview || isOffline) {
+    return (
+      <>
+        {children}
+        <PwaClient />
+      </>
+    );
   }
 
   return (
@@ -219,12 +227,13 @@ export function AppShell({ children }: { children: ReactNode }) {
       </main>
       <nav className="fixed inset-x-0 bottom-0 z-30 grid grid-cols-5 border-t border-slate-200 bg-white/95 px-2 py-2 shadow-lg backdrop-blur lg:hidden">
         {mobileNavItems.map(({ href, icon: Icon, label }) => (
-          <Link key={`${href}-mobile`} href={href} className={cn('flex flex-col items-center gap-1 rounded-2xl px-2 py-1.5 text-[11px]', isActive(pathname, href) ? 'bg-blue-50 text-blue-700' : 'text-slate-500')}>
+          <Link key={`${href}-mobile`} href={href} className={cn('flex min-h-11 flex-col items-center justify-center gap-1 rounded-2xl px-2 py-1.5 text-[11px] active:scale-[0.98]', isActive(pathname, href) ? 'bg-blue-50 text-blue-700' : 'text-slate-500')}>
             <Icon size={17} />
             <span className="line-clamp-1">{label}</span>
           </Link>
         ))}
       </nav>
+      <PwaClient />
     </div>
   );
 }
