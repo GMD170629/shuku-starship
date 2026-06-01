@@ -24,6 +24,7 @@ export type ReaderControls = {
   next: () => Promise<void>;
   prev: () => Promise<void>;
   jumpToProgress: (value: number) => Promise<void>;
+  jumpToHref?: (href: string) => Promise<void>;
   jumpToIndex?: (index: number) => Promise<void>;
 };
 
@@ -64,6 +65,7 @@ type ReaderShellProps = {
 export type ReaderNavigationItem = {
   index: number;
   title: string;
+  href?: string;
 };
 
 type ReadingUnitsPayload = {
@@ -252,7 +254,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
           setNavItems(orderedPages.map((page) => ({ index: page.pageIndex, title: page.title || `第 ${page.pageIndex} 页` })));
         } else {
           const data = payload.data as ReadingUnitsPayload['data'];
-          setNavItems((data?.readingUnits ?? []).map((unit) => ({ index: unit.sortOrder, title: unit.title || `第 ${unit.sortOrder} 章` })));
+          setNavItems((data?.readingUnits ?? []).map((unit) => ({ index: unit.sortOrder, title: unit.title || `第 ${unit.sortOrder} 章`, href: unit.href })));
         }
       })
       .finally(() => {
@@ -268,6 +270,10 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
   }
 
   async function jumpToItem(item: ReaderNavigationItem) {
+    if (item.href && controls?.jumpToHref) {
+      await controls.jumpToHref(item.href);
+      return;
+    }
     if (controls?.jumpToIndex) {
       await controls.jumpToIndex(item.index);
       return;
@@ -485,7 +491,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
                   <SegmentedSetting
                     label="模式"
                     value={settings.comicMode}
-                    options={[{ value: 'single', label: '单页' }, { value: 'continuous', label: '连续' }]}
+                    options={[{ value: 'single', label: '单页' }, { value: 'double', label: '双页' }, { value: 'continuous', label: '连续' }]}
                     onChange={(value) => updateSettings({ comicMode: value as ComicMode })}
                   />
                   <SegmentedSetting

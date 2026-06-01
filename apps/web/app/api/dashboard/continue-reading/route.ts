@@ -1,18 +1,24 @@
 import { requireUser } from '../../../../lib/auth';
-import { toBookView } from '../../../../lib/books';
+import { toWorkView } from '../../../../lib/books';
 import { ok } from '../../../../lib/http';
 import { prisma } from '../../../../lib/prisma';
 
 export async function GET() {
   const user = await requireUser();
-  const progress = await prisma.readingProgress.findFirst({
-    where: { userId: user.id, book: { hidden: false } },
+  const progress = await prisma.libraryReadingProgress.findFirst({
+    where: { userId: user.id, work: { hidden: false }, edition: { hidden: false } },
     orderBy: { updatedAt: 'desc' },
     include: {
-      book: {
+      work: {
         include: {
-          files: { orderBy: { sortOrder: 'asc' } },
-          monitorFolder: true,
+          editions: {
+            where: { hidden: false },
+            include: {
+              files: { orderBy: { sortOrder: 'asc' } },
+              volumes: { orderBy: { sortOrder: 'asc' } },
+              progresses: { where: { userId: user.id }, take: 1 }
+            }
+          },
           progresses: { where: { userId: user.id }, take: 1 }
         }
       }
@@ -21,7 +27,7 @@ export async function GET() {
   if (!progress) return ok({ item: null });
   return ok({
     item: {
-      book: toBookView(progress.book),
+      book: toWorkView(progress.work),
       progress: progress.percent,
       lastReadAt: progress.updatedAt,
       chapter: progress.page ? `第 ${progress.page} 页` : null,

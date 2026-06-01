@@ -131,7 +131,7 @@ export async function flushProgressQueue(syncFn?: (item: QueuedProgress) => Prom
       if (syncFn) {
         await syncFn(item);
       } else {
-        const response = await fetch(`/api/books/${encodeURIComponent(item.bookId)}/progress`, {
+        const response = await fetch(`/api/editions/${encodeURIComponent(item.bookId)}/progress`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(item.progress)

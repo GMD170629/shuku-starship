@@ -59,6 +59,10 @@ export function BookTable({
                     <div className="text-xs text-slate-500">
                       {book.author} · {book.format} · {book.type === 'comic' ? `共 ${book.totalUnits} 页` : `共 ${book.totalUnits} 章`} · {book.size}
                     </div>
+                    <div className="mt-1 flex gap-1">
+                      {book.versionCount > 1 ? <Badge tone="blue">{book.versionCount} 版本</Badge> : null}
+                      {book.volumeCount > 1 ? <Badge tone="green">{book.volumeCount} 卷</Badge> : null}
+                    </div>
                   </div>
                 </div>
               </td>

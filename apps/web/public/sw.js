@@ -20,6 +20,8 @@ function isSensitiveApi(pathname) {
 function isLargeReaderPayload(pathname) {
   return /\/api\/books\/[^/]+\/file$/.test(pathname)
     || /\/api\/books\/[^/]+\/pages\/[^/]+$/.test(pathname)
+    || /\/api\/editions\/[^/]+\/file$/.test(pathname)
+    || /\/api\/volumes\/[^/]+\/pages\/[^/]+$/.test(pathname)
     || /\.(cbz|zip|epub|pdf)$/i.test(pathname);
 }
 
@@ -31,7 +33,9 @@ function isStaticAsset(pathname) {
 }
 
 function isCoverRequest(pathname) {
-  return /\/api\/books\/[^/]+\/cover(\/|$)/.test(pathname);
+  return /\/api\/books\/[^/]+\/cover(\/|$)/.test(pathname)
+    || /\/api\/editions\/[^/]+\/cover(\/|$)/.test(pathname)
+    || /\/api\/volumes\/[^/]+\/cover(\/|$)/.test(pathname);
 }
 
 function shouldBypass(request) {

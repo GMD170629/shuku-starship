@@ -50,6 +50,7 @@ model User {
   role         String            @default("admin")
   sessions     Session[]
   progresses   ReadingProgress[]
+  libraryProgresses LibraryReadingProgress[]
   readerPreferences ReaderPreference[]
   createdAt    DateTime          @default(now())
   updatedAt    DateTime          @updatedAt
@@ -75,9 +76,139 @@ model MonitorFolder {
   minFileSizeBytes Int     @default(10240)
   description String?
   books       Book[]
+  works       LibraryWork[]
+  editions    LibraryEdition[]
   importTasks ImportTask[]
   createdAt   DateTime   @default(now())
   updatedAt   DateTime   @updatedAt
+}
+
+model LibraryWork {
+  id               String         @id @default(cuid())
+  monitorFolderId  String?
+  monitorFolder    MonitorFolder? @relation(fields: [monitorFolderId], references: [id], onDelete: SetNull)
+  origin           BookOrigin     @default(MANUAL)
+  title            String
+  normalizedTitle  String
+  author           String?
+  normalizedAuthor String?
+  description      String?        @db.Text
+  workType         ReadingFormat
+  status           ReadingStatus  @default(WANT)
+  tags             String         @db.Text
+  coverPath        String?
+  coverStatus      CoverStatus    @default(PENDING)
+  hidden           Boolean        @default(false)
+  organized        Boolean        @default(false)
+  primaryEditionId String?
+  mergeKey         String?
+  editions         LibraryEdition[]
+  progresses       LibraryReadingProgress[]
+  importTasks      ImportTask[]
+  shelves          ShelfWork[]
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([workType])
+  @@index([title])
+  @@index([normalizedTitle])
+  @@index([normalizedAuthor])
+  @@index([hidden])
+  @@index([organized])
+  @@index([monitorFolderId])
+  @@unique([mergeKey])
+}
+
+model LibraryEdition {
+  id               String           @id @default(cuid())
+  workId           String
+  work             LibraryWork      @relation(fields: [workId], references: [id], onDelete: Cascade)
+  monitorFolderId  String?
+  monitorFolder    MonitorFolder?   @relation(fields: [monitorFolderId], references: [id], onDelete: SetNull)
+  origin           BookOrigin       @default(MANUAL)
+  format           ReadingFormat
+  versionName      String
+  versionKey       String
+  sourceGroupKey   String?
+  description      String?          @db.Text
+  language         String?
+  publisher        String?
+  publishedAt      String?
+  identifier       String?
+  isbn             String?
+  importStatus     BookImportStatus @default(PENDING)
+  importError      String?          @db.Text
+  sizeBytes        BigInt           @default(0)
+  pageCount        Int?
+  chapterCount     Int?
+  coverPath        String?
+  coverStatus      CoverStatus      @default(PENDING)
+  primary          Boolean          @default(false)
+  hidden           Boolean          @default(false)
+  volumes          LibraryVolume[]
+  files            LibraryFile[]
+  readingUnits     LibraryReadingUnit[]
+  metadataItems    LibraryMetadata[]
+  progresses       LibraryReadingProgress[]
+  importTasks      ImportTask[]
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@unique([workId, versionKey])
+  @@index([workId, primary])
+  @@index([format])
+  @@index([identifier])
+  @@index([isbn])
+  @@index([sourceGroupKey])
+  @@index([monitorFolderId])
+}
+
+model LibraryVolume {
+  id            String          @id @default(cuid())
+  editionId     String
+  edition       LibraryEdition  @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  title         String
+  volumeIndex   Float?
+  sortOrder     Int            @default(0)
+  pageCount     Int?
+  chapterCount  Int?
+  coverPath     String?
+  files         LibraryFile[]
+  readingUnits  LibraryReadingUnit[]
+  progresses    LibraryReadingProgress[]
+  importTasks   ImportTask[]
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+
+  @@index([editionId, sortOrder])
+  @@index([editionId, volumeIndex])
+}
+
+model LibraryFile {
+  id           String         @id @default(cuid())
+  editionId    String
+  edition      LibraryEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  volumeId     String?
+  volume       LibraryVolume? @relation(fields: [volumeId], references: [id], onDelete: SetNull)
+  path         String         @unique
+  filePathHash String?        @unique
+  fingerprint  String?
+  fullHash     String?        @unique
+  hashStatus   FileHashStatus @default(FAILED)
+  mtimeMs      BigInt         @default(0)
+  kind         ReadingFormat
+  mimeType     String
+  sizeBytes    BigInt         @default(0)
+  sortOrder    Int            @default(0)
+  readingUnits LibraryReadingUnit[]
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@index([editionId, sortOrder])
+  @@index([volumeId, sortOrder])
+  @@index([fingerprint])
+  @@index([fullHash])
+  @@index([sizeBytes, mtimeMs])
 }
 
 model Book {
@@ -158,6 +289,12 @@ model ImportTask {
   monitorFolder   MonitorFolder? @relation(fields: [monitorFolderId], references: [id], onDelete: SetNull)
   bookId        String?
   book          Book?          @relation(fields: [bookId], references: [id], onDelete: SetNull)
+  workId        String?
+  work          LibraryWork?   @relation(fields: [workId], references: [id], onDelete: SetNull)
+  editionId     String?
+  edition       LibraryEdition? @relation(fields: [editionId], references: [id], onDelete: SetNull)
+  volumeId      String?
+  volume        LibraryVolume? @relation(fields: [volumeId], references: [id], onDelete: SetNull)
   origin        BookOrigin
   status        BookImportStatus @default(PENDING)
   originalName  String?
@@ -178,6 +315,9 @@ model ImportTask {
   @@index([monitorFolderId, status])
   @@index([status, createdAt])
   @@index([contentHash])
+  @@index([workId])
+  @@index([editionId])
+  @@index([volumeId])
 }
 
 model ImportLog {
@@ -234,10 +374,23 @@ model Shelf {
   name        String
   description String?     @db.Text
   books       ShelfBook[]
+  works       ShelfWork[]
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
   @@index([updatedAt])
+}
+
+model ShelfWork {
+  shelfId   String
+  workId    String
+  shelf     Shelf       @relation(fields: [shelfId], references: [id], onDelete: Cascade)
+  work      LibraryWork @relation(fields: [workId], references: [id], onDelete: Cascade)
+  createdAt DateTime    @default(now())
+
+  @@id([shelfId, workId])
+  @@index([workId])
+  @@index([shelfId, createdAt])
 }
 
 model ShelfBook {
@@ -317,4 +470,66 @@ model BookAsset {
 
   @@index([bookId, assetType])
   @@index([bookId, sortOrder])
+}
+
+model LibraryReadingUnit {
+  id           String         @id @default(cuid())
+  editionId    String
+  edition      LibraryEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  volumeId     String?
+  volume       LibraryVolume? @relation(fields: [volumeId], references: [id], onDelete: Cascade)
+  fileId       String?
+  file         LibraryFile?   @relation(fields: [fileId], references: [id], onDelete: SetNull)
+  unitType     String
+  title        String
+  href         String
+  mediaType    String?
+  sortOrder    Int
+  width        Int?
+  height       Int?
+  size         BigInt?
+  metadataJson String         @db.Text
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  @@index([editionId, sortOrder])
+  @@index([editionId, unitType])
+  @@index([volumeId, sortOrder])
+  @@index([fileId, sortOrder])
+}
+
+model LibraryMetadata {
+  id        String         @id @default(cuid())
+  editionId String
+  edition   LibraryEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  source    String
+  rawJson   String         @db.Text
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@index([editionId])
+}
+
+model LibraryReadingProgress {
+  id         String          @id @default(cuid())
+  userId     String
+  user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workId     String
+  work       LibraryWork     @relation(fields: [workId], references: [id], onDelete: Cascade)
+  editionId  String
+  edition    LibraryEdition  @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  volumeId   String?
+  volume     LibraryVolume?  @relation(fields: [volumeId], references: [id], onDelete: SetNull)
+  readerType String
+  position   String          @default("0")
+  page       Int?
+  percent    Float           @default(0)
+  extra      String          @db.Text
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  @@unique([userId, editionId])
+  @@index([workId])
+  @@index([editionId])
+  @@index([volumeId])
 }

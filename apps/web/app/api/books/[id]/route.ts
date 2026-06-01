@@ -1,49 +1,71 @@
 import type { Prisma } from '@prisma/client';
 import { requireUser } from '../../../../lib/auth';
 import { fail, ok, readJson } from '../../../../lib/http';
-import { toBookView } from '../../../../lib/books';
+import { toWorkView } from '../../../../lib/books';
 import { prisma } from '../../../../lib/prisma';
-import { normalizeTags, parseReadingFormat, parseReadingStatus } from '../../../../lib/book-metadata';
+import { normalizeTags, parseReadingStatus } from '../../../../lib/book-metadata';
 
-export async function GET(_request: Request, { params }: { params: { id: string } }) {
-  const user = await requireUser();
-  const book = await prisma.book.findFirst({
-    where: { id: params.id },
-    include: {
-      files: { orderBy: { sortOrder: 'asc' } },
-      monitorFolder: true,
-      progresses: { where: { userId: user.id }, take: 1 },
-      chapters: { orderBy: { sortOrder: 'asc' } },
-      readingUnits: { orderBy: { sortOrder: 'asc' } },
-      metadataItems: { orderBy: { createdAt: 'desc' } }
-    }
-  });
-  if (!book) return fail('读物不存在或无权访问', 404);
-  const metadataItems = book.metadataItems.map((item) => ({ id: item.id, source: item.source, metadataJson: safeJson(item.rawJson), createdAt: item.createdAt }));
-  return ok({
-    book: toBookView(book),
-    metadata: {
-      language: book.language,
-      publisher: book.publisher,
-      publishedAt: book.publishedAt,
-      identifier: book.identifier,
-      isbn: book.isbn,
-      importStatus: book.importStatus,
-      importError: book.importError,
-      items: metadataItems
-    },
-    totalUnits: book.format === 'COMIC' ? (book.pageCount ?? book.readingUnits.length) : (book.chapterCount ?? book.readingUnits.length),
-    chapters: book.chapters,
-    readingUnits: book.readingUnits.length ? book.readingUnits.map(serializeReadingUnit) : book.chapters.map((chapter) => ({ ...chapter, unitType: 'chapter' }))
-  });
+function safeJson(value: string) {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
 }
 
-function serializeReadingUnit(unit: { size?: bigint | null; metadataJson?: string } & Record<string, unknown>) {
+function serializeUnit(unit: { size?: bigint | null; metadataJson?: string } & Record<string, unknown>) {
   return { ...unit, size: unit.size ? Number(unit.size) : null, metadataJson: unit.metadataJson ? safeJson(unit.metadataJson) : {} };
 }
 
-function safeJson(value: string) {
-  try { return JSON.parse(value); } catch { return value; }
+async function findWork(id: string, userId: string) {
+  return prisma.libraryWork.findFirst({
+    where: { id },
+    include: {
+      editions: {
+        orderBy: [{ primary: 'desc' }, { createdAt: 'asc' }],
+        include: {
+          files: { orderBy: { sortOrder: 'asc' } },
+          volumes: { orderBy: { sortOrder: 'asc' } },
+          progresses: { where: { userId }, take: 1 },
+          metadataItems: { orderBy: { createdAt: 'desc' } },
+          readingUnits: { orderBy: { sortOrder: 'asc' } }
+        }
+      },
+      progresses: { where: { userId }, take: 1 }
+    }
+  });
+}
+
+export async function GET(_request: Request, { params }: { params: { id: string } }) {
+  const user = await requireUser();
+  const work = await findWork(params.id, user.id);
+  if (!work) return fail('读物不存在或无权访问', 404);
+  const view = toWorkView(work);
+  const primaryEdition = work.editions.find((edition) => edition.id === view.editionId) ?? work.editions[0] ?? null;
+  return ok({
+    book: view,
+    metadata: {
+      language: primaryEdition?.language ?? null,
+      publisher: primaryEdition?.publisher ?? null,
+      publishedAt: primaryEdition?.publishedAt ?? null,
+      identifier: primaryEdition?.identifier ?? null,
+      isbn: primaryEdition?.isbn ?? null,
+      importStatus: primaryEdition?.importStatus ?? null,
+      importError: primaryEdition?.importError ?? null,
+      items: (primaryEdition?.metadataItems ?? []).map((item) => ({ id: item.id, source: item.source, metadataJson: safeJson(item.rawJson), createdAt: item.createdAt }))
+    },
+    totalUnits: primaryEdition?.format === 'COMIC' ? (primaryEdition.pageCount ?? 0) : (primaryEdition?.chapterCount ?? 0),
+    comicSections: view.volumes.filter((volume) => volume.editionId === primaryEdition?.id).map((volume) => ({
+      id: volume.id,
+      title: volume.title,
+      index: volume.volumeIndex ?? volume.sortOrder,
+      fileId: volume.id,
+      pageCount: volume.pageCount ?? volume.chapterCount ?? 0,
+      coverUrl: volume.coverUrl
+    })),
+    chapters: [],
+    readingUnits: (primaryEdition?.readingUnits ?? []).map(serializeUnit)
+  });
 }
 
 export async function PATCH(request: Request, { params }: { params: { id: string } }) {
@@ -52,34 +74,25 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     title?: string;
     author?: string;
     description?: string;
-    seriesName?: string;
-    seriesIndex?: number | string | null;
-    format?: string;
     tags?: string[];
     status?: string;
     ignored?: boolean;
     organized?: boolean;
-    coverPath?: string;
+    primaryEditionId?: string;
   }>(request);
-  const data: Prisma.BookUpdateInput = {};
+  const data: Prisma.LibraryWorkUpdateInput = {};
   if (typeof body.title === 'string') {
     const title = body.title.trim();
     if (!title) return fail('标题不能为空', 400);
     data.title = title;
+    data.normalizedTitle = title.toLowerCase().replace(/[\s_\-.()[\]（）【】《》:：,，]+/g, '');
   }
-  if (typeof body.author === 'string') data.author = body.author.trim() || null;
+  if (typeof body.author === 'string') {
+    const author = body.author.trim();
+    data.author = author || null;
+    data.normalizedAuthor = author.toLowerCase().replace(/[\s_\-.()[\]（）【】《》:：,，]+/g, '') || null;
+  }
   if (typeof body.description === 'string') data.description = body.description;
-  if (typeof body.seriesName === 'string') data.seriesName = body.seriesName.trim() || null;
-  if (typeof body.seriesIndex === 'number' || typeof body.seriesIndex === 'string') {
-    const nextIndex = body.seriesIndex === '' ? null : Number(body.seriesIndex);
-    if (nextIndex !== null && !Number.isFinite(nextIndex)) return fail('系列序号不正确', 400);
-    data.seriesIndex = nextIndex;
-  }
-  if (typeof body.format === 'string') {
-    const format = parseReadingFormat(body.format);
-    if (!format) return fail('读物类型不正确', 400);
-    data.format = format;
-  }
   if (typeof body.status === 'string') {
     const status = parseReadingStatus(body.status);
     if (!status) return fail('阅读状态不正确', 400);
@@ -88,26 +101,26 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   if (Array.isArray(body.tags)) data.tags = JSON.stringify(normalizeTags(body.tags));
   if (typeof body.ignored === 'boolean') data.hidden = body.ignored;
   if (typeof body.organized === 'boolean') data.organized = body.organized;
-  if (typeof body.coverPath === 'string') data.coverPath = body.coverPath;
-  await prisma.book.update({ where: { id: params.id }, data });
-  const book = await prisma.book.findUnique({
-    where: { id: params.id },
-    include: {
-      files: { orderBy: { sortOrder: 'asc' } },
-      monitorFolder: true,
-      progresses: { where: { userId: user.id }, take: 1 },
-      chapters: { orderBy: { sortOrder: 'asc' } },
-      readingUnits: { orderBy: { sortOrder: 'asc' } },
-      metadataItems: { orderBy: { createdAt: 'desc' } }
-    }
-  });
-  if (!book) return fail('读物不存在或无权访问', 404);
-  return ok({ book: toBookView(book) });
+  if (typeof body.primaryEditionId === 'string') {
+    const edition = await prisma.libraryEdition.findFirst({ where: { id: body.primaryEditionId, workId: params.id } });
+    if (!edition) return fail('版本不存在', 404);
+    data.primaryEditionId = edition.id;
+  }
+  await prisma.libraryWork.update({ where: { id: params.id }, data });
+  if (typeof body.primaryEditionId === 'string') {
+    await prisma.$transaction([
+      prisma.libraryEdition.updateMany({ where: { workId: params.id }, data: { primary: false } }),
+      prisma.libraryEdition.update({ where: { id: body.primaryEditionId }, data: { primary: true } })
+    ]);
+  }
+  const work = await findWork(params.id, user.id);
+  if (!work) return fail('读物不存在或无权访问', 404);
+  return ok({ book: toWorkView(work) });
 }
 
 export async function DELETE(_request: Request, { params }: { params: { id: string } }) {
   await requireUser();
-  const result = await prisma.book.deleteMany({ where: { id: params.id } });
+  const result = await prisma.libraryWork.deleteMany({ where: { id: params.id } });
   if (result.count === 0) return fail('读物不存在或无权访问', 404);
   return ok({ deleted: true, sourceFilesDeleted: false });
 }

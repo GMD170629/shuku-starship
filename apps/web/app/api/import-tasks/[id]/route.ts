@@ -8,7 +8,9 @@ export async function GET(_request: Request, { params }: { params: { id: string 
     where: { id: params.id },
     include: {
       monitorFolder: true,
-      book: { select: { id: true, title: true } },
+      work: { select: { id: true, title: true } },
+      edition: { select: { id: true, versionName: true } },
+      volume: { select: { id: true, title: true } },
       logs: { orderBy: { createdAt: 'desc' }, take: 100 }
     }
   });

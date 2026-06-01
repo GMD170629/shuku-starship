@@ -126,7 +126,7 @@ export function DashboardPage() {
                       <Progress value={continueItem.progress} />
                     </div>
                     <div className="mt-6 flex gap-3">
-                      <Button icon={BookOpen} onClick={() => router.push(`/reader/${continueItem.book.id}`)}>继续阅读</Button>
+                      <Button icon={BookOpen} onClick={() => router.push(`/reader/${continueItem.book.editionId ?? continueItem.book.id}`)}>继续阅读</Button>
                       <Button variant="secondary" icon={Eye} onClick={() => router.push(`/books/${continueItem.book.id}`)}>查看详情</Button>
                     </div>
                   </div>

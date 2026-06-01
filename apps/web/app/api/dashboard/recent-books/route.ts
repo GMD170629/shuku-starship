@@ -1,5 +1,5 @@
 import { requireUser } from '../../../../lib/auth';
-import { toBookView } from '../../../../lib/books';
+import { toWorkView } from '../../../../lib/books';
 import { ok } from '../../../../lib/http';
 import { prisma } from '../../../../lib/prisma';
 
@@ -7,15 +7,21 @@ export async function GET(request: Request) {
   const user = await requireUser();
   const url = new URL(request.url);
   const limit = Math.min(24, Math.max(1, Number(url.searchParams.get('limit') ?? 8)));
-  const books = await prisma.book.findMany({
+  const books = await prisma.libraryWork.findMany({
     where: { hidden: false },
     orderBy: { createdAt: 'desc' },
     take: limit,
     include: {
-      files: { orderBy: { sortOrder: 'asc' } },
-      monitorFolder: true,
+      editions: {
+        where: { hidden: false },
+        include: {
+          files: { orderBy: { sortOrder: 'asc' } },
+          volumes: { orderBy: { sortOrder: 'asc' } },
+          progresses: { where: { userId: user.id }, take: 1 }
+        }
+      },
       progresses: { where: { userId: user.id }, take: 1 }
     }
   });
-  return ok({ books: books.map(toBookView) });
+  return ok({ books: books.map(toWorkView) });
 }

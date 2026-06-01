@@ -1,24 +1,8 @@
-import { extname } from 'node:path';
-import { stat } from 'node:fs/promises';
 import { requireUser } from '../../../../../lib/auth';
-import { ensureArchiveIndex } from '../../../../../lib/archive-index';
-import { toBookView } from '../../../../../lib/books';
+import { toWorkView } from '../../../../../lib/books';
 import { fail, ok } from '../../../../../lib/http';
 import { prisma } from '../../../../../lib/prisma';
 import { getAllReaderPreferenceSettings } from '../../../../../lib/reader-preferences';
-
-const archiveExts = new Set(['.cbz', '.zip']);
-
-function isArchiveFile(path: string, mimeType: string) {
-  const ext = extname(path).toLowerCase();
-  return archiveExts.has(ext) || mimeType === 'application/vnd.comicbook+zip' || mimeType === 'application/zip';
-}
-
-async function readableArchivePath(path: string) {
-  const fileStat = await stat(path);
-  if (!fileStat.isFile()) throw new Error('漫画文件不可读');
-  return path;
-}
 
 function safeJson(value: string) {
   try {
@@ -28,101 +12,76 @@ function safeJson(value: string) {
   }
 }
 
-function serializeReadingUnit(unit: { size?: bigint | null; metadataJson?: string } & Record<string, unknown>) {
-  return { ...unit, size: unit.size ? Number(unit.size) : null, metadataJson: unit.metadataJson ? safeJson(unit.metadataJson) : {} };
-}
-
 function serializeProgress(progress: { extra: string } & Record<string, unknown> | null | undefined) {
   if (!progress) return null;
   return { ...progress, extra: safeJson(progress.extra) };
 }
 
-export async function GET(_request: Request, { params }: { params: { bookId: string } }) {
+export async function GET(request: Request, { params }: { params: { bookId: string } }) {
   const user = await requireUser();
-  const book = await prisma.book.findFirst({
-    where: { id: params.bookId, hidden: false },
+  const userId = user.id;
+  const url = new URL(request.url);
+  const requestedVolumeId = url.searchParams.get('volume') ?? url.searchParams.get('section');
+  const edition = await prisma.libraryEdition.findFirst({
+    where: { id: params.bookId, hidden: false, work: { hidden: false } },
     include: {
+      work: {
+        include: {
+          editions: {
+            where: { hidden: false },
+            include: {
+              files: { orderBy: { sortOrder: 'asc' } },
+              volumes: { orderBy: { sortOrder: 'asc' } },
+              progresses: { where: { userId }, take: 1 }
+            }
+          }
+        }
+      },
       files: { orderBy: { sortOrder: 'asc' } },
-      progresses: { where: { userId: user.id }, take: 1 },
-      chapters: { orderBy: { sortOrder: 'asc' } },
-      readingUnits: { orderBy: { sortOrder: 'asc' } }
+      volumes: { orderBy: { sortOrder: 'asc' } },
+      readingUnits: { orderBy: { sortOrder: 'asc' } },
+      progresses: { where: { userId }, take: 1 }
     }
   });
-  if (!book) return fail('读物不存在或无权访问', 404);
+  if (!edition) return fail('读物版本不存在或无权访问', 404);
 
-  const readerType = book.format === 'COMIC' ? 'comic' : book.format === 'EPUB' ? 'ebook' : 'unknown';
+  const readerType = edition.format === 'COMIC' ? 'comic' : edition.format === 'EPUB' ? 'ebook' : 'unknown';
   const preferences = await getAllReaderPreferenceSettings(user.id);
-  const progress = serializeProgress(book.progresses[0] ?? null);
+  const progress = serializeProgress(edition.progresses[0] ?? null);
+  const workView = toWorkView({ ...edition.work, editions: edition.work.editions });
 
   if (readerType === 'ebook') {
-    const readingUnits = book.readingUnits.length
-      ? book.readingUnits.map(serializeReadingUnit)
-      : book.chapters.map((chapter) => ({
-          id: chapter.id,
-          bookId: chapter.bookId,
-          unitType: 'chapter',
-          title: chapter.title,
-          href: chapter.href,
-          filePath: null,
-          mediaType: chapter.mediaType,
-          sortOrder: chapter.sortOrder,
-          width: null,
-          height: null,
-          size: null,
-          metadataJson: {},
-          createdAt: chapter.createdAt,
-          updatedAt: chapter.updatedAt
-        }));
-    return ok({ book: toBookView(book), readerType, progress, preferences, readingUnits, totalUnits: readingUnits.length });
+    const readingUnits = edition.readingUnits.map((unit) => ({
+      ...unit,
+      size: unit.size ? Number(unit.size) : null,
+      metadataJson: safeJson(unit.metadataJson)
+    }));
+    return ok({ book: { ...workView, editionId: edition.id, formatValue: edition.format }, readerType, progress, preferences, readingUnits, totalUnits: readingUnits.length });
   }
 
   if (readerType === 'comic') {
-    const pageUnits = book.readingUnits.filter((unit) => unit.unitType === 'page').sort((left, right) => left.sortOrder - right.sortOrder);
-    if (pageUnits.length > 0) {
-      return ok({
-        book: toBookView(book),
-        readerType,
-        progress,
-        preferences,
-        pageCount: pageUnits.length,
-        pages: pageUnits.map((page) => ({
-          pageIndex: page.sortOrder,
-          title: page.title,
-          mimeType: page.mediaType,
-          width: page.width,
-          height: page.height,
-          size: page.size ? Number(page.size) : null
-        }))
-      });
-    }
-
-    const archiveFile = book.files.length === 1 && isArchiveFile(book.files[0].path, book.files[0].mimeType) ? book.files[0] : null;
-    if (!archiveFile) {
-      return ok({ book: toBookView(book), readerType, progress, preferences, pageCount: 0, pages: [] });
-    }
-
-    let realPath: string;
-    try {
-      realPath = await readableArchivePath(archiveFile.path);
-    } catch {
-      return fail('漫画文件不可读', 404);
-    }
-
-    try {
-      const index = await ensureArchiveIndex(book.id, archiveFile.id, realPath);
-      return ok({
-        book: toBookView(book),
-        readerType,
-        progress,
-        preferences,
-        pageCount: index.pages.length,
-        pages: index.pages.map((page) => ({ pageIndex: page.pageIndex, mimeType: page.mimeType }))
-      });
-    } catch (error) {
-      console.error('[reader-bootstrap-archive-index-error]', { bookId: book.id, fileId: archiveFile.id, error });
-      return fail('漫画索引生成失败', 500);
-    }
+    const volume = requestedVolumeId
+      ? edition.volumes.find((item) => item.id === requestedVolumeId) ?? edition.volumes[0] ?? null
+      : edition.volumes[0] ?? null;
+    const pageUnits = edition.readingUnits.filter((unit) => !volume || unit.volumeId === volume.id);
+    return ok({
+      book: { ...workView, editionId: edition.id, formatValue: edition.format },
+      readerType,
+      progress,
+      preferences,
+      section: volume ? { id: volume.id, title: volume.title, pageCount: pageUnits.length } : null,
+      sections: edition.volumes.map((item) => ({ id: item.id, title: item.title, pageCount: item.pageCount ?? 0 })),
+      pageCount: pageUnits.length,
+      pages: pageUnits.map((page, index) => ({
+        pageIndex: index + 1,
+        title: page.title,
+        mimeType: page.mediaType,
+        width: page.width,
+        height: page.height,
+        size: page.size ? Number(page.size) : null
+      }))
+    });
   }
 
-  return ok({ book: toBookView(book), readerType, progress, preferences });
+  return ok({ book: workView, readerType, progress, preferences });
 }

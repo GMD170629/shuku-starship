@@ -12,8 +12,8 @@ const acceptedTypes = new Map([
 
 export async function POST(request: Request, { params }: { params: { id: string } }) {
   await requireUser();
-  const book = await prisma.book.findUnique({ where: { id: params.id }, select: { id: true } });
-  if (!book) return fail('读物不存在或无权访问', 404);
+  const work = await prisma.libraryWork.findUnique({ where: { id: params.id }, select: { id: true } });
+  if (!work) return fail('读物不存在或无权访问', 404);
 
   const form = await request.formData().catch(() => null);
   const file = form?.get('cover');
@@ -28,10 +28,9 @@ export async function POST(request: Request, { params }: { params: { id: string 
   const coverPath = join(coverRoot, `${params.id}${ext === '.jpeg' ? '.jpg' : ext}`);
   await writeFile(coverPath, Buffer.from(await file.arrayBuffer()));
 
-  const updated = await prisma.book.update({
+  const updated = await prisma.libraryWork.update({
     where: { id: params.id },
-    data: { coverPath, coverStatus: 'READY' },
-    include: { files: { orderBy: { sortOrder: 'asc' } }, monitorFolder: true, progresses: { take: 1 } }
+    data: { coverPath, coverStatus: 'READY' }
   });
 
   return ok({ bookId: updated.id, coverUrl: `/api/books/${updated.id}/cover?size=medium&v=${Date.now()}` });

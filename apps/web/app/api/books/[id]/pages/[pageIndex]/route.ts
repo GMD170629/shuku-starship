@@ -1,23 +1,18 @@
 import { extname } from 'node:path';
-import { stat } from 'node:fs/promises';
 import { Readable } from 'node:stream';
 import { requireUser } from '../../../../../../lib/auth';
 import { ensureArchiveIndex, streamArchivePageResponse } from '../../../../../../lib/archive-index';
 import { closeComicArchive, streamComicPageFromArchive } from '../../../../../../lib/comic-import';
 import { fail } from '../../../../../../lib/http';
 import { prisma } from '../../../../../../lib/prisma';
+import { buildComicSections, selectComicSection, unitsForComicSection } from '../../../../../../lib/comic-sections';
+import { requireReadableFilePath } from '../../../../../../lib/storage-path';
 
 const archiveExts = new Set(['.cbz', '.zip']);
 
 function isArchiveFile(path: string, mimeType: string) {
   const ext = extname(path).toLowerCase();
   return archiveExts.has(ext) || mimeType === 'application/vnd.comicbook+zip' || mimeType === 'application/zip';
-}
-
-async function readableArchivePath(path: string) {
-  const fileStat = await stat(path);
-  if (!fileStat.isFile()) throw new Error('漫画文件不可读');
-  return path;
 }
 
 export async function GET(request: Request, { params }: { params: { id: string; pageIndex: string } }) {
@@ -36,15 +31,19 @@ export async function GET(request: Request, { params }: { params: { id: string; 
 
   const archiveFile = book.files.length === 1 && isArchiveFile(book.files[0].path, book.files[0].mimeType) ? book.files[0] : null;
   if (book.readingUnits.length > 0) {
-    const unit = book.readingUnits.find((item) => item.sortOrder === pageIndex);
+    const url = new URL(request.url);
+    const sections = buildComicSections(book.id, book.files, book.readingUnits);
+    const section = selectComicSection(sections, url.searchParams);
+    const sectionUnits = section ? unitsForComicSection(section, book.readingUnits) : book.readingUnits;
+    const unit = sectionUnits[pageIndex - 1] ?? null;
     if (!unit) return fail('图片页面不存在', 404);
     const pageFile = unit.filePath
       ? book.files.find((file) => file.path === unit.filePath && isArchiveFile(file.path, file.mimeType))
       : archiveFile;
     if (!pageFile) return fail('漫画页面所属文件不可读', 404);
     try {
-      const realPath = await readableArchivePath(pageFile.path);
-      const page = await streamComicPageFromArchive(realPath, unit.href);
+      const archive = await requireReadableFilePath(pageFile.path, '漫画文件不可读');
+      const page = await streamComicPageFromArchive(archive.path, unit.href);
       const close = () => closeComicArchive(page.zipFile);
       page.stream.once('close', close);
       page.stream.once('end', close);
@@ -68,7 +67,7 @@ export async function GET(request: Request, { params }: { params: { id: string; 
 
   let realPath: string;
   try {
-    realPath = await readableArchivePath(archiveFile.path);
+    realPath = (await requireReadableFilePath(archiveFile.path, '漫画文件不可读')).path;
   } catch (error) {
     return fail('漫画文件不可读', 404);
   }

@@ -1,7 +1,7 @@
 import type { Prisma, ReadingStatus } from '@prisma/client';
 import { requireUser } from '../../../lib/auth';
 import { ok } from '../../../lib/http';
-import { toBookView } from '../../../lib/books';
+import { toWorkView } from '../../../lib/books';
 import { prisma } from '../../../lib/prisma';
 import { parseReadingFormat } from '../../../lib/book-metadata';
 
@@ -20,7 +20,7 @@ export async function GET(request: Request) {
   const missingCover = url.searchParams.get('missingCover') === 'true';
   const newImport = url.searchParams.get('newImport') === 'true';
 
-  const where: Prisma.BookWhereInput = {};
+  const where: Prisma.LibraryWorkWhereInput = {};
   if (visibility === 'ignored') where.hidden = true;
   else if (visibility !== 'all') where.hidden = false;
   if (search) {
@@ -31,24 +31,24 @@ export async function GET(request: Request) {
           { title: { contains: search } },
           { author: { contains: search } },
           { tags: { contains: search } },
-          { managedFilePath: { contains: search } }
+          { editions: { some: { files: { some: { path: { contains: search } } } } } }
         ]
       }
     ];
   }
-  if (type === 'ebook') where.format = { in: ['EPUB'] };
-  if (type === 'comic') where.format = 'COMIC';
+  if (type === 'ebook') where.workType = { in: ['EPUB'] };
+  if (type === 'comic') where.workType = 'COMIC';
   if (format && format !== '全部') {
     const normalized = format.trim().toLowerCase();
     if (normalized === 'cbz') {
-      where.format = 'COMIC';
-      where.managedFilePath = { endsWith: '.cbz' };
+      where.workType = 'COMIC';
+      where.editions = { some: { files: { some: { path: { endsWith: '.cbz' } } } } };
     } else if (normalized === 'zip') {
-      where.format = 'COMIC';
-      where.managedFilePath = { endsWith: '.zip' };
+      where.workType = 'COMIC';
+      where.editions = { some: { files: { some: { path: { endsWith: '.zip' } } } } };
     } else {
       const parsedFormat = parseReadingFormat(format);
-      if (parsedFormat) where.format = parsedFormat;
+      if (parsedFormat) where.workType = parsedFormat;
     }
   }
   if (status && status !== '全部') {
@@ -64,7 +64,7 @@ export async function GET(request: Request) {
   }
   if (newImport) where.organized = false;
 
-  const orderBy: Prisma.BookOrderByWithRelationInput =
+  const orderBy: Prisma.LibraryWorkOrderByWithRelationInput =
     sort === 'title'
       ? { title: 'asc' }
       : sort === 'author'
@@ -77,29 +77,38 @@ export async function GET(request: Request) {
               ? { updatedAt: 'desc' }
               : { updatedAt: 'desc' };
 
-  const [total, books] = await Promise.all([
-    prisma.book.count({ where }),
-    prisma.book.findMany({
+  const [total, works] = await Promise.all([
+    prisma.libraryWork.count({ where }),
+    prisma.libraryWork.findMany({
       where,
       orderBy,
       skip: (page - 1) * pageSize,
       take: pageSize,
       include: {
-        files: { orderBy: { sortOrder: 'asc' } },
-        monitorFolder: true,
+        editions: {
+          where: { hidden: false },
+          orderBy: [{ primary: 'desc' }, { createdAt: 'asc' }],
+          include: {
+            files: { orderBy: { sortOrder: 'asc' } },
+            volumes: { orderBy: { sortOrder: 'asc' } },
+            progresses: { where: { userId: user.id }, take: 1 }
+          }
+        },
         progresses: { where: { userId: user.id }, take: 1 }
       }
     })
   ]);
 
-  const sortedBooks = [...books].sort((a, b) => {
-    if (sort === 'progress') return (b.progresses[0]?.percent ?? 0) - (a.progresses[0]?.percent ?? 0);
-    if (sort === 'recent_read') return (b.progresses[0]?.updatedAt?.getTime() ?? 0) - (a.progresses[0]?.updatedAt?.getTime() ?? 0);
+  const sortedWorks = [...works].sort((a, b) => {
+    const progressA = a.editions.flatMap((edition) => edition.progresses).sort((x, y) => y.updatedAt.getTime() - x.updatedAt.getTime())[0];
+    const progressB = b.editions.flatMap((edition) => edition.progresses).sort((x, y) => y.updatedAt.getTime() - x.updatedAt.getTime())[0];
+    if (sort === 'progress') return (progressB?.percent ?? 0) - (progressA?.percent ?? 0);
+    if (sort === 'recent_read') return (progressB?.updatedAt?.getTime() ?? 0) - (progressA?.updatedAt?.getTime() ?? 0);
     return 0;
   });
 
   return ok({
-    books: sortedBooks.map(toBookView),
+    books: sortedWorks.map(toWorkView),
     page,
     pageSize,
     total,

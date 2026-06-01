@@ -9,7 +9,9 @@ export async function GET() {
     take: 50,
     include: {
       monitorFolder: true,
-      book: { select: { id: true, title: true } },
+      work: { select: { id: true, title: true } },
+      edition: { select: { id: true, versionName: true } },
+      volume: { select: { id: true, title: true } },
       logs: { orderBy: { createdAt: 'desc' }, take: 20 }
     }
   });

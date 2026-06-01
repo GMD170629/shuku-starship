@@ -1,9 +1,10 @@
 import { extname } from 'node:path';
-import { stat } from 'node:fs/promises';
 import { requireUser } from '../../../../../lib/auth';
 import { ensureArchiveIndex } from '../../../../../lib/archive-index';
 import { fail, ok } from '../../../../../lib/http';
 import { prisma } from '../../../../../lib/prisma';
+import { buildComicSections, selectComicSection, unitsForComicSection } from '../../../../../lib/comic-sections';
+import { requireReadableFilePath } from '../../../../../lib/storage-path';
 
 const archiveExts = new Set(['.cbz', '.zip']);
 
@@ -12,14 +13,9 @@ function isArchiveFile(path: string, mimeType: string) {
   return archiveExts.has(ext) || mimeType === 'application/vnd.comicbook+zip' || mimeType === 'application/zip';
 }
 
-async function readableArchivePath(path: string) {
-  const fileStat = await stat(path);
-  if (!fileStat.isFile()) throw new Error('漫画文件不可读');
-  return path;
-}
-
-export async function GET(_request: Request, { params }: { params: { id: string } }) {
+export async function GET(request: Request, { params }: { params: { id: string } }) {
   await requireUser();
+  const url = new URL(request.url);
   const book = await prisma.book.findFirst({
     where: { id: params.id, hidden: false },
     include: {
@@ -30,10 +26,15 @@ export async function GET(_request: Request, { params }: { params: { id: string 
   if (!book) return fail('读物不存在或无权访问', 404);
 
   if (book.readingUnits.length > 0) {
+    const sections = buildComicSections(book.id, book.files, book.readingUnits);
+    const section = selectComicSection(sections, url.searchParams);
+    const sectionUnits = section ? unitsForComicSection(section, book.readingUnits) : book.readingUnits;
     return ok({
-      pageCount: book.readingUnits.length,
-      pages: book.readingUnits.map((page) => ({
-        pageIndex: page.sortOrder,
+      section,
+      sections,
+      pageCount: sectionUnits.length,
+      pages: sectionUnits.map((page, index) => ({
+        pageIndex: index + 1,
         title: page.title,
         mimeType: page.mediaType,
         width: page.width,
@@ -50,7 +51,7 @@ export async function GET(_request: Request, { params }: { params: { id: string 
 
   let realPath: string;
   try {
-    realPath = await readableArchivePath(archiveFile.path);
+    realPath = (await requireReadableFilePath(archiveFile.path, '漫画文件不可读')).path;
   } catch (error) {
     return fail('漫画文件不可读', 404);
   }

@@ -178,7 +178,7 @@ export function MobileReaderApp() {
 
   function openReader(book: BookView, sourceElement?: HTMLElement | null) {
     storeReaderOpeningContext(book, sourceElement);
-    router.push(`/reader/${book.id}?from=mobile`);
+    router.push(`/reader/${book.editionId ?? book.id}?from=mobile`);
   }
 
   async function uploadBook(event: ChangeEvent<HTMLInputElement>) {

@@ -11,6 +11,7 @@
     "db:migrate": "pnpm --filter @shuku/database prisma:push",
     "db:seed": "pnpm --filter @shuku/web exec tsx ../../scripts/seed.ts",
     "db:seed:demo": "DEMO_MODE=true pnpm --filter @shuku/web exec tsx ../../scripts/demo/seed-demo.ts",
+    "epub:backfill-toc": "pnpm --filter @shuku/web exec tsx ../../scripts/backfill-epub-toc.ts",
     "dev:test": "scripts/dev-test.sh",
     "acceptance": "node scripts/acceptance-check.mjs",
     "acceptance:runtime": "node scripts/e2e-flow-check.mjs",

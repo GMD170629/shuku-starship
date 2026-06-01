@@ -17,7 +17,7 @@ export function BookCard({
   onDelete,
   onClick
 }: {
-  book: CoverBook & { tags: string[]; progress: number; type: string; format: string; totalUnits?: number };
+  book: CoverBook & { tags: string[]; progress: number; type: string; format: string; totalUnits?: number; versionCount?: number; volumeCount?: number; primaryEditionName?: string | null };
   compact?: boolean;
   selected?: boolean;
   selectionEnabled?: boolean;
@@ -70,6 +70,8 @@ export function BookCard({
           {book.author} · {book.format} · {book.type === 'comic' ? `共 ${book.totalUnits ?? 0} 页` : `共 ${book.totalUnits ?? 0} 章`}
         </div>
         <div className="mt-2 flex flex-wrap gap-1.5">
+          {(book.versionCount ?? 1) > 1 ? <Badge tone="blue">{book.versionCount} 版本</Badge> : null}
+          {(book.volumeCount ?? 0) > 1 ? <Badge tone="green">{book.volumeCount} 卷</Badge> : null}
           {book.tags.slice(0, compact ? 1 : 2).map((tag) => (
             <Badge key={tag}>{tag}</Badge>
           ))}

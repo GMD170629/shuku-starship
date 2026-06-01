@@ -1,8 +1,8 @@
-import { stat } from 'node:fs/promises';
 import { requireUser } from '../../../../lib/auth';
 import { mimeTypeForPath, streamFileResponse } from '../../../../lib/file-response';
 import { fail } from '../../../../lib/http';
 import { prisma } from '../../../../lib/prisma';
+import { readableFilePath } from '../../../../lib/storage-path';
 
 export async function GET(request: Request, { params }: { params: { fileId: string } }) {
   const user = await requireUser();
@@ -12,8 +12,8 @@ export async function GET(request: Request, { params }: { params: { fileId: stri
   });
   if (!file || file.book.hidden) return fail('文件不存在或无权访问', 404);
 
-  const fileStat = await stat(file.path).catch(() => null);
-  if (!fileStat?.isFile()) return fail('文件不可读', 404);
+  const readable = await readableFilePath(file.path);
+  if (!readable) return fail('文件不可读', 404);
 
   return streamFileResponse({
     request,
@@ -21,8 +21,8 @@ export async function GET(request: Request, { params }: { params: { fileId: stri
     route: '/api/files/[fileId]',
     bookId: file.bookId,
     fileId: file.id,
-    path: file.path,
-    stat: fileStat,
+    path: readable.path,
+    stat: readable.stat,
     mimeType: file.mimeType || mimeTypeForPath(file.path),
     downloadName: file.path.split('/').at(-1) ?? 'file'
   });

@@ -541,7 +541,7 @@ export function EbookReader({
       }, { passive: true });
     };
 
-    fetch(`/api/books/${bookId}/file`, { signal: abortController.signal })
+    fetch(`/api/editions/${bookId}/file`, { signal: abortController.signal })
       .then((response) => {
         if (!response.ok) throw new Error('EPUB 文件加载失败');
         return response.arrayBuffer();
@@ -632,6 +632,12 @@ export function EbookReader({
                 await rendition.display(cfi);
               });
             }
+          },
+          jumpToHref: async (href) => {
+            onActivityRef.current();
+            await runNavigation('index', async () => {
+              await rendition.display(href);
+            });
           },
           jumpToIndex: async (index) => {
             onActivityRef.current();

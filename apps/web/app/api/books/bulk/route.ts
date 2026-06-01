@@ -1,8 +1,7 @@
-import { CoverService } from '@shuku/scanner/cover-service';
 import type { Prisma } from '@prisma/client';
 import { requireUser } from '../../../../lib/auth';
 import { fail, ok, readJson } from '../../../../lib/http';
-import { mergeTags, parseReadingFormat, parseReadingStatus } from '../../../../lib/book-metadata';
+import { mergeTags, parseReadingStatus } from '../../../../lib/book-metadata';
 import { parseTags } from '../../../../lib/books';
 import { prisma } from '../../../../lib/prisma';
 
@@ -25,16 +24,11 @@ export async function POST(request: Request) {
   if (ids.length === 0) return fail('请选择要批量处理的读物', 400);
   if (ids.length > 200) return fail('单次最多批量处理 200 本读物', 400);
   if (body.deleteRecords) {
-    const result = await prisma.book.deleteMany({ where: { id: { in: ids } } });
+    const result = await prisma.libraryWork.deleteMany({ where: { id: { in: ids } } });
     return ok({ matched: ids.length, deleted: result.count, sourceFilesDeleted: false });
   }
 
-  const data: Prisma.BookUpdateInput = {};
-  if (typeof body.format === 'string') {
-    const format = parseReadingFormat(body.format);
-    if (!format) return fail('读物类型不正确', 400);
-    data.format = format;
-  }
+  const data: Prisma.LibraryWorkUpdateInput = {};
   if (typeof body.status === 'string') {
     const status = parseReadingStatus(body.status);
     if (!status) return fail('阅读状态不正确', 400);
@@ -49,14 +43,14 @@ export async function POST(request: Request) {
   const updated = await prisma.$transaction(async (tx) => {
     let count = 0;
     if (hasBulkData) {
-      const result = await tx.book.updateMany({ where: { id: { in: ids } }, data });
+      const result = await tx.libraryWork.updateMany({ where: { id: { in: ids } }, data });
       count = result.count;
     }
     if (hasTagChange) {
-      const books = await tx.book.findMany({ where: { id: { in: ids } }, select: { id: true, tags: true } });
+      const books = await tx.libraryWork.findMany({ where: { id: { in: ids } }, select: { id: true, tags: true } });
       await Promise.all(
         books.map((book) =>
-          tx.book.update({
+          tx.libraryWork.update({
             where: { id: book.id },
             data: { tags: JSON.stringify(mergeTags(parseTags(book.tags), body.addTags, body.removeTags)) }
           })
@@ -70,18 +64,7 @@ export async function POST(request: Request) {
   let coverSucceeded = 0;
   let coverFailed = 0;
   if (body.regenerateCover) {
-    const books = await prisma.book.findMany({
-      where: { id: { in: ids } },
-      include: { files: { orderBy: { sortOrder: 'asc' } } }
-    });
-    for (const book of books) {
-      try {
-        await CoverService.generateBookCover(book);
-        coverSucceeded += 1;
-      } catch {
-        coverFailed += 1;
-      }
-    }
+    coverFailed = ids.length;
   }
 
   return ok({
