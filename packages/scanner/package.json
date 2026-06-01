@@ -25,6 +25,11 @@
       "types": "./src/managed-import.ts",
       "import": "./src/managed-import.ts",
       "default": "./src/managed-import.ts"
+    },
+    "./organize-pipeline": {
+      "types": "./src/organize-pipeline.ts",
+      "import": "./src/organize-pipeline.ts",
+      "default": "./src/organize-pipeline.ts"
     }
   },
   "scripts": {

@@ -7,6 +7,7 @@ import yauzl from 'yauzl';
 import { prisma } from '@shuku/database';
 import { Prisma } from '@prisma/client';
 import type { BookOrigin } from '@prisma/client';
+import { createOrRefreshOrganizeJob } from './organize-pipeline.js';
 
 const STORAGE_ROOT = resolve(process.env.STORAGE_ROOT ?? join(process.cwd(), 'storage'));
 const LIBRARY_STORAGE_ROOT = process.env.LIBRARY_STORAGE_ROOT ?? join(STORAGE_ROOT, 'library');
@@ -1039,6 +1040,11 @@ export async function importManagedBook(options: ImportManagedBookOptions): Prom
         finishedAt: new Date()
       }
     });
+    if (result.workId) {
+      await createOrRefreshOrganizeJob({ workId: result.workId, editionId: result.editionId, importTaskId }).catch((error) =>
+        logImport(importTaskId, 'warn', `organize job skipped: ${error instanceof Error ? error.message : String(error)}`)
+      );
+    }
     await logImport(importTaskId, 'info', `import completed: ${result.bookId}`);
     return result;
   } catch (error) {

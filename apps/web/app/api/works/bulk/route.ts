@@ -35,7 +35,10 @@ export async function POST(request: Request) {
     data.status = status;
   }
   if (typeof body.ignored === 'boolean') data.hidden = body.ignored;
-  if (typeof body.markOrganized === 'boolean') data.organized = body.markOrganized;
+  if (typeof body.markOrganized === 'boolean') {
+    data.organized = body.markOrganized;
+    data.organizeStatus = body.markOrganized ? 'APPLIED' : 'REVIEWING';
+  }
 
   const hasBulkData = Object.keys(data).length > 0;
   const hasTagChange = Array.isArray(body.addTags) || Array.isArray(body.removeTags);

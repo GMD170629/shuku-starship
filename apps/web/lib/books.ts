@@ -25,9 +25,12 @@ export type WorkView = {
   status: string;
   ignored: boolean;
   organized: boolean;
+  organizeStatus: string;
+  metadataQuality: number;
   tags: string[];
   seriesName: string | null;
   seriesIndex: number | null;
+  publishedYear: number | null;
   added: string;
   lastRead: string;
   lastReadAt: string | null;
@@ -213,9 +216,12 @@ export function toWorkView(work: WorkWithLibrary): WorkView {
     status: statusLabels[work.status],
     ignored: work.hidden,
     organized: work.organized,
+    organizeStatus: work.organizeStatus,
+    metadataQuality: work.metadataQuality,
     tags: parseTags(work.tags),
-    seriesName: null,
-    seriesIndex: null,
+    seriesName: work.seriesName,
+    seriesIndex: work.seriesIndex,
+    publishedYear: work.publishedYear,
     added: work.createdAt.toISOString().slice(0, 10),
     importedAt: work.createdAt.toISOString(),
     lastReadAt: progress?.updatedAt.toISOString() ?? null,

@@ -17,6 +17,9 @@ export async function GET(request: Request) {
   const visibility = url.searchParams.get('visibility') ?? 'active';
   const status = url.searchParams.get('status')?.trim();
   const tag = url.searchParams.get('tag')?.trim();
+  const author = url.searchParams.get('author')?.trim();
+  const series = url.searchParams.get('series')?.trim();
+  const publishedYear = url.searchParams.get('publishedYear')?.trim();
   const missingCover = url.searchParams.get('missingCover') === 'true';
   const newImport = url.searchParams.get('newImport') === 'true';
 
@@ -30,6 +33,7 @@ export async function GET(request: Request) {
         OR: [
           { title: { contains: search } },
           { author: { contains: search } },
+          { seriesName: { contains: search } },
           { tags: { contains: search } },
           { editions: { some: { files: { some: { path: { contains: search } } } } } }
         ]
@@ -56,6 +60,9 @@ export async function GET(request: Request) {
     if (['WANT', 'READING', 'FINISHED'].includes(normalizedStatus)) where.status = normalizedStatus as ReadingStatus;
   }
   if (tag) where.tags = { contains: tag };
+  if (author) where.author = { contains: author };
+  if (series) where.seriesName = { contains: series };
+  if (publishedYear && /^\d{4}$/.test(publishedYear)) where.publishedYear = Number(publishedYear);
   if (missingCover) {
     where.AND = [
       ...(Array.isArray(where.AND) ? where.AND : []),

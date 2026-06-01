@@ -52,6 +52,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
     description: '',
     seriesName: '',
     seriesIndex: '',
+    publishedYear: '',
     format: 'EPUB',
     tags: '',
     status: 'WANT'
@@ -74,6 +75,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
             description: nextBook.desc === '暂无简介，可在详情页补充元数据。' ? '' : nextBook.desc,
             seriesName: nextBook.seriesName ?? '',
             seriesIndex: nextBook.seriesIndex === null ? '' : String(nextBook.seriesIndex),
+            publishedYear: nextBook.publishedYear === null ? '' : String(nextBook.publishedYear),
             format: nextBook.formatValue,
             tags: nextBook.tags.join(', '),
             status: nextBook.statusValue
@@ -106,6 +108,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
           description: form.description,
           seriesName: form.seriesName,
           seriesIndex: form.seriesIndex,
+          publishedYear: form.publishedYear,
           format: form.format,
           status: form.status,
           tags: form.tags.split(/[,，\n]/).map((tag) => tag.trim()).filter(Boolean),
@@ -327,6 +330,10 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
             <label className="text-sm text-slate-600">
               系列序号
               <input value={form.seriesIndex} onChange={(event) => setForm({ ...form, seriesIndex: event.target.value })} type="number" step="0.01" className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none focus:border-blue-300" />
+            </label>
+            <label className="text-sm text-slate-600">
+              出版年
+              <input value={form.publishedYear} onChange={(event) => setForm({ ...form, publishedYear: event.target.value })} type="number" min="1000" max="3000" className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none focus:border-blue-300" />
             </label>
             <label className="text-sm text-slate-600 md:col-span-2">
               自定义封面

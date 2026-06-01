@@ -79,6 +79,9 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     ignored?: boolean;
     organized?: boolean;
     primaryEditionId?: string;
+    seriesName?: string;
+    seriesIndex?: number | string | null;
+    publishedYear?: number | string | null;
   }>(request);
   const data: Prisma.LibraryWorkUpdateInput = {};
   if (typeof body.title === 'string') {
@@ -100,7 +103,21 @@ export async function PATCH(request: Request, { params }: { params: { id: string
   }
   if (Array.isArray(body.tags)) data.tags = JSON.stringify(normalizeTags(body.tags));
   if (typeof body.ignored === 'boolean') data.hidden = body.ignored;
-  if (typeof body.organized === 'boolean') data.organized = body.organized;
+  if (typeof body.organized === 'boolean') {
+    data.organized = body.organized;
+    data.organizeStatus = body.organized ? 'APPLIED' : 'REVIEWING';
+  }
+  if (typeof body.seriesName === 'string') data.seriesName = body.seriesName.trim() || null;
+  if (body.seriesIndex !== undefined) {
+    const seriesIndex = body.seriesIndex === null || body.seriesIndex === '' ? null : Number(body.seriesIndex);
+    if (seriesIndex !== null && !Number.isFinite(seriesIndex)) return fail('系列卷号不正确', 400);
+    data.seriesIndex = seriesIndex;
+  }
+  if (body.publishedYear !== undefined) {
+    const publishedYear = body.publishedYear === null || body.publishedYear === '' ? null : Number(body.publishedYear);
+    if (publishedYear !== null && (!Number.isInteger(publishedYear) || publishedYear < 1000 || publishedYear > 3000)) return fail('出版年不正确', 400);
+    data.publishedYear = publishedYear;
+  }
   if (typeof body.primaryEditionId === 'string') {
     const edition = await prisma.libraryEdition.findFirst({ where: { id: body.primaryEditionId, workId: params.id } });
     if (!edition) return fail('版本不存在', 404);

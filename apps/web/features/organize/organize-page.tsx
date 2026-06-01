@@ -13,9 +13,36 @@ import type { WorkView } from '../../lib/books';
 
 type Issue = { code: string; label: string };
 type Duplicate = { bookId: string; otherBookId: string; reasons: Array<{ code: string; label: string }> };
+type MetadataSuggestion = {
+  id: string;
+  field: string;
+  currentValue: unknown;
+  suggestedValue: unknown;
+  source: string;
+  confidence: number;
+  reason: string;
+  status: string;
+};
+type JobDuplicate = {
+  id: string;
+  targetWorkId: string;
+  reasons: string[];
+  confidence: number;
+  suggestedAction: string;
+  status: string;
+};
+type OrganizeJob = {
+  id: string;
+  status: string;
+  issueCodes: string[];
+  summary: string | null;
+  book: WorkView;
+  suggestions: MetadataSuggestion[];
+  duplicates: JobDuplicate[];
+};
 type PendingResponse = {
   ok: boolean;
-  data?: { books: WorkView[]; issues: Record<string, Issue[]>; duplicates: Duplicate[]; total: number };
+  data?: { jobs?: OrganizeJob[]; books: WorkView[]; issues?: Record<string, Issue[]>; duplicates?: Duplicate[]; total: number };
   error?: { message: string };
 };
 
@@ -25,6 +52,25 @@ const statusOptions = [
   { value: 'FINISHED', label: '已读' }
 ];
 
+const fieldLabels: Record<string, string> = {
+  title: '标题',
+  author: '作者',
+  description: '简介',
+  tags: '标签',
+  seriesName: '系列',
+  seriesIndex: '卷号',
+  publishedYear: '出版年'
+};
+
+const sourceLabels: Record<string, string> = {
+  embedded: '内嵌元数据',
+  filename: '文件名',
+  aggregation: '自动聚合',
+  external: '外部数据源',
+  ai: 'AI',
+  rule: '规则'
+};
+
 function parseTags(value: string) {
   return [...new Set(value.split(/[,，\n]/).map((tag) => tag.trim()).filter(Boolean))];
 }
@@ -32,6 +78,7 @@ function parseTags(value: string) {
 export function OrganizePage() {
   const router = useRouter();
   const [books, setBooks] = useState<WorkView[]>([]);
+  const [jobs, setJobs] = useState<OrganizeJob[]>([]);
   const [issues, setIssues] = useState<Record<string, Issue[]>>({});
   const [duplicates, setDuplicates] = useState<Duplicate[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -45,14 +92,17 @@ export function OrganizePage() {
 
   const loadPending = useCallback(() => {
     setLoading(true);
-    fetch('/api/organize/pending?pageSize=100')
+    fetch('/api/organize/jobs?pageSize=100')
       .then((response) => response.json() as Promise<PendingResponse>)
       .then((payload) => {
         if (!payload.ok) throw new Error(payload.error?.message ?? '读取待整理读物失败');
-        setBooks(payload.data?.books ?? []);
-        setIssues(payload.data?.issues ?? {});
+        const nextJobs = payload.data?.jobs ?? [];
+        const nextBooks = nextJobs.length ? nextJobs.map((job) => job.book) : (payload.data?.books ?? []);
+        setJobs(nextJobs);
+        setBooks(nextBooks);
+        setIssues(payload.data?.issues ?? Object.fromEntries(nextJobs.map((job) => [job.book.id, job.issueCodes.map((code) => ({ code, label: code.replace(/^SUGGEST_/, '建议补全 ') }))])));
         setDuplicates(payload.data?.duplicates ?? []);
-        setSelectedIds((current) => current.filter((id) => (payload.data?.books ?? []).some((book) => book.id === id)));
+        setSelectedIds((current) => current.filter((id) => nextBooks.some((book) => book.id === id)));
         setError('');
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : '读取待整理读物失败'))
@@ -68,6 +118,7 @@ export function OrganizePage() {
     if (!duplicateOpenFor) return [];
     return duplicates.filter((item) => item.bookId === duplicateOpenFor || item.otherBookId === duplicateOpenFor);
   }, [duplicateOpenFor, duplicates]);
+  const jobByBookId = useMemo(() => new Map(jobs.map((job) => [job.book.id, job])), [jobs]);
 
   function setSelected(bookId: string, selected: boolean) {
     setSelectedIds((current) => (selected ? [...new Set([...current, bookId])] : current.filter((id) => id !== bookId)));
@@ -93,6 +144,52 @@ export function OrganizePage() {
       loadPending();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : '批量操作失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function applyJob(job: OrganizeJob, body: Record<string, unknown>, successMessage: string) {
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      const response = await fetch(`/api/organize/jobs/${job.id}/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
+      if (!payload.ok) throw new Error(payload.error?.message ?? '应用整理建议失败');
+      setMessage(successMessage);
+      loadPending();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '应用整理建议失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function bulkApplyJobs(markOrganized: boolean) {
+    const jobIds = selectedIds.map((id) => jobByBookId.get(id)?.id).filter((id): id is string => Boolean(id));
+    if (jobIds.length === 0) return;
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      const response = await fetch('/api/organize/jobs/bulk-apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobIds, highConfidenceOnly: true, markOrganized, addTags: parseTags(tagInput) })
+      });
+      const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
+      if (!payload.ok) throw new Error(payload.error?.message ?? '批量应用失败');
+      setMessage(markOrganized ? '已应用高置信度建议并确认整理' : '已应用高置信度建议');
+      setTagInput('');
+      setSelectedIds([]);
+      loadPending();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '批量应用失败');
     } finally {
       setBusy(false);
     }
@@ -148,6 +245,8 @@ export function OrganizePage() {
           <input value={tagInput} onChange={(event) => setTagInput(event.target.value)} placeholder="标签，用逗号分隔" className="h-10 min-w-[220px] flex-1 rounded-2xl border border-slate-200 px-3 text-sm outline-none focus:border-blue-300" />
           <Button disabled={busy || selectedIds.length === 0 || parseTags(tagInput).length === 0} variant="secondary" icon={Tags} onClick={() => void performBulk({ addTags: parseTags(tagInput) }, '标签已添加')}>添加标签</Button>
           <Button disabled={busy || selectedIds.length === 0 || parseTags(tagInput).length === 0} variant="secondary" icon={Tags} onClick={() => void performBulk({ removeTags: parseTags(tagInput) }, '标签已移除')}>移除标签</Button>
+          <Button disabled={busy || selectedIds.length === 0} variant="secondary" icon={CheckCircle2} onClick={() => void bulkApplyJobs(false)}>应用高置信度建议</Button>
+          <Button disabled={busy || selectedIds.length === 0} variant="secondary" icon={CheckCircle2} onClick={() => void bulkApplyJobs(true)}>应用并确认</Button>
           <Button disabled={busy || selectedIds.length === 0} variant="secondary" icon={CheckCircle2} onClick={() => void performBulk({ markOrganized: true }, '已标记为整理完成')}>确认整理</Button>
           <Button disabled={busy || selectedIds.length === 0} variant="danger" icon={EyeOff} onClick={() => void performBulk({ ignored: true }, '已隐藏，源文件未删除', `确认隐藏 ${selectedIds.length} 本读物吗？`)}>隐藏</Button>
           <Button disabled={busy || selectedIds.length === 0} variant="danger" icon={Trash2} onClick={() => void performBulk({ deleteRecords: true }, '数据库记录已删除，源文件未删除', `确认删除 ${selectedIds.length} 条数据库记录吗？NAS 源文件不会被删除。`)}>删除记录</Button>
@@ -168,6 +267,31 @@ export function OrganizePage() {
                 </button>
               ))}
             </div>
+            {jobByBookId.get(book.id)?.suggestions.length ? (
+              <div className="rounded-2xl border border-blue-100 bg-blue-50/70 p-2 text-xs text-slate-700">
+                <div className="mb-1 font-medium text-blue-800">元数据建议</div>
+                <div className="space-y-1">
+                  {jobByBookId.get(book.id)!.suggestions.slice(0, 3).map((suggestion) => (
+                    <div key={suggestion.id} className="flex items-center justify-between gap-2">
+                      <span className="min-w-0 truncate">{fieldLabels[suggestion.field] ?? suggestion.field}：{formatSuggestionValue(suggestion.suggestedValue)}</span>
+                      <Badge tone={suggestion.confidence >= 0.8 ? 'green' : 'slate'}>{Math.round(suggestion.confidence * 100)}%</Badge>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  <Button className="px-2 py-1 text-xs" disabled={busy} variant="secondary" icon={CheckCircle2} onClick={() => void applyJob(jobByBookId.get(book.id)!, { highConfidenceOnly: true }, '已应用高置信度建议')}>应用</Button>
+                  <Button className="px-2 py-1 text-xs" disabled={busy} variant="secondary" icon={CheckCircle2} onClick={() => void applyJob(jobByBookId.get(book.id)!, { highConfidenceOnly: true, markOrganized: true }, '已应用建议并确认整理')}>确认</Button>
+                </div>
+                <div className="mt-1 text-[11px] text-slate-500">
+                  来源：{[...new Set(jobByBookId.get(book.id)!.suggestions.map((suggestion) => sourceLabels[suggestion.source] ?? suggestion.source))].join('、')}
+                </div>
+              </div>
+            ) : null}
+            {jobByBookId.get(book.id)?.duplicates.length ? (
+              <button type="button" onClick={() => setDuplicateOpenFor(book.id)} className="w-full rounded-2xl border border-amber-100 bg-amber-50 p-2 text-left text-xs text-amber-800">
+                {jobByBookId.get(book.id)!.duplicates.length} 条重复/版本候选
+              </button>
+            ) : null}
             <div className="text-xs text-slate-500">{book.format} · 导入 {new Date(book.importedAt).toLocaleString()}</div>
           </div>
         ))}
@@ -204,10 +328,25 @@ export function OrganizePage() {
                   </div>
                 );
               })}
+              {jobByBookId.get(duplicateOpenFor)?.duplicates.map((duplicate) => (
+                <div key={duplicate.id} className="rounded-2xl border border-slate-200 p-4 text-sm">
+                  <div className="font-semibold">候选读物：{duplicate.targetWorkId}</div>
+                  <div className="mt-2 flex flex-wrap gap-1">{duplicate.reasons.map((reason) => <Badge key={reason} tone="amber">{reason}</Badge>)}</div>
+                  <div className="mt-2 text-slate-500">建议动作：{duplicate.suggestedAction} · 置信度 {Math.round(duplicate.confidence * 100)}%</div>
+                  <Button className="mt-3 px-3 py-2" variant="secondary" icon={CheckCircle2} onClick={() => void applyJob(jobByBookId.get(duplicateOpenFor)!, { duplicateIds: [duplicate.id] }, '已记录重复候选处理')}>标记已处理</Button>
+                </div>
+              ))}
             </div>
           </div>
         </div>
       ) : null}
     </div>
   );
+}
+
+function formatSuggestionValue(value: unknown) {
+  if (Array.isArray(value)) return value.join(', ');
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
 }

@@ -42,6 +42,26 @@ enum BookOrigin {
   WATCH
 }
 
+enum OrganizeJobStatus {
+  PENDING
+  REVIEWING
+  APPLIED
+  DISMISSED
+  FAILED
+}
+
+enum MetadataSuggestionStatus {
+  PENDING
+  APPLIED
+  DISMISSED
+}
+
+enum DuplicateCandidateStatus {
+  PENDING
+  APPLIED
+  DISMISSED
+}
+
 model User {
   id           String            @id @default(cuid())
   email        String            @unique
@@ -94,6 +114,11 @@ model LibraryWork {
   workType         ReadingFormat
   status           ReadingStatus  @default(WANT)
   tags             String         @db.Text
+  seriesName       String?
+  seriesIndex      Float?
+  publishedYear    Int?
+  metadataQuality  Int            @default(0)
+  organizeStatus   OrganizeJobStatus @default(REVIEWING)
   coverPath        String?
   coverStatus      CoverStatus    @default(PENDING)
   hidden           Boolean        @default(false)
@@ -104,6 +129,8 @@ model LibraryWork {
   progresses       LibraryReadingProgress[]
   importTasks      ImportTask[]
   shelves          ShelfWork[]
+  organizeJobs     OrganizeJob[]
+  duplicateTargets DuplicateCandidate[] @relation("DuplicateTargetWork")
   createdAt        DateTime       @default(now())
   updatedAt        DateTime       @updatedAt
 
@@ -111,6 +138,9 @@ model LibraryWork {
   @@index([title])
   @@index([normalizedTitle])
   @@index([normalizedAuthor])
+  @@index([seriesName])
+  @@index([publishedYear])
+  @@index([organizeStatus])
   @@index([hidden])
   @@index([organized])
   @@index([monitorFolderId])
@@ -149,6 +179,7 @@ model LibraryEdition {
   metadataItems    LibraryMetadata[]
   progresses       LibraryReadingProgress[]
   importTasks      ImportTask[]
+  organizeJobs     OrganizeJob[]
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
 
@@ -233,6 +264,7 @@ model ImportTask {
   startedAt     DateTime?
   finishedAt    DateTime?
   logs          ImportLog[]
+  organizeJobs  OrganizeJob[]
   createdAt     DateTime       @default(now())
   updatedAt     DateTime       @updatedAt
 
@@ -242,6 +274,66 @@ model ImportTask {
   @@index([workId])
   @@index([editionId])
   @@index([volumeId])
+}
+
+model OrganizeJob {
+  id            String            @id @default(cuid())
+  workId        String
+  work          LibraryWork       @relation(fields: [workId], references: [id], onDelete: Cascade)
+  editionId     String?
+  edition       LibraryEdition?   @relation(fields: [editionId], references: [id], onDelete: SetNull)
+  importTaskId  String?
+  importTask    ImportTask?       @relation(fields: [importTaskId], references: [id], onDelete: SetNull)
+  status        OrganizeJobStatus @default(REVIEWING)
+  issueCodes    String            @db.Text
+  summary       String?           @db.Text
+  errorSummary  String?           @db.Text
+  suggestions   MetadataSuggestion[]
+  duplicates    DuplicateCandidate[]
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @updatedAt
+
+  @@index([workId, status])
+  @@index([editionId])
+  @@index([importTaskId])
+  @@index([status, updatedAt])
+}
+
+model MetadataSuggestion {
+  id             String                   @id @default(cuid())
+  jobId          String
+  job            OrganizeJob              @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  field          String
+  currentValue   String?                  @db.Text
+  suggestedValue String                   @db.Text
+  source         String
+  confidence     Float                    @default(0)
+  reason         String                   @db.Text
+  status         MetadataSuggestionStatus @default(PENDING)
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+
+  @@index([jobId, status])
+  @@index([field])
+  @@index([source])
+}
+
+model DuplicateCandidate {
+  id             String                   @id @default(cuid())
+  jobId          String
+  job            OrganizeJob              @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  targetWorkId   String
+  targetWork     LibraryWork              @relation("DuplicateTargetWork", fields: [targetWorkId], references: [id], onDelete: Cascade)
+  reasons        String                   @db.Text
+  confidence     Float                    @default(0)
+  suggestedAction String
+  status         DuplicateCandidateStatus @default(PENDING)
+  createdAt      DateTime                 @default(now())
+  updatedAt      DateTime                 @updatedAt
+
+  @@index([jobId, status])
+  @@index([targetWorkId])
+  @@index([suggestedAction])
 }
 
 model ImportLog {
