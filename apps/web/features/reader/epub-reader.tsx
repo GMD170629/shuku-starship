@@ -113,8 +113,20 @@ function isInteractiveElement(target: EventTarget | null) {
   return Boolean(target.closest('a, button, input, textarea, select, label, [contenteditable="true"]'));
 }
 
-function stripScripts(document: Document) {
-  document.querySelectorAll('script').forEach((script) => script.remove());
+const executableElementSelector = 'script, iframe, object, embed';
+const urlAttributeNames = ['href', 'src', 'xlink:href', 'formaction'];
+
+function sanitizeEpubDocument(document: Document) {
+  document.querySelectorAll(executableElementSelector).forEach((element) => element.remove());
+  document.querySelectorAll('*').forEach((element) => {
+    Array.from(element.attributes).forEach((attribute) => {
+      const name = attribute.name.toLowerCase();
+      const value = attribute.value.trim().toLowerCase();
+      if (name.startsWith('on') || (urlAttributeNames.includes(name) && value.startsWith('javascript:'))) {
+        element.removeAttribute(attribute.name);
+      }
+    });
+  });
 }
 
 function scrollTopFromView(view: EpubView | null) {
@@ -274,13 +286,13 @@ export function EbookReader({
       })
       .then(async () => {
         if (canceled || destroyRequested) return;
-        book.spine.hooks.content.register(stripScripts);
+        book.spine.hooks.content.register(sanitizeEpubDocument);
         const rendition = book.renderTo(container, {
           width: '100%',
           height: '100%',
           flow: ebookFlow === 'scrolled' ? 'scrolled-doc' : 'paginated',
           spread: 'none',
-          allowScriptedContent: false
+          allowScriptedContent: true
         });
         localRendition = rendition;
         renditionRef.current = rendition;
@@ -311,6 +323,7 @@ export function EbookReader({
         rendition.on('rendered', (_section: unknown, view: EpubView) => {
           currentViewRef.current = view;
           const document = view.document as ReaderDocument | undefined;
+          if (document) sanitizeEpubDocument(document);
           if (document && !document.__shukuReaderEventsBound) {
             document.__shukuReaderEventsBound = true;
             let touchStartX = 0;
