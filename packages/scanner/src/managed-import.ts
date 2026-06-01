@@ -1,5 +1,4 @@
-import { createHash } from 'node:crypto';
-import { createReadStream } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import { copyFile, mkdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, normalize, posix, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
@@ -94,6 +93,15 @@ type ParsedComicArchive = {
   rawMetadata: Record<string, unknown>;
 };
 
+type ParsedComicArchiveMetadata = {
+  title: string;
+  author: string;
+  description?: string | null;
+  format: 'cbz' | 'zip';
+  comicInfo?: ParsedComicInfo | null;
+  rawMetadata: Record<string, unknown>;
+};
+
 export type ParsedComicVolume = {
   seriesName: string;
   seriesIndex: number;
@@ -183,17 +191,6 @@ function closeZip(zipFile: yauzl.ZipFile) {
   } catch {
     // yauzl may have already closed the descriptor.
   }
-}
-
-async function sha256File(path: string) {
-  const hash = createHash('sha256');
-  await new Promise<void>((resolveHash, reject) => {
-    const stream = createReadStream(path);
-    stream.on('data', (chunk) => hash.update(chunk));
-    stream.once('end', () => resolveHash());
-    stream.once('error', reject);
-  });
-  return hash.digest('hex');
 }
 
 async function readZipEntry(filePath: string, entryName: string): Promise<Buffer> {
@@ -540,6 +537,54 @@ async function listArchiveEntries(filePath: string) {
   });
 }
 
+async function findComicInfoEntry(filePath: string) {
+  const zipFile = await openZip(filePath);
+  return new Promise<{ name: string; uncompressedSize: number } | null>((resolveEntry, reject) => {
+    let scanned = 0;
+    zipFile.on('entry', (entry: yauzl.Entry) => {
+      scanned += 1;
+      if (scanned > MAX_ENTRIES) {
+        closeZip(zipFile);
+        reject(new Error(`压缩包文件数量超过限制（${MAX_ENTRIES}）`));
+        return;
+      }
+      const safeName = safeEntryName(entry.fileName);
+      if (safeName && !/\/$/.test(safeName) && safeName.toLowerCase().endsWith('comicinfo.xml')) {
+        closeZip(zipFile);
+        if (entry.uncompressedSize <= XML_MAX_BYTES) resolveEntry({ name: safeName, uncompressedSize: entry.uncompressedSize });
+        else resolveEntry(null);
+        return;
+      }
+      zipFile.readEntry();
+    });
+    zipFile.once('end', () => {
+      closeZip(zipFile);
+      resolveEntry(null);
+    });
+    zipFile.once('error', reject);
+    zipFile.readEntry();
+  });
+}
+
+async function parseComicArchiveMetadata(filePath: string, originalName?: string): Promise<ParsedComicArchiveMetadata> {
+  const ext = extname(filePath).toLowerCase();
+  const format = ext === '.cbz' ? 'cbz' : 'zip';
+  const fileStat = await stat(filePath);
+  if (!fileStat.isFile()) throw new Error('漫画压缩包不存在或不可读');
+  if (fileStat.size > MAX_ARCHIVE_SIZE_BYTES) throw new Error(`漫画压缩包超过限制（${MAX_ARCHIVE_SIZE_BYTES} bytes）`);
+  await openZip(filePath).then((zip) => zip.close());
+  const comicInfoEntry = await findComicInfoEntry(filePath);
+  const comicInfo = comicInfoEntry ? parseComicInfoXml((await readZipEntry(filePath, comicInfoEntry.name)).toString('utf8')) : null;
+  return {
+    title: comicInfo?.title || titleFromFile(filePath, originalName),
+    author: comicInfo?.writer || comicInfo?.penciller || '未知作者',
+    description: comicInfo?.summary ?? null,
+    format,
+    comicInfo,
+    rawMetadata: comicInfo ? { hasComicInfo: true, comicInfo: comicInfo.raw } : { hasComicInfo: false }
+  };
+}
+
 async function parseComicArchive(filePath: string, originalName?: string): Promise<ParsedComicArchive> {
   const ext = extname(filePath).toLowerCase();
   const format = ext === '.cbz' ? 'cbz' : 'zip';
@@ -574,10 +619,10 @@ async function logImport(importTaskId: string | null | undefined, level: string,
   await prisma.importLog.create({ data: { importTaskId, level, message } });
 }
 
-async function managedPathFor(contentHash: string, ext: string) {
-  const directory = join(LIBRARY_STORAGE_ROOT, contentHash.slice(0, 2));
+async function managedPathFor(importTaskId: string, ext: string) {
+  const directory = join(LIBRARY_STORAGE_ROOT, importTaskId.slice(0, 2));
   await mkdir(directory, { recursive: true });
-  return join(directory, `${contentHash}${ext}`);
+  return join(directory, `${importTaskId}-${randomUUID()}${ext}`);
 }
 
 function fileHashForPath(path: string) {
@@ -622,7 +667,7 @@ function sourceGroupKey(options: ImportManagedBookOptions, fallbackTitle: string
   return `manual:${normalizeLibraryKey(fallbackTitle)}`;
 }
 
-function comicVolumeFromParsed(parsed: ParsedComicArchive, filePath: string, originalName?: string) {
+function comicVolumeFromParsed(parsed: Pick<ParsedComicArchiveMetadata, 'comicInfo'>, filePath: string, originalName?: string) {
   if (parsed.comicInfo?.series && Number.isFinite(parsed.comicInfo.volume)) {
     return {
       seriesName: parsed.comicInfo.series,
@@ -633,7 +678,7 @@ function comicVolumeFromParsed(parsed: ParsedComicArchive, filePath: string, ori
   return parseComicVolumeFromName(filePath, originalName);
 }
 
-function comicWorkTitle(parsed: ParsedComicArchive, volume: ParsedComicVolume, options: ImportManagedBookOptions) {
+function comicWorkTitle(parsed: Pick<ParsedComicArchiveMetadata, 'title' | 'comicInfo'>, volume: ParsedComicVolume, options: ImportManagedBookOptions) {
   if (volume?.seriesName) return volume.seriesName;
   if (parsed.comicInfo?.series) return parsed.comicInfo.series;
   const parent = sourceParentPath(options);
@@ -704,8 +749,8 @@ async function finalizeWorkPrimary(workId: string, editionId: string, coverPath?
   });
 }
 
-async function importReadableEpub(options: ImportManagedBookOptions & { importTaskId: string; managedFilePath: string; contentHash: string; fileSize: number }): Promise<ImportManagedBookResult> {
-  const metadata = await parseEpubMetadata(options.managedFilePath);
+async function importReadableEpub(options: ImportManagedBookOptions & { importTaskId: string; fileSize: number; ext: string }): Promise<ImportManagedBookResult> {
+  const metadata = await parseEpubMetadata(options.sourceFilePath);
   const mergeKey = workMergeKey('epub', metadata.title, metadata.author, metadata.identifier, metadata.isbn);
   const { work, created } = await ensureWork({
     title: metadata.title,
@@ -717,6 +762,33 @@ async function importReadableEpub(options: ImportManagedBookOptions & { importTa
     origin: options.origin,
     monitorFolderId: options.monitorFolderId
   });
+  const existingEdition = !created
+    ? await prisma.libraryEdition.findFirst({
+        where: { workId: work.id, format: 'EPUB', hidden: false },
+        include: { volumes: { orderBy: { sortOrder: 'asc' } }, files: { orderBy: { sortOrder: 'asc' } } },
+        orderBy: { createdAt: 'asc' }
+      })
+    : null;
+  if (existingEdition) {
+    return {
+      bookId: work.id,
+      workId: work.id,
+      editionId: existingEdition.id,
+      volumeId: existingEdition.volumes[0]?.id ?? null,
+      title: work.title,
+      type: 'ebook',
+      format: 'epub',
+      totalUnits: existingEdition.chapterCount ?? metadata.chapterCount,
+      coverUrl: work.coverPath ? storageUrl(work.coverPath) : null,
+      importStatus: 'completed',
+      duplicate: true,
+      merged: true,
+      mergeReason: 'duplicate-epub-metadata'
+    };
+  }
+  const managedFilePath = await managedPathFor(options.importTaskId, options.ext);
+  await copyFile(options.sourceFilePath, managedFilePath);
+  await prisma.importTask.update({ where: { id: options.importTaskId }, data: { managedFilePath, message: '正在建立 EPUB 记录' } });
   const versionName = await nextEditionName(work.id, 'EPUB');
   const edition = await prisma.libraryEdition.create({
     data: {
@@ -725,7 +797,7 @@ async function importReadableEpub(options: ImportManagedBookOptions & { importTa
       origin: options.origin,
       format: 'EPUB',
       versionName,
-      versionKey: `epub:${options.contentHash.slice(0, 32)}`,
+      versionKey: 'epub:primary',
       description: metadata.description,
       language: metadata.language,
       publisher: metadata.publisher,
@@ -745,7 +817,7 @@ async function importReadableEpub(options: ImportManagedBookOptions & { importTa
       const coverExt = extname(metadata.coverPath) || '.jpg';
       coverPath = resolve(BOOK_ASSET_ROOT, work.id, edition.id, `cover${coverExt}`);
       await mkdir(dirname(coverPath), { recursive: true });
-      await writeFile(coverPath, await readZipEntry(options.managedFilePath, rel));
+      await writeFile(coverPath, await readZipEntry(managedFilePath, rel));
     }
     const volume = await prisma.libraryVolume.create({
       data: {
@@ -756,16 +828,16 @@ async function importReadableEpub(options: ImportManagedBookOptions & { importTa
         coverPath
       }
     });
-    const managedMtimeMs = BigInt(Math.trunc((await stat(options.managedFilePath)).mtimeMs));
+    const managedMtimeMs = BigInt(Math.trunc((await stat(managedFilePath)).mtimeMs));
     const file = await prisma.libraryFile.create({
       data: {
         editionId: edition.id,
         volumeId: volume.id,
-        path: options.managedFilePath,
-        filePathHash: fileHashForPath(options.managedFilePath),
-        fingerprint: `full:${options.contentHash}`,
-        fullHash: options.contentHash,
-        hashStatus: 'FULL',
+        path: managedFilePath,
+        filePathHash: fileHashForPath(managedFilePath),
+        fingerprint: null,
+        fullHash: null,
+        hashStatus: 'PARTIAL_PENDING',
         kind: 'EPUB',
         mimeType: 'application/epub+zip',
         sortOrder: 0,
@@ -813,29 +885,45 @@ async function importReadableEpub(options: ImportManagedBookOptions & { importTa
   }
 }
 
-async function selectComicEdition(workId: string, volumeIndex: number | null, sourceKey: string) {
+async function selectComicEdition(workId: string, volumeIndex: number | null, sourceKey: string, volumeTitle: string) {
   const editions = await prisma.libraryEdition.findMany({
     where: { workId, format: 'COMIC', hidden: false },
     include: { volumes: true },
     orderBy: { createdAt: 'asc' }
   });
-  const noConflict = editions.find((edition) => {
-    if (edition.sourceGroupKey && edition.sourceGroupKey !== sourceKey) return false;
-    if (volumeIndex === null) return edition.volumes.length === 0;
-    return !edition.volumes.some((volume) => volume.volumeIndex === volumeIndex);
+  const hasConflict = (edition: (typeof editions)[number]) =>
+    volumeIndex === null
+      ? edition.volumes.some((volume) => normalizeLibraryKey(volume.title) === normalizeLibraryKey(volumeTitle))
+      : edition.volumes.some((volume) => volume.volumeIndex === volumeIndex);
+  return editions.find((edition) => edition.sourceGroupKey === sourceKey && !hasConflict(edition))
+    ?? editions.find((edition) => !hasConflict(edition))
+    ?? null;
+}
+
+async function findComicDuplicateVolume(workId: string, volumeIndex: number | null, volumeTitle: string) {
+  const editions = await prisma.libraryEdition.findMany({
+    where: { workId, format: 'COMIC', hidden: false },
+    include: { volumes: { orderBy: { sortOrder: 'asc' } } },
+    orderBy: { createdAt: 'asc' }
   });
-  if (noConflict) return noConflict;
+  for (const edition of editions) {
+    const volume = volumeIndex === null
+      ? edition.volumes.find((item) => normalizeLibraryKey(item.title) === normalizeLibraryKey(volumeTitle)) ?? null
+      : edition.volumes.find((item) => item.volumeIndex === volumeIndex) ?? null;
+    if (volume) return { edition, volume };
+  }
   return null;
 }
 
-async function importReadableComic(options: ImportManagedBookOptions & { importTaskId: string; managedFilePath: string; contentHash: string; fileSize: number; ext: string }): Promise<ImportManagedBookResult> {
-  const parsed = await parseComicArchive(options.managedFilePath, options.originalName);
+async function importReadableComic(options: ImportManagedBookOptions & { importTaskId: string; fileSize: number; ext: string }): Promise<ImportManagedBookResult> {
+  const parsed = await parseComicArchiveMetadata(options.sourceFilePath, options.originalName);
   const volumeInfo = comicVolumeFromParsed(parsed, options.sourceFilePath, options.originalName);
   const title = comicWorkTitle(parsed, volumeInfo, options);
   const author = parsed.author;
   const mergeKey = workMergeKey('cbz', title, author);
   const sourceKey = sourceGroupKey(options, title);
   const volumeIndex = Number.isFinite(volumeInfo?.seriesIndex) ? Number(volumeInfo?.seriesIndex) : null;
+  const volumeTitle = volumeIndex !== null ? `第 ${volumeIndex} 卷` : (parsed.comicInfo?.title ?? parsed.title);
   const { work, created } = await ensureWork({
     title,
     author,
@@ -846,8 +934,26 @@ async function importReadableComic(options: ImportManagedBookOptions & { importT
     origin: options.origin,
     monitorFolderId: options.monitorFolderId
   });
+  const duplicate = await findComicDuplicateVolume(work.id, volumeIndex, volumeTitle);
+  if (duplicate) {
+    return {
+      bookId: work.id,
+      workId: work.id,
+      editionId: duplicate.edition.id,
+      volumeId: duplicate.volume.id,
+      title: work.title,
+      type: 'comic',
+      format: parsed.format,
+      totalUnits: duplicate.volume.pageCount ?? duplicate.edition.pageCount ?? 0,
+      coverUrl: work.coverPath ? storageUrl(work.coverPath) : null,
+      importStatus: 'completed',
+      duplicate: true,
+      merged: true,
+      mergeReason: 'duplicate-comic-metadata'
+    };
+  }
 
-  let edition = await selectComicEdition(work.id, volumeIndex, sourceKey);
+  let edition = await selectComicEdition(work.id, volumeIndex, sourceKey, volumeTitle);
   let createdEdition = false;
   if (!edition) {
     createdEdition = true;
@@ -858,7 +964,7 @@ async function importReadableComic(options: ImportManagedBookOptions & { importT
         origin: options.origin,
         format: 'COMIC',
         versionName: await nextEditionName(work.id, '漫画版本'),
-        versionKey: `comic:${sourceKey}:${Date.now()}:${options.contentHash.slice(0, 8)}`,
+        versionKey: `comic:${sourceKey}`,
         sourceGroupKey: sourceKey,
         description: parsed.description,
         importStatus: 'PARSING',
@@ -874,26 +980,26 @@ async function importReadableComic(options: ImportManagedBookOptions & { importT
     const volume = await prisma.libraryVolume.create({
       data: {
         editionId: edition.id,
-        title: volumeIndex !== null ? `第 ${volumeIndex} 卷` : (parsed.comicInfo?.title ?? parsed.title),
+        title: volumeTitle,
         volumeIndex,
         sortOrder,
-        pageCount: parsed.pageCount
+        pageCount: 0,
+        coverPath: null
       }
     });
-    const coverExt = extname(parsed.coverEntryPath).toLowerCase() || '.jpg';
-    coverPath = resolve(BOOK_ASSET_ROOT, work.id, edition.id, volume.id, `cover${coverExt}`);
-    await mkdir(dirname(coverPath), { recursive: true });
-    await writeFile(coverPath, await readZipEntry(options.managedFilePath, parsed.coverEntryPath));
-    const mtimeMs = BigInt(Math.trunc((await stat(options.managedFilePath)).mtimeMs));
-    const file = await prisma.libraryFile.create({
+    const managedFilePath = await managedPathFor(options.importTaskId, options.ext);
+    await copyFile(options.sourceFilePath, managedFilePath);
+    await prisma.importTask.update({ where: { id: options.importTaskId }, data: { managedFilePath, message: '正在建立漫画记录' } });
+    const mtimeMs = BigInt(Math.trunc((await stat(managedFilePath)).mtimeMs));
+    await prisma.libraryFile.create({
       data: {
         editionId: edition.id,
         volumeId: volume.id,
-        path: options.managedFilePath,
-        filePathHash: fileHashForPath(options.managedFilePath),
-        fingerprint: `full:${options.contentHash}`,
-        fullHash: options.contentHash,
-        hashStatus: 'FULL',
+        path: managedFilePath,
+        filePathHash: fileHashForPath(managedFilePath),
+        fingerprint: null,
+        fullHash: null,
+        hashStatus: 'PARTIAL_PENDING',
         kind: 'COMIC',
         mimeType: comicMimeType(parsed.format),
         sortOrder,
@@ -902,49 +1008,26 @@ async function importReadableComic(options: ImportManagedBookOptions & { importT
       }
     });
     await prisma.$transaction([
-      prisma.libraryReadingUnit.createMany({
-        data: parsed.pages.map((page) => ({
-          editionId: edition.id,
-          volumeId: volume.id,
-          fileId: file.id,
-          unitType: 'page',
-          title: page.title,
-          href: page.entryPath,
-          mediaType: page.mediaType,
-          sortOrder: page.index,
-          size: page.size ? BigInt(page.size) : null,
-          metadataJson: JSON.stringify({
-            zipEntryName: page.entryPath,
-            originalName: basename(page.entryPath),
-            pageInVolume: page.index,
-            pageInSection: page.index,
-            volumeIndex,
-            sourceFileName: options.originalName ?? basename(options.sourceFilePath)
-          })
-        }))
-      }),
       prisma.libraryMetadata.create({
         data: {
           editionId: edition.id,
           source: parsed.comicInfo ? 'comic_info' : 'system',
           rawJson: JSON.stringify({ ...parsed.rawMetadata, volumeIndex, sourceFileName: options.originalName ?? basename(options.sourceFilePath) })
         }
-      }),
-      prisma.libraryVolume.update({ where: { id: volume.id }, data: { coverPath } })
+      })
     ]);
-    const totals = await prisma.libraryVolume.aggregate({ where: { editionId: edition.id }, _sum: { pageCount: true } });
     const sizeTotals = await prisma.libraryFile.aggregate({ where: { editionId: edition.id }, _sum: { sizeBytes: true } });
     await prisma.libraryEdition.update({
       where: { id: edition.id },
       data: {
         sizeBytes: sizeTotals._sum.sizeBytes ?? BigInt(options.fileSize),
-        pageCount: totals._sum.pageCount ?? parsed.pageCount,
-        coverPath: edition.coverPath ?? coverPath,
-        coverStatus: edition.coverPath || coverPath ? 'READY' : 'PENDING',
+        pageCount: 0,
+        coverPath: edition.coverPath ?? null,
+        coverStatus: edition.coverStatus,
         importStatus: 'COMPLETED'
       }
     });
-    await finalizeWorkPrimary(work.id, edition.id, coverPath);
+    await finalizeWorkPrimary(work.id, edition.id, null);
     return {
       bookId: work.id,
       workId: work.id,
@@ -953,8 +1036,8 @@ async function importReadableComic(options: ImportManagedBookOptions & { importT
       title: work.title,
       type: 'comic',
       format: parsed.format,
-      totalUnits: totals._sum.pageCount ?? parsed.pageCount,
-      coverUrl: coverPath ? storageUrl(coverPath) : null,
+      totalUnits: 0,
+      coverUrl: null,
       importStatus: 'completed',
       duplicate: false,
       merged: !created || !createdEdition,
@@ -978,53 +1061,11 @@ export async function importManagedBook(options: ImportManagedBookOptions): Prom
   try {
     const fileStat = await stat(options.sourceFilePath);
     if (!fileStat.isFile()) throw new Error('导入源不是文件');
-    const contentHash = await sha256File(options.sourceFilePath);
-    const managedFilePath = await managedPathFor(contentHash, ext);
-    const duplicate = await prisma.libraryFile.findFirst({
-      where: { fullHash: contentHash },
-      include: { edition: { include: { work: true, volumes: { orderBy: { sortOrder: 'asc' } } } } }
-    });
-    if (duplicate) {
-      await prisma.importTask.update({
-        where: { id: importTaskId },
-        data: {
-          workId: duplicate.edition.workId,
-          editionId: duplicate.editionId,
-          volumeId: duplicate.volumeId,
-          status: 'COMPLETED',
-          progress: 100,
-          duplicate: true,
-          contentHash,
-          managedFilePath: duplicate.path,
-          message: '读物已存在，跳过重复导入',
-          duration: Date.now() - startedAt,
-          finishedAt: new Date()
-        }
-      });
-      await logImport(importTaskId, 'info', `duplicate: ${duplicate.edition.workId}`);
-      return {
-        bookId: duplicate.edition.workId,
-        workId: duplicate.edition.workId,
-        editionId: duplicate.editionId,
-        volumeId: duplicate.volumeId,
-        title: duplicate.edition.work.title,
-        type: duplicate.kind === 'COMIC' ? 'comic' : 'ebook',
-        format: ext === '.epub' ? 'epub' : ext === '.cbz' ? 'cbz' : 'zip',
-        totalUnits: duplicate.kind === 'COMIC' ? duplicate.edition.pageCount ?? 0 : duplicate.edition.chapterCount ?? 0,
-        coverUrl: duplicate.edition.work.coverPath ? storageUrl(duplicate.edition.work.coverPath) : null,
-        importStatus: 'completed',
-        duplicate: true,
-        merged: true,
-        mergeReason: 'duplicate-full-hash'
-      };
-    }
-
-    await copyFile(options.sourceFilePath, managedFilePath);
-    await prisma.importTask.update({ where: { id: importTaskId }, data: { progress: 30, contentHash, managedFilePath, message: '正在读取元数据' } });
+    await prisma.importTask.update({ where: { id: importTaskId }, data: { progress: 30, message: '正在读取元数据' } });
 
     const result = ext === '.epub'
-      ? await importReadableEpub({ ...options, importTaskId, managedFilePath, contentHash, fileSize: fileStat.size })
-      : await importReadableComic({ ...options, importTaskId, managedFilePath, contentHash, fileSize: fileStat.size, ext });
+      ? await importReadableEpub({ ...options, importTaskId, fileSize: fileStat.size, ext })
+      : await importReadableComic({ ...options, importTaskId, fileSize: fileStat.size, ext });
 
     await prisma.importTask.update({
       where: { id: importTaskId },
@@ -1034,13 +1075,13 @@ export async function importManagedBook(options: ImportManagedBookOptions): Prom
         volumeId: result.volumeId,
         status: 'COMPLETED',
         progress: 100,
-        duplicate: false,
-        message: result.merged ? `导入完成：${result.mergeReason ?? '已合并'}` : '导入完成',
+        duplicate: result.duplicate,
+        message: result.duplicate ? '读物已存在，跳过重复导入' : result.merged ? `导入完成：${result.mergeReason ?? '已合并'}` : '导入完成',
         duration: Date.now() - startedAt,
         finishedAt: new Date()
       }
     });
-    if (result.workId) {
+    if (result.workId && !result.duplicate) {
       await createOrRefreshOrganizeJob({ workId: result.workId, editionId: result.editionId, importTaskId }).catch((error) =>
         logImport(importTaskId, 'warn', `organize job skipped: ${error instanceof Error ? error.message : String(error)}`)
       );
@@ -1059,6 +1100,82 @@ export async function importManagedBook(options: ImportManagedBookOptions): Prom
 }
 
 export const importReadableItem = importManagedBook;
+
+export async function ensureComicVolumePageIndex(volumeId: string) {
+  const existingCount = await prisma.libraryReadingUnit.count({ where: { volumeId, unitType: 'page' } });
+  if (existingCount > 0) return existingCount;
+
+  const volume = await prisma.libraryVolume.findUnique({
+    where: { id: volumeId },
+    include: {
+      edition: { include: { work: true } },
+      files: { orderBy: { sortOrder: 'asc' } }
+    }
+  });
+  if (!volume) throw new Error('漫画卷不存在');
+  const file = volume.files[0];
+  if (!file) throw new Error('漫画文件不存在');
+
+  const { images, comicInfoEntry } = await listArchiveEntries(file.path);
+  if (images.length === 0) throw new Error('漫画压缩包内没有可读取的图片');
+  if (images.length > MAX_IMAGE_COUNT) throw new Error(`漫画图片数量超过限制（${MAX_IMAGE_COUNT}）`);
+  images.sort((left, right) => collator.compare(left.name, right.name));
+
+  let comicInfo: ParsedComicInfo | null = null;
+  if (comicInfoEntry) comicInfo = parseComicInfoXml((await readZipEntry(file.path, comicInfoEntry.name)).toString('utf8'));
+  const pages = images.map((entry, index) => ({ index: index + 1, title: `第 ${index + 1} 页`, entryPath: entry.name, mediaType: entryMimeType(entry.name), size: entry.uncompressedSize }));
+  const coverByInfo = comicInfo?.coverImageIndex !== undefined ? pages.find((page) => page.index - 1 === comicInfo?.coverImageIndex || page.index === comicInfo?.coverImageIndex) : undefined;
+  const coverEntryPath = coverByInfo?.entryPath ?? pages.find((page) => /(cover|folder|front|封面)/i.test(basename(page.entryPath)))?.entryPath ?? pages[0].entryPath;
+  const coverExt = extname(coverEntryPath).toLowerCase() || '.jpg';
+  const coverPath = resolve(BOOK_ASSET_ROOT, volume.edition.workId, volume.editionId, volume.id, `cover${coverExt}`);
+  await mkdir(dirname(coverPath), { recursive: true });
+  await writeFile(coverPath, await readZipEntry(file.path, coverEntryPath));
+
+  await prisma.libraryReadingUnit.createMany({
+    data: pages.map((page) => ({
+      editionId: volume.editionId,
+      volumeId: volume.id,
+      fileId: file.id,
+      unitType: 'page',
+      title: page.title,
+      href: page.entryPath,
+      mediaType: page.mediaType,
+      sortOrder: page.index,
+      size: page.size ? BigInt(page.size) : null,
+      metadataJson: JSON.stringify({
+        zipEntryName: page.entryPath,
+        originalName: basename(page.entryPath),
+        pageInVolume: page.index,
+        pageInSection: page.index,
+        volumeIndex: volume.volumeIndex,
+        sourceFileName: basename(file.path)
+      })
+    })),
+    skipDuplicates: true
+  });
+
+  const indexedCount = await prisma.libraryReadingUnit.count({ where: { volumeId, unitType: 'page' } });
+  const totals = await prisma.libraryVolume.aggregate({ where: { editionId: volume.editionId }, _sum: { pageCount: true } });
+  await prisma.$transaction([
+    prisma.libraryVolume.update({ where: { id: volume.id }, data: { pageCount: indexedCount, coverPath } }),
+    prisma.libraryEdition.update({
+      where: { id: volume.editionId },
+      data: {
+        pageCount: totals._sum.pageCount ? Number(totals._sum.pageCount) - (volume.pageCount ?? 0) + indexedCount : indexedCount,
+        coverPath: volume.edition.coverPath ?? coverPath,
+        coverStatus: 'READY'
+      }
+    }),
+    prisma.libraryWork.update({
+      where: { id: volume.edition.workId },
+      data: {
+        coverPath: volume.edition.work.coverPath ?? coverPath,
+        coverStatus: 'READY'
+      }
+    })
+  ]);
+  return indexedCount;
+}
 
 export function isSupportedImportFile(filePath: string) {
   return supportedExts.has(extname(filePath).toLowerCase());

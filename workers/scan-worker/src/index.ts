@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { access, rm, stat, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { basename, join } from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
 import { prisma } from '@shuku/database';
 import { importManagedBook, isSupportedImportFile, normalizeConfiguredPath, PathSecurityService } from '@shuku/scanner';
@@ -17,7 +17,7 @@ type WatchState = {
 };
 
 const watchers = new Map<string, WatchState>();
-const importQueues = new Map<string, Promise<void>>();
+let importQueue = Promise.resolve();
 
 function loadEnvFile(path: string, options: { override?: boolean } = {}) {
   if (!existsSync(path)) return;
@@ -83,20 +83,11 @@ async function importWatchedFile(filePath: string, folder: { id: string; minFile
   }
 }
 
-function importQueueKey(filePath: string, folder: { id: string }) {
-  return `${folder.id}:${dirname(resolve(filePath))}`;
-}
-
 function enqueueWatchedImport(filePath: string, folder: { id: string; minFileSizeBytes: number }) {
-  const key = importQueueKey(filePath, folder);
-  const previous = importQueues.get(key) ?? Promise.resolve();
-  const next = previous
+  const next = importQueue
     .catch(() => undefined)
-    .then(() => importWatchedFile(filePath, folder))
-    .finally(() => {
-      if (importQueues.get(key) === next) importQueues.delete(key);
-    });
-  importQueues.set(key, next);
+    .then(() => importWatchedFile(filePath, folder));
+  importQueue = next.catch(() => undefined);
   return next;
 }
 

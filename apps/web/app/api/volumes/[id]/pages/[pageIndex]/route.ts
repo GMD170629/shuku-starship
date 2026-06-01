@@ -1,4 +1,5 @@
 import { Readable } from 'node:stream';
+import { ensureComicVolumePageIndex } from '@shuku/scanner/managed-import';
 import { requireUser } from '../../../../../../lib/auth';
 import { closeComicArchive, streamComicPageFromArchive } from '../../../../../../lib/comic-import';
 import { fail } from '../../../../../../lib/http';
@@ -9,6 +10,17 @@ export async function GET(_request: Request, { params }: { params: { id: string;
   await requireUser();
   const pageIndex = Number(params.pageIndex);
   if (!Number.isSafeInteger(pageIndex) || pageIndex < 1) return fail('页面编号不正确', 400);
+  const visibleVolume = await prisma.libraryVolume.findFirst({
+    where: { id: params.id, edition: { hidden: false, work: { hidden: false } } },
+    select: { id: true }
+  });
+  if (!visibleVolume) return fail('漫画卷不存在或无权访问', 404);
+  try {
+    await ensureComicVolumePageIndex(params.id);
+  } catch (error) {
+    console.error('[library-volume-page-index-error]', { volumeId: params.id, error });
+    return fail('漫画页索引建立失败', 500);
+  }
   const volume = await prisma.libraryVolume.findFirst({
     where: { id: params.id, edition: { hidden: false, work: { hidden: false } } },
     include: {

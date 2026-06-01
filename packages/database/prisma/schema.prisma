@@ -427,6 +427,7 @@ model LibraryReadingUnit {
   @@index([editionId, unitType])
   @@index([volumeId, sortOrder])
   @@index([fileId, sortOrder])
+  @@unique([volumeId, unitType, sortOrder])
 }
 
 model LibraryMetadata {

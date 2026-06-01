@@ -1,3 +1,4 @@
+import { ensureComicVolumePageIndex } from '@shuku/scanner/managed-import';
 import { requireUser } from '../../../../../lib/auth';
 import { toWorkView } from '../../../../../lib/books';
 import { fail, ok } from '../../../../../lib/http';
@@ -63,7 +64,12 @@ export async function GET(request: Request, { params }: { params: { editionId: s
     const volume = requestedVolumeId
       ? edition.volumes.find((item) => item.id === requestedVolumeId) ?? edition.volumes[0] ?? null
       : edition.volumes[0] ?? null;
-    const pageUnits = edition.readingUnits.filter((unit) => !volume || unit.volumeId === volume.id);
+    let pageUnits = edition.readingUnits.filter((unit) => !volume || unit.volumeId === volume.id);
+    if (volume && pageUnits.length === 0) {
+      await ensureComicVolumePageIndex(volume.id);
+      const indexedUnits = await prisma.libraryReadingUnit.findMany({ where: { volumeId: volume.id, unitType: 'page' }, orderBy: { sortOrder: 'asc' } });
+      pageUnits = indexedUnits;
+    }
     return ok({
       book: { ...workView, editionId: edition.id, formatValue: edition.format },
       readerType,
