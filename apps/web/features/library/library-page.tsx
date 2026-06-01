@@ -204,6 +204,25 @@ export function LibraryPage() {
     }
   }
 
+  async function deleteBook(book: BookView) {
+    if (!window.confirm(`确认删除《${book.title}》的数据库记录吗？源文件不会被删除。`)) return;
+    setBusy(true);
+    setError('');
+    setMessage('');
+    try {
+      const response = await fetch(`/api/books/${book.id}`, { method: 'DELETE' });
+      const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
+      if (!payload.ok) throw new Error(payload.error?.message ?? '删除失败');
+      setMessage('已删除数据库记录，源文件未删除');
+      setSelected((current) => current.filter((id) => id !== book.id));
+      setReloadKey((key) => key + 1);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '删除失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
       <PageTitle
@@ -361,12 +380,13 @@ export function LibraryPage() {
                   selectionEnabled
                   selected={selected.includes(book.id)}
                   onSelectedChange={(checked) => setBookSelected(book.id, checked)}
+                  onDelete={() => void deleteBook(book)}
                   onClick={() => router.push(`/books/${book.id}`)}
                 />
               ))}
             </div>
           ) : (
-            <BookTable books={books} selectedIds={selected} onSelectedChange={setBookSelected} />
+            <BookTable books={books} selectedIds={selected} onSelectedChange={setBookSelected} onDelete={(book) => void deleteBook(book)} />
           )}
           <div className="flex flex-col gap-3 rounded-[28px] border border-slate-200 bg-white p-4 text-sm text-slate-600 shadow-sm md:flex-row md:items-center md:justify-between">
             <div>

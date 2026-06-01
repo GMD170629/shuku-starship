@@ -35,11 +35,15 @@ export async function GET(request: Request, { params }: { params: { id: string; 
   if (!book) return fail('读物不存在或无权访问', 404);
 
   const archiveFile = book.files.length === 1 && isArchiveFile(book.files[0].path, book.files[0].mimeType) ? book.files[0] : null;
-  if (archiveFile && book.readingUnits.length > 0) {
+  if (book.readingUnits.length > 0) {
     const unit = book.readingUnits.find((item) => item.sortOrder === pageIndex);
     if (!unit) return fail('图片页面不存在', 404);
+    const pageFile = unit.filePath
+      ? book.files.find((file) => file.path === unit.filePath && isArchiveFile(file.path, file.mimeType))
+      : archiveFile;
+    if (!pageFile) return fail('漫画页面所属文件不可读', 404);
     try {
-      const realPath = await readableArchivePath(archiveFile.path);
+      const realPath = await readableArchivePath(pageFile.path);
       const page = await streamComicPageFromArchive(realPath, unit.href);
       const close = () => closeComicArchive(page.zipFile);
       page.stream.once('close', close);

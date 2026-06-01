@@ -1,6 +1,6 @@
 'use client';
 
-import { MoreHorizontal } from 'lucide-react';
+import { Eye, Trash2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import type { BookView } from '../../lib/books';
 import { Badge } from '../ui/badge';
@@ -11,11 +11,13 @@ import { Cover } from './cover';
 export function BookTable({
   books,
   selectedIds = [],
-  onSelectedChange
+  onSelectedChange,
+  onDelete
 }: {
   books: BookView[];
   selectedIds?: string[];
   onSelectedChange?: (bookId: string, selected: boolean) => void;
+  onDelete?: (book: BookView) => void;
 }) {
   const router = useRouter();
   const selectedSet = new Set(selectedIds);
@@ -79,7 +81,10 @@ export function BookTable({
               </td>
               <td className="text-slate-500">{book.lastRead}</td>
               <td className="pr-4 text-right">
-                <Button variant="ghost" icon={MoreHorizontal} onClick={() => router.push(`/books/${book.id}`)} />
+                <div className="flex justify-end gap-2">
+                  <Button variant="ghost" icon={Eye} className="min-h-9 px-3 py-2" onClick={() => router.push(`/books/${book.id}`)}>查看</Button>
+                  {onDelete ? <Button variant="danger" icon={Trash2} className="min-h-9 px-3 py-2" onClick={() => onDelete(book)}>删除</Button> : null}
+                </div>
               </td>
             </tr>
           ))}

@@ -107,6 +107,7 @@ export async function PATCH(request: Request, { params }: { params: { id: string
 
 export async function DELETE(_request: Request, { params }: { params: { id: string } }) {
   await requireUser();
-  await prisma.book.update({ where: { id: params.id }, data: { hidden: true } });
-  return ok({ ignored: true });
+  const result = await prisma.book.deleteMany({ where: { id: params.id } });
+  if (result.count === 0) return fail('读物不存在或无权访问', 404);
+  return ok({ deleted: true, sourceFilesDeleted: false });
 }

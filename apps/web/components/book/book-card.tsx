@@ -1,6 +1,7 @@
 'use client';
 
-import type { MouseEventHandler } from 'react';
+import { Trash2 } from 'lucide-react';
+import type { MouseEvent, MouseEventHandler } from 'react';
 import { Badge } from '../ui/badge';
 import { cn } from '../ui/cn';
 import { Progress } from '../ui/progress';
@@ -13,6 +14,7 @@ export function BookCard({
   selected = false,
   selectionEnabled = false,
   onSelectedChange,
+  onDelete,
   onClick
 }: {
   book: CoverBook & { tags: string[]; progress: number; type: string; format: string; totalUnits?: number };
@@ -20,8 +22,14 @@ export function BookCard({
   selected?: boolean;
   selectionEnabled?: boolean;
   onSelectedChange?: (selected: boolean) => void;
+  onDelete?: () => void;
   onClick?: MouseEventHandler<HTMLDivElement>;
 }) {
+  function deleteBook(event: MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    onDelete?.();
+  }
+
   return (
     <div
       onClick={onClick}
@@ -43,6 +51,17 @@ export function BookCard({
             aria-label={`选择 ${book.title}`}
           />
         </label>
+      ) : null}
+      {onDelete ? (
+        <button
+          type="button"
+          onClick={deleteBook}
+          className="absolute right-4 top-4 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-red-100 bg-white/95 text-red-600 opacity-0 shadow-sm transition hover:bg-red-50 focus:opacity-100 group-hover:opacity-100"
+          title="删除记录"
+          aria-label={`删除 ${book.title}`}
+        >
+          <Trash2 size={15} />
+        </button>
       ) : null}
       <Cover book={book} size={compact ? 'small' : 'medium'} className="aspect-[2/3] w-full" />
       <div className="mt-2.5">

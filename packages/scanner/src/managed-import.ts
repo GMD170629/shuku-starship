@@ -5,7 +5,7 @@ import { basename, dirname, extname, join, normalize, posix, resolve } from 'nod
 import type { Readable } from 'node:stream';
 import yauzl from 'yauzl';
 import { prisma } from '@shuku/database';
-import type { BookOrigin } from '@prisma/client';
+import type { BookOrigin, Prisma } from '@prisma/client';
 
 const DEFAULT_COVER = '/covers/default.svg';
 const STORAGE_ROOT = process.env.STORAGE_ROOT ?? join(process.cwd(), 'storage');
@@ -84,6 +84,12 @@ type ParsedComicArchive = {
   rawMetadata: Record<string, unknown>;
 };
 
+export type ParsedComicVolume = {
+  seriesName: string;
+  seriesIndex: number;
+  title: string;
+} | null;
+
 function storageUrl(path: string) {
   const relative = path.startsWith(STORAGE_ROOT) ? path.slice(STORAGE_ROOT.length).replace(/^\/+/, '') : path;
   return `/storage/${relative}`;
@@ -101,6 +107,36 @@ function entryMimeType(name: string) {
 function titleFromFile(filePath: string, originalName?: string) {
   const source = originalName || basename(filePath);
   return basename(source, extname(source)).replaceAll('_', ' ').replaceAll('-', ' ').trim() || basename(source);
+}
+
+function cleanComicTitlePart(value: string) {
+  return value
+    .replaceAll('_', ' ')
+    .replaceAll('-', ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export function parseComicVolumeFromName(filePath: string, originalName?: string): ParsedComicVolume {
+  const source = originalName || basename(filePath);
+  const baseTitle = basename(source, extname(source));
+  const candidates = [
+    /^(.+?)\s*[\(（［\[]\s*(\d+(?:\.\d+)?)\s*[\)）］\]]\s*$/i,
+    /^(.+?)\s*(?:第\s*)?(\d+(?:\.\d+)?)\s*(?:卷|冊|册|集)\s*$/i,
+    /^(.+?)\s*(?:vol\.?|volume)\s*(\d+(?:\.\d+)?)\s*$/i,
+    /^(.+?)\s+v(\d+(?:\.\d+)?)\s*$/i
+  ];
+
+  for (const pattern of candidates) {
+    const match = pattern.exec(baseTitle);
+    const series = cleanComicTitlePart(match?.[1] ?? '');
+    const seriesIndex = Number(match?.[2]);
+    if (series && Number.isFinite(seriesIndex)) {
+      return { seriesName: series, seriesIndex, title: `${series} (${seriesIndex})` };
+    }
+  }
+
+  return null;
 }
 
 function safeEntryName(name: string) {
@@ -382,6 +418,118 @@ async function managedPathFor(contentHash: string, ext: string) {
   return join(directory, `${contentHash}${ext}`);
 }
 
+function fileHashForPath(path: string) {
+  return createHash('sha256').update(path).digest('hex');
+}
+
+function comicMimeType(format: 'cbz' | 'zip') {
+  return format === 'cbz' ? 'application/vnd.comicbook+zip' : 'application/zip';
+}
+
+function sourceParentPath(options: ImportManagedBookOptions) {
+  if (options.origin !== 'WATCH') return null;
+  return dirname(resolve(options.sourceFilePath));
+}
+
+function parentPrefix(path: string) {
+  return path.endsWith('/') ? path : `${path}/`;
+}
+
+async function findComicSeriesTarget(options: ImportManagedBookOptions, volume: NonNullable<ParsedComicVolume>) {
+  const parent = sourceParentPath(options);
+  if (!parent) return null;
+  const tasks = await prisma.importTask.findMany({
+    where: {
+      monitorFolderId: options.monitorFolderId ?? null,
+      sourcePath: { startsWith: parentPrefix(parent) },
+      book: {
+        hidden: false,
+        format: 'COMIC',
+        seriesName: volume.seriesName
+      }
+    },
+    include: {
+      book: {
+        include: {
+          files: { orderBy: { sortOrder: 'asc' } }
+        }
+      }
+    },
+    orderBy: { createdAt: 'asc' }
+  });
+  return tasks.find((task) => task.book && dirname(resolve(task.sourcePath)) === parent)?.book ?? null;
+}
+
+function comicFileSortKey(file: { path: string; sortOrder: number }, volumeByPath: Map<string, number>) {
+  return volumeByPath.get(file.path) ?? parseComicVolumeFromName(file.path)?.seriesIndex ?? file.sortOrder;
+}
+
+async function reorderComicBookFilesAndPages(bookId: string) {
+  const book = await prisma.book.findUnique({
+    where: { id: bookId },
+    include: {
+      files: { orderBy: { sortOrder: 'asc' } },
+      readingUnits: { where: { unitType: 'page' }, orderBy: { sortOrder: 'asc' } }
+    }
+  });
+  if (!book) return;
+
+  const volumeByPath = new Map<string, number>();
+  for (const unit of book.readingUnits) {
+    if (!unit.filePath) continue;
+    try {
+      const metadata = JSON.parse(unit.metadataJson) as { volumeIndex?: unknown };
+      const volumeIndex = Number(metadata.volumeIndex);
+      if (Number.isFinite(volumeIndex)) volumeByPath.set(unit.filePath, volumeIndex);
+    } catch {
+      // Ignore old metadata that cannot be parsed.
+    }
+  }
+
+  const files = [...book.files].sort((left, right) => {
+    const volumeCompare = comicFileSortKey(left, volumeByPath) - comicFileSortKey(right, volumeByPath);
+    return volumeCompare || collator.compare(basename(left.path), basename(right.path));
+  });
+
+  const unitsByPath = new Map<string, typeof book.readingUnits>();
+  for (const unit of book.readingUnits) {
+    const key = unit.filePath ?? '';
+    unitsByPath.set(key, [...(unitsByPath.get(key) ?? []), unit]);
+  }
+
+  const updates: Prisma.PrismaPromise<unknown>[] = [];
+  files.forEach((file, index) => {
+    if (file.sortOrder !== index) updates.push(prisma.bookFile.update({ where: { id: file.id }, data: { sortOrder: index } }));
+  });
+
+  let nextPage = 1;
+  for (const file of files) {
+    const units = [...(unitsByPath.get(file.path) ?? [])].sort((left, right) => {
+      const leftEntry = safeJsonObject(left.metadataJson).pageInVolume ?? left.sortOrder;
+      const rightEntry = safeJsonObject(right.metadataJson).pageInVolume ?? right.sortOrder;
+      return Number(leftEntry) - Number(rightEntry);
+    });
+    for (const unit of units) {
+      const nextTitle = `第 ${nextPage} 页`;
+      if (unit.sortOrder !== nextPage || unit.title !== nextTitle) {
+        updates.push(prisma.readingUnit.update({ where: { id: unit.id }, data: { sortOrder: nextPage, title: nextTitle } }));
+      }
+      nextPage += 1;
+    }
+  }
+
+  if (updates.length > 0) await prisma.$transaction(updates);
+}
+
+function safeJsonObject(value: string) {
+  try {
+    const parsed = JSON.parse(value);
+    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+  } catch {
+    return {};
+  }
+}
+
 async function ensureImportTask(options: ImportManagedBookOptions) {
   if (options.importTaskId) return options.importTaskId;
   const task = await prisma.importTask.create({
@@ -410,7 +558,10 @@ export async function importManagedBook(options: ImportManagedBookOptions): Prom
     if (!fileStat.isFile()) throw new Error('导入源不是文件');
     const contentHash = await sha256File(options.sourceFilePath);
     const managedFilePath = await managedPathFor(contentHash, ext);
-    const duplicate = await prisma.book.findUnique({ where: { contentHash } });
+    const duplicate =
+      await prisma.book.findUnique({ where: { contentHash } }) ??
+      (await prisma.bookFile.findFirst({ where: { fullHash: contentHash }, include: { book: true } }))?.book ??
+      null;
     if (duplicate) {
       await prisma.importTask.update({
         where: { id: importTaskId },
@@ -515,13 +666,19 @@ async function importManagedEpub(options: ImportManagedBookOptions & { importTas
 
 async function importManagedComic(options: ImportManagedBookOptions & { importTaskId: string; managedFilePath: string; contentHash: string; fileSize: number; ext: string }): Promise<ImportManagedBookResult> {
   const parsed = await parseComicArchive(options.managedFilePath, options.originalName);
+  const volume = parseComicVolumeFromName(options.sourceFilePath, options.originalName);
+  const targetBook = volume ? await findComicSeriesTarget(options, volume) : null;
+  if (volume && targetBook) return appendComicVolumeToBook(targetBook.id, parsed, volume, options);
+
   const book = await prisma.book.create({
     data: {
       monitorFolderId: options.monitorFolderId ?? null,
       origin: options.origin,
-      title: parsed.title,
+      title: volume?.seriesName ?? parsed.title,
       author: parsed.author,
       description: parsed.description,
+      seriesName: volume?.seriesName ?? null,
+      seriesIndex: volume?.seriesIndex ?? null,
       format: 'COMIC',
       tags: JSON.stringify(parsed.comicInfo?.tags ?? ['comic', parsed.format]),
       managedFilePath: options.managedFilePath,
@@ -539,31 +696,145 @@ async function importManagedComic(options: ImportManagedBookOptions & { importTa
     await writeFile(coverPath, await readZipEntry(options.managedFilePath, parsed.coverEntryPath));
     const finalCoverPath = coverPath as string;
     const coverUrl = storageUrl(finalCoverPath);
-    await prisma.$transaction([
-      prisma.readingUnit.createMany({
+    const managedMtimeMs = BigInt(Math.trunc((await stat(options.managedFilePath)).mtimeMs));
+    await prisma.$transaction(async (tx) => {
+      const bookFile = await tx.bookFile.create({
+        data: {
+          bookId: book.id,
+          path: options.managedFilePath,
+          filePathHash: fileHashForPath(options.managedFilePath),
+          fingerprint: `full:${options.contentHash}`,
+          fullHash: options.contentHash,
+          hashStatus: 'FULL',
+          kind: 'COMIC',
+          mimeType: comicMimeType(parsed.format),
+          sortOrder: volume?.seriesIndex ? Math.trunc(volume.seriesIndex) : 0,
+          sizeBytes: BigInt(options.fileSize),
+          mtimeMs: managedMtimeMs
+        }
+      });
+      await tx.readingUnit.createMany({
         data: parsed.pages.map((page) => ({
           bookId: book.id,
           unitType: 'page',
           title: page.title,
           href: page.entryPath,
-          filePath: null,
+          filePath: bookFile.path,
           mediaType: page.mediaType,
           sortOrder: page.index,
           size: page.size ? BigInt(page.size) : null,
-          metadataJson: JSON.stringify({ zipEntryName: page.entryPath, originalName: basename(page.entryPath) })
+          metadataJson: JSON.stringify({
+            zipEntryName: page.entryPath,
+            originalName: basename(page.entryPath),
+            pageInVolume: page.index,
+            volumeIndex: volume?.seriesIndex ?? null,
+            sourceFileName: options.originalName ?? basename(options.sourceFilePath),
+            bookFileId: bookFile.id
+          })
         }))
-      }),
-      prisma.bookAsset.create({ data: { bookId: book.id, assetType: 'cover', filePath: finalCoverPath, url: coverUrl, mediaType: entryMimeType(parsed.coverEntryPath), size: BigInt((await stat(finalCoverPath)).size), sortOrder: 0 } }),
-      prisma.bookMetadata.create({ data: { bookId: book.id, source: parsed.comicInfo ? 'comic_info' : 'system', rawJson: JSON.stringify(parsed.rawMetadata) } }),
-      prisma.bookFile.create({ data: { bookId: book.id, path: options.managedFilePath, filePathHash: createHash('sha256').update(options.managedFilePath).digest('hex'), fingerprint: `full:${options.contentHash}`, fullHash: options.contentHash, hashStatus: 'FULL', kind: 'COMIC', mimeType: parsed.format === 'cbz' ? 'application/vnd.comicbook+zip' : 'application/zip', sortOrder: 0, sizeBytes: BigInt(options.fileSize), mtimeMs: BigInt(Math.trunc((await stat(options.managedFilePath)).mtimeMs)) } }),
-      prisma.book.update({ where: { id: book.id }, data: { coverPath, coverStatus: 'READY', importStatus: 'COMPLETED' } })
-    ]);
-    return { bookId: book.id, title: parsed.title, type: 'comic', format: parsed.format, totalUnits: parsed.pageCount, coverUrl, importStatus: 'completed', duplicate: false };
+      });
+      await tx.bookAsset.create({ data: { bookId: book.id, assetType: 'cover', filePath: finalCoverPath, url: coverUrl, mediaType: entryMimeType(parsed.coverEntryPath), size: BigInt((await stat(finalCoverPath)).size), sortOrder: 0 } });
+      await tx.bookMetadata.create({ data: { bookId: book.id, source: parsed.comicInfo ? 'comic_info' : 'system', rawJson: JSON.stringify(parsed.rawMetadata) } });
+      await tx.book.update({ where: { id: book.id }, data: { coverPath, coverStatus: 'READY', importStatus: 'COMPLETED' } });
+    });
+    await reorderComicBookFilesAndPages(book.id);
+    return { bookId: book.id, title: volume?.seriesName ?? parsed.title, type: 'comic', format: parsed.format, totalUnits: parsed.pageCount, coverUrl, importStatus: 'completed', duplicate: false };
   } catch (error) {
     if (coverPath) await unlink(coverPath).catch(() => undefined);
     await prisma.book.update({ where: { id: book.id }, data: { importStatus: 'FAILED', importError: error instanceof Error ? error.message : String(error) } }).catch(() => undefined);
     throw error;
   }
+}
+
+async function appendComicVolumeToBook(
+  bookId: string,
+  parsed: ParsedComicArchive,
+  volume: NonNullable<ParsedComicVolume>,
+  options: ImportManagedBookOptions & { importTaskId: string; managedFilePath: string; contentHash: string; fileSize: number; ext: string }
+): Promise<ImportManagedBookResult> {
+  const mtimeMs = BigInt(Math.trunc((await stat(options.managedFilePath)).mtimeMs));
+  await prisma.$transaction(async (tx) => {
+    const book = await tx.book.findUnique({
+      where: { id: bookId },
+      include: { files: { orderBy: { sortOrder: 'asc' } } }
+    });
+    if (!book) throw new Error('目标漫画不存在');
+    if (book.files.some((file) => file.path === options.managedFilePath || file.fullHash === options.contentHash)) return;
+
+    const bookFile = await tx.bookFile.create({
+      data: {
+        bookId,
+        path: options.managedFilePath,
+        filePathHash: fileHashForPath(options.managedFilePath),
+        fingerprint: `full:${options.contentHash}`,
+        fullHash: options.contentHash,
+        hashStatus: 'FULL',
+        kind: 'COMIC',
+        mimeType: comicMimeType(parsed.format),
+        sortOrder: Math.trunc(volume?.seriesIndex ?? book.files.length),
+        sizeBytes: BigInt(options.fileSize),
+        mtimeMs
+      }
+    });
+
+    await tx.readingUnit.createMany({
+      data: parsed.pages.map((page) => ({
+        bookId,
+        unitType: 'page',
+        title: page.title,
+        href: page.entryPath,
+        filePath: bookFile.path,
+        mediaType: page.mediaType,
+        sortOrder: (book.pageCount ?? 0) + page.index,
+        size: page.size ? BigInt(page.size) : null,
+        metadataJson: JSON.stringify({
+          zipEntryName: page.entryPath,
+          originalName: basename(page.entryPath),
+          pageInVolume: page.index,
+          volumeIndex: volume?.seriesIndex ?? null,
+          sourceFileName: options.originalName ?? basename(options.sourceFilePath),
+          bookFileId: bookFile.id
+        })
+      }))
+    });
+
+    await tx.bookMetadata.create({
+      data: {
+        bookId,
+        source: parsed.comicInfo ? 'comic_info' : 'system',
+        rawJson: JSON.stringify({
+          ...parsed.rawMetadata,
+          volumeIndex: volume?.seriesIndex ?? null,
+          sourceFileName: options.originalName ?? basename(options.sourceFilePath)
+        })
+      }
+    });
+
+    await tx.book.update({
+      where: { id: bookId },
+      data: {
+        title: book.seriesName ?? volume?.seriesName ?? book.title,
+        seriesName: book.seriesName ?? volume?.seriesName ?? null,
+        seriesIndex: book.seriesIndex === null ? volume.seriesIndex : Math.min(book.seriesIndex, volume.seriesIndex),
+        sizeBytes: book.sizeBytes + BigInt(options.fileSize),
+        pageCount: (book.pageCount ?? 0) + parsed.pageCount,
+        importStatus: 'COMPLETED'
+      }
+    });
+  });
+
+  await reorderComicBookFilesAndPages(bookId);
+  const book = await prisma.book.findUnique({ where: { id: bookId } });
+  return {
+    bookId,
+    title: book?.title ?? volume?.seriesName ?? parsed.title,
+    type: 'comic',
+    format: parsed.format,
+    totalUnits: book?.pageCount ?? parsed.pageCount,
+    coverUrl: book?.coverPath ? storageUrl(book.coverPath) : null,
+    importStatus: 'completed',
+    duplicate: false
+  };
 }
 
 export function isSupportedImportFile(filePath: string) {

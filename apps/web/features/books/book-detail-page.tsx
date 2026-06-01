@@ -161,6 +161,23 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
     }
   }
 
+  async function deleteRecord() {
+    if (!window.confirm(`确认删除《${book?.title ?? '这本读物'}》的数据库记录吗？源文件不会被删除。`)) return;
+    setSaving(true);
+    setError('');
+    setMessage('');
+    try {
+      const response = await fetch(`/api/books/${bookId}`, { method: 'DELETE' });
+      const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
+      if (!payload.ok) throw new Error(payload.error?.message ?? '删除失败');
+      setMessage('已删除数据库记录，源文件未删除');
+      window.setTimeout(() => router.push('/library'), 700);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '删除失败');
+      setSaving(false);
+    }
+  }
+
   async function uploadCover(file: File | null) {
     if (!file) return;
     setSaving(true);
@@ -217,6 +234,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
               <Button variant="secondary" icon={Edit3} onClick={() => setEditing((value) => !value)}>编辑信息</Button>
               <Button disabled={saving} variant="secondary" icon={RefreshCw} onClick={() => postAction(`/api/books/${book.id}/cover/regenerate`, '封面已重新生成', { refreshCover: true })}>重新生成封面</Button>
               <Button disabled={saving} variant={book.ignored ? 'secondary' : 'danger'} icon={book.ignored ? EyeOff : Trash2} onClick={() => setIgnored(!book.ignored)}>{book.ignored ? '恢复显示' : '忽略读物'}</Button>
+              <Button disabled={saving} variant="danger" icon={Trash2} onClick={() => void deleteRecord()}>删除记录</Button>
             </div>
             {message ? <div className="mt-4 text-sm text-emerald-600">{message}</div> : null}
           </div>
