@@ -367,6 +367,19 @@ model SystemSetting {
   updatedAt DateTime @updatedAt
 }
 
+model ExternalMetadataCache {
+  id        String    @id @default(cuid())
+  provider  String
+  queryKey  String
+  rawJson   String    @db.Text
+  expiresAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@unique([provider, queryKey])
+  @@index([provider, expiresAt])
+}
+
 model Shelf {
   id          String      @id @default(cuid())
   name        String

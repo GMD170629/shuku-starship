@@ -36,6 +36,14 @@ type BackupItem = {
   };
 };
 
+type AppSettings = {
+  systemName: string;
+  theme: string;
+  language: string;
+  timezone: string;
+  [key: string]: string;
+};
+
 function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -55,7 +63,23 @@ export function SettingsPage() {
   const [backups, setBackups] = useState<BackupItem[]>([]);
   const [health, setHealth] = useState<{ status: string; checks: Array<{ name: string; status: string; message: string }> } | null>(null);
   const [summary, setSummary] = useState<{ latestSyncAt: string | null } | null>(null);
-  const [settings, setSettings] = useState({ systemName: '书库星舰', theme: 'system', language: 'zh-CN', timezone: 'Asia/Shanghai' });
+  const [settings, setSettings] = useState<AppSettings>({
+    systemName: '书库星舰',
+    theme: 'system',
+    language: 'zh-CN',
+    timezone: 'Asia/Shanghai',
+    'metadata.external.enabled': 'false',
+    'metadata.douban.enabled': 'false',
+    'metadata.douban.baseUrl': '',
+    'metadata.douban.apiKey': '',
+    'metadata.bangumi.enabled': 'false',
+    'metadata.bangumi.accessToken': '',
+    'metadata.bangumi.userAgent': 'ShukuStarship/0.1 (https://github.com/GMD170629/shuku-starship)',
+    'metadata.ai.enabled': 'false',
+    'metadata.ai.baseUrl': '',
+    'metadata.ai.apiKey': '',
+    'metadata.ai.model': ''
+  });
   const [name, setName] = useState('我的监控文件夹');
   const [rootPath, setRootPath] = useState('/books');
   const [ignorePatterns, setIgnorePatterns] = useState('');
@@ -354,6 +378,94 @@ export function SettingsPage() {
                 ))}
                 {backups.length === 0 ? <div className="rounded-3xl bg-slate-50 p-6 text-sm text-slate-500">尚未创建备份。</div> : null}
               </div>
+            </div>
+          ) : active === '元数据' ? (
+            <div className="mt-6 space-y-5">
+              <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <div className="font-semibold">外部数据源</div>
+                    <div className="mt-1 text-sm text-slate-500">电子书使用豆瓣兼容 API，漫画使用 Bangumi 官方 API。外部源只生成待审核建议。</div>
+                  </div>
+                  <label className="flex items-center gap-3 rounded-2xl bg-white px-4 py-2 text-sm text-slate-700">
+                    <input type="checkbox" checked={settings['metadata.external.enabled'] === 'true'} onChange={(event) => setSettings({ ...settings, 'metadata.external.enabled': String(event.target.checked) })} />
+                    启用外部元数据
+                  </label>
+                </div>
+              </div>
+
+              <div className="grid gap-5 md:grid-cols-2">
+                <section className="rounded-3xl border border-slate-200 bg-white p-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h2 className="font-semibold">豆瓣图书</h2>
+                      <p className="mt-1 text-sm text-slate-500">用于 EPUB。填写豆瓣兼容 JSON API 地址。</p>
+                    </div>
+                    <label className="flex items-center gap-2 text-sm text-slate-700">
+                      <input type="checkbox" checked={settings['metadata.douban.enabled'] === 'true'} onChange={(event) => setSettings({ ...settings, 'metadata.douban.enabled': String(event.target.checked) })} />
+                      启用
+                    </label>
+                  </div>
+                  <label className="mt-4 block text-sm text-slate-600">
+                    API 地址
+                    <input value={settings['metadata.douban.baseUrl']} onChange={(event) => setSettings({ ...settings, 'metadata.douban.baseUrl': event.target.value })} placeholder="https://example.com" className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
+                  </label>
+                  <label className="mt-4 block text-sm text-slate-600">
+                    API Key
+                    <input type="password" value={settings['metadata.douban.apiKey']} onChange={(event) => setSettings({ ...settings, 'metadata.douban.apiKey': event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
+                  </label>
+                </section>
+
+                <section className="rounded-3xl border border-slate-200 bg-white p-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <h2 className="font-semibold">Bangumi 漫画</h2>
+                      <p className="mt-1 text-sm text-slate-500">用于漫画。User-Agent 为必填，Access Token 可选。</p>
+                    </div>
+                    <label className="flex items-center gap-2 text-sm text-slate-700">
+                      <input type="checkbox" checked={settings['metadata.bangumi.enabled'] === 'true'} onChange={(event) => setSettings({ ...settings, 'metadata.bangumi.enabled': String(event.target.checked) })} />
+                      启用
+                    </label>
+                  </div>
+                  <label className="mt-4 block text-sm text-slate-600">
+                    User-Agent
+                    <input value={settings['metadata.bangumi.userAgent']} onChange={(event) => setSettings({ ...settings, 'metadata.bangumi.userAgent': event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
+                  </label>
+                  <label className="mt-4 block text-sm text-slate-600">
+                    Access Token
+                    <input type="password" value={settings['metadata.bangumi.accessToken']} onChange={(event) => setSettings({ ...settings, 'metadata.bangumi.accessToken': event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
+                  </label>
+                </section>
+              </div>
+
+              <section className="rounded-3xl border border-slate-200 bg-white p-5">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <h2 className="font-semibold">AI 元数据识别</h2>
+                    <p className="mt-1 text-sm text-slate-500">使用 OpenAI-compatible Chat Completions，仅发送本地元数据摘要，不读取正文全文。</p>
+                  </div>
+                  <label className="flex items-center gap-2 text-sm text-slate-700">
+                    <input type="checkbox" checked={settings['metadata.ai.enabled'] === 'true'} onChange={(event) => setSettings({ ...settings, 'metadata.ai.enabled': String(event.target.checked) })} />
+                    启用
+                  </label>
+                </div>
+                <div className="mt-4 grid gap-4 md:grid-cols-3">
+                  <label className="text-sm text-slate-600">
+                    API 地址
+                    <input value={settings['metadata.ai.baseUrl']} onChange={(event) => setSettings({ ...settings, 'metadata.ai.baseUrl': event.target.value })} placeholder="https://api.openai.com/v1" className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
+                  </label>
+                  <label className="text-sm text-slate-600">
+                    模型
+                    <input value={settings['metadata.ai.model']} onChange={(event) => setSettings({ ...settings, 'metadata.ai.model': event.target.value })} placeholder="gpt-4.1-mini" className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
+                  </label>
+                  <label className="text-sm text-slate-600">
+                    API Key
+                    <input type="password" value={settings['metadata.ai.apiKey']} onChange={(event) => setSettings({ ...settings, 'metadata.ai.apiKey': event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
+                  </label>
+                </div>
+              </section>
+              {message ? <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div> : null}
+              {error ? <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
             </div>
           ) : (
             <div className="mt-6 grid grid-cols-1 gap-5 md:grid-cols-2">
