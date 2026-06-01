@@ -22,6 +22,18 @@ if (fs.existsSync(rootEnvPath)) {
 const nextConfig = {
   output: 'standalone',
   transpilePackages: ['@shuku/database', '@shuku/scanner', '@shuku/shared', '@shuku/reader-core'],
+  webpack: (config) => {
+    // Workspace packages use NodeNext-style emitted .js specifiers in TypeScript source.
+    // Teach webpack to resolve those specifiers back to .ts files during Next's transpilation step.
+    config.resolve = config.resolve ?? {};
+    config.resolve.extensionAlias = {
+      ...(config.resolve.extensionAlias ?? {}),
+      '.js': ['.ts', '.tsx', '.js'],
+      '.mjs': ['.mts', '.mjs'],
+      '.cjs': ['.cts', '.cjs']
+    };
+    return config;
+  },
   experimental: {
     outputFileTracingRoot: path.join(__dirname, '../..'),
     outputFileTracingIncludes: {
