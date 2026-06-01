@@ -132,7 +132,7 @@ describe('archive index cache', () => {
 
     const index = await ensureArchiveIndex('book2', 'file2', archivePath);
     const response = await streamArchivePageResponse({
-      request: new Request('http://local/api/books/book2/pages/2'),
+      request: new Request('http://local/api/volumes/volume2/pages/2'),
       userId: 'user1',
       bookId: 'book2',
       fileId: 'file2',

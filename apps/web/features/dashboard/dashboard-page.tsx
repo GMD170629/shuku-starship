@@ -9,7 +9,7 @@ import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { Progress } from '../../components/ui/progress';
 import { StatCard } from '../../components/ui/stat-card';
-import type { BookView } from '../../lib/books';
+import type { WorkView } from '../../lib/books';
 
 type Summary = {
   totalBooks: number;
@@ -20,7 +20,7 @@ type Summary = {
   lastImportAt: string | null;
   latestSyncAt: string | null;
 };
-type ContinueItem = { book: BookView; progress: number; lastReadAt: string; chapter: string | null; position: string } | null;
+type ContinueItem = { book: WorkView; progress: number; lastReadAt: string; chapter: string | null; position: string } | null;
 type SystemStatus = {
   database: { status: string; message: string };
   worker: { status: string; message: string };
@@ -67,7 +67,7 @@ export function DashboardPage() {
   const router = useRouter();
   const [summary, setSummary] = useState<Summary | null>(null);
   const [continueItem, setContinueItem] = useState<ContinueItem>(null);
-  const [recentBooks, setRecentBooks] = useState<BookView[]>([]);
+  const [recentBooks, setRecentBooks] = useState<WorkView[]>([]);
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
@@ -77,7 +77,7 @@ export function DashboardPage() {
     Promise.all([
       api<Summary>('/api/dashboard/summary'),
       api<{ item: ContinueItem }>('/api/dashboard/continue-reading'),
-      api<{ books: BookView[] }>('/api/dashboard/recent-books?limit=4'),
+      api<{ books: WorkView[] }>('/api/dashboard/recent-books?limit=4'),
       api<SystemStatus>('/api/dashboard/system-status')
     ])
       .then(([nextSummary, nextContinue, nextRecent, nextStatus]) => {
@@ -127,7 +127,7 @@ export function DashboardPage() {
                     </div>
                     <div className="mt-6 flex gap-3">
                       <Button icon={BookOpen} onClick={() => router.push(`/reader/${continueItem.book.editionId ?? continueItem.book.id}`)}>继续阅读</Button>
-                      <Button variant="secondary" icon={Eye} onClick={() => router.push(`/books/${continueItem.book.id}`)}>查看详情</Button>
+                      <Button variant="secondary" icon={Eye} onClick={() => router.push(`/works/${continueItem.book.id}`)}>查看详情</Button>
                     </div>
                   </div>
                 </div>
@@ -150,7 +150,7 @@ export function DashboardPage() {
               </div>
               {recentBooks.length > 0 ? (
                 <div className="mt-5 grid grid-cols-2 gap-4 md:grid-cols-4">
-                  {recentBooks.map((book) => <BookCard key={book.id} book={book} compact onClick={() => router.push(`/books/${book.id}`)} />)}
+                  {recentBooks.map((book) => <BookCard key={book.id} book={book} compact onClick={() => router.push(`/works/${book.id}`)} />)}
                 </div>
               ) : (
                 <div className="mt-5 rounded-3xl bg-slate-50 p-8 text-sm text-slate-500">暂无读物，请上传 EPUB/CBZ/ZIP，或在系统设置中添加监控文件夹。</div>

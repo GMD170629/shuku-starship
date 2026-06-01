@@ -5,7 +5,7 @@ import ePub, { type Book, type Location, type Rendition } from 'epubjs';
 import { readerThemeSurfaces, type EbookFlow, type EbookPageTurnAnimation, type ReaderControls, type ReaderFontFamily, type ReaderProgress, type ReaderTheme } from './reader-shell';
 
 type EpubReaderProps = {
-  bookId: string;
+  editionId: string;
   title: string;
   theme: ReaderTheme;
   fontSize: number;
@@ -284,7 +284,7 @@ function reportRenditionLocation(rendition: Rendition | null) {
 }
 
 export function EbookReader({
-  bookId,
+  editionId,
   title,
   theme,
   fontSize,
@@ -541,7 +541,7 @@ export function EbookReader({
       }, { passive: true });
     };
 
-    fetch(`/api/editions/${bookId}/file`, { signal: abortController.signal })
+    fetch(`/api/editions/${editionId}/file`, { signal: abortController.signal })
       .then((response) => {
         if (!response.ok) throw new Error('EPUB 文件加载失败');
         return response.arrayBuffer();
@@ -698,7 +698,7 @@ export function EbookReader({
         window.removeEventListener('error', suppressStaleCleanupWindowError, { capture: true });
       }, 30000);
     };
-  }, [bookId, ebookFlow, onControls, retryToken]);
+  }, [editionId, ebookFlow, onControls, retryToken]);
 
   useEffect(() => {
     const rendition = renditionRef.current;

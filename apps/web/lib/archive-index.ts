@@ -258,7 +258,7 @@ export async function streamArchivePageResponse(options: {
     stream.once('end', close);
     stream.once('error', close);
     attachStreamAccounting(stream, release, {
-      route: '/api/books/[id]/pages/[pageIndex]',
+      route: '/api/volumes/[id]/pages/[pageIndex]',
       userId,
       bookId,
       fileId,

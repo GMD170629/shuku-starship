@@ -2,7 +2,7 @@
 
 import { Eye, Trash2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import type { BookView } from '../../lib/books';
+import type { WorkView } from '../../lib/books';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Progress } from '../ui/progress';
@@ -14,10 +14,10 @@ export function BookTable({
   onSelectedChange,
   onDelete
 }: {
-  books: BookView[];
+  books: WorkView[];
   selectedIds?: string[];
   onSelectedChange?: (bookId: string, selected: boolean) => void;
-  onDelete?: (book: BookView) => void;
+  onDelete?: (book: WorkView) => void;
 }) {
   const router = useRouter();
   const selectedSet = new Set(selectedIds);
@@ -86,7 +86,7 @@ export function BookTable({
               <td className="text-slate-500">{book.lastRead}</td>
               <td className="pr-4 text-right">
                 <div className="flex justify-end gap-2">
-                  <Button variant="ghost" icon={Eye} className="min-h-9 px-3 py-2" onClick={() => router.push(`/books/${book.id}`)}>查看</Button>
+                  <Button variant="ghost" icon={Eye} className="min-h-9 px-3 py-2" onClick={() => router.push(`/works/${book.id}`)}>查看</Button>
                   {onDelete ? <Button variant="danger" icon={Trash2} className="min-h-9 px-3 py-2" onClick={() => onDelete(book)}>删除</Button> : null}
                 </div>
               </td>

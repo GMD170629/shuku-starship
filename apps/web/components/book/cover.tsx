@@ -27,7 +27,7 @@ export function Cover({
   const requestedSize = size ?? (small ? 'small' : 'medium');
   const coverUrl = useMemo(() => {
     if (book.coverUrl) return book.coverUrl.replace(/size=(small|medium|large)/, `size=${requestedSize}`);
-    return book.id ? `/api/books/${book.id}/cover?size=${requestedSize}` : '';
+    return book.id ? `/api/works/${book.id}/cover?size=${requestedSize}` : '';
   }, [book.coverUrl, book.id, requestedSize]);
   const [imageFailed, setImageFailed] = useState(false);
 

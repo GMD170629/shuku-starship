@@ -17,13 +17,13 @@ function serializeProgress(progress: { extra: string } & Record<string, unknown>
   return { ...progress, extra: safeJson(progress.extra) };
 }
 
-export async function GET(request: Request, { params }: { params: { bookId: string } }) {
+export async function GET(request: Request, { params }: { params: { editionId: string } }) {
   const user = await requireUser();
   const userId = user.id;
   const url = new URL(request.url);
   const requestedVolumeId = url.searchParams.get('volume') ?? url.searchParams.get('section');
   const edition = await prisma.libraryEdition.findFirst({
-    where: { id: params.bookId, hidden: false, work: { hidden: false } },
+    where: { id: params.editionId, hidden: false, work: { hidden: false } },
     include: {
       work: {
         include: {

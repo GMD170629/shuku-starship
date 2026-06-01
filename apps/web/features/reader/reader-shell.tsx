@@ -50,7 +50,7 @@ export type ReaderShellEvents = {
 };
 
 type ReaderShellProps = {
-  bookId: string;
+  editionId: string;
   title: string;
   readerType: ReaderKind;
   progress: ReaderProgress;
@@ -119,7 +119,7 @@ function shouldIgnoreReaderInteraction(target: EventTarget | null) {
   return isEditableTarget(target) || Boolean(target.closest('[data-reader-control="true"]'));
 }
 
-export function ReaderShell({ bookId, title, readerType, progress, controls, settings, onBack, onSettingsChange, navigationItems, children }: ReaderShellProps) {
+export function ReaderShell({ editionId, title, readerType, progress, controls, settings, onBack, onSettingsChange, navigationItems, children }: ReaderShellProps) {
   const controlsVisibleRef = useRef(false);
   const controlsRef = useRef<ReaderControls | null>(null);
   const panelRef = useRef<'toc' | 'settings' | null>(null);
@@ -264,13 +264,13 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
 
   useEffect(() => {
     setNavItems(navigationItems ?? []);
-  }, [bookId, navigationItems, readerType, settings.reversePages]);
+  }, [editionId, navigationItems, readerType, settings.reversePages]);
 
   useEffect(() => {
     if (navigationItems || panel !== 'toc' || navItems.length > 0) return;
     let active = true;
     setNavLoading(true);
-    const endpoint = readerType === 'comic' ? `/api/books/${bookId}/pages` : `/api/books/${bookId}/reading-units`;
+    const endpoint = `/api/reader/${editionId}/bootstrap`;
     fetch(endpoint)
       .then((response) => response.json() as Promise<ReadingUnitsPayload | ComicPagesPayload>)
       .then((payload) => {
@@ -291,7 +291,7 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
     return () => {
       active = false;
     };
-  }, [bookId, navigationItems, navItems.length, panel, readerType, settings.reversePages]);
+  }, [editionId, navigationItems, navItems.length, panel, readerType, settings.reversePages]);
 
   async function jumpToPercent(value: number) {
     await controls?.jumpToProgress(clampPercent(value));

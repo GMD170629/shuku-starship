@@ -7,14 +7,14 @@ import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
 import { PageTitle } from '../../components/ui/page-title';
-import type { BookView } from '../../lib/books';
+import type { WorkView } from '../../lib/books';
 
 type ShelfView = {
   id: string;
   name: string;
   description: string | null;
   bookCount: number;
-  books: BookView[];
+  books: WorkView[];
   createdAt: string;
   updatedAt: string;
 };
@@ -33,7 +33,7 @@ type ShelfPayload = {
 
 type BooksPayload = {
   ok: boolean;
-  data?: { books: BookView[] };
+  data?: { books: WorkView[] };
   error?: { message: string };
 };
 
@@ -46,7 +46,7 @@ export function ShelvesPage() {
   const [form, setForm] = useState(emptyForm);
   const [selectedBookIds, setSelectedBookIds] = useState<string[]>([]);
   const [search, setSearch] = useState('');
-  const [searchBooks, setSearchBooks] = useState<BookView[]>([]);
+  const [searchBooks, setSearchBooks] = useState<WorkView[]>([]);
   const [loading, setLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -64,7 +64,7 @@ export function ShelvesPage() {
     }
     let active = true;
     const params = new URLSearchParams({ pageSize: '12', visibility: 'active', sort: 'title', search: search.trim() });
-    fetch(`/api/books?${params}`)
+    fetch(`/api/works?${params}`)
       .then((response) => response.json() as Promise<BooksPayload>)
       .then((payload) => {
         if (!active) return;
@@ -79,11 +79,11 @@ export function ShelvesPage() {
 
   const activeIsNew = activeId === 'new';
   const previewBooksById = useMemo(() => {
-    const books = new Map<string, BookView>();
+    const books = new Map<string, WorkView>();
     [...(activeShelf?.books ?? []), ...searchBooks].forEach((book) => books.set(book.id, book));
     return books;
   }, [activeShelf, searchBooks]);
-  const selectedBooks = selectedBookIds.map((id) => previewBooksById.get(id)).filter(Boolean) as BookView[];
+  const selectedBooks = selectedBookIds.map((id) => previewBooksById.get(id)).filter(Boolean) as WorkView[];
 
   async function loadShelves() {
     setLoading(true);

@@ -1,14 +1,20 @@
 import { Prisma } from '@prisma/client';
 import { requireUser } from '../../../lib/auth';
 import { ok, fail, readJson } from '../../../lib/http';
-import { toBookView } from '../../../lib/books';
+import { toWorkView } from '../../../lib/books';
 import { prisma } from '../../../lib/prisma';
 
 const previewInclude = (userId: string) => ({
-  book: {
+  work: {
     include: {
-      files: { orderBy: { sortOrder: Prisma.SortOrder.asc } },
-      monitorFolder: true,
+      editions: {
+        where: { hidden: false },
+        include: {
+          files: { orderBy: { sortOrder: Prisma.SortOrder.asc } },
+          volumes: { orderBy: { sortOrder: Prisma.SortOrder.asc } },
+          progresses: { where: { userId }, take: 1 }
+        }
+      },
       progresses: { where: { userId }, take: 1 }
     }
   }
@@ -17,8 +23,8 @@ const previewInclude = (userId: string) => ({
 function serializeShelf(
   shelf: Prisma.ShelfGetPayload<{
     include: {
-      _count: { select: { books: true } };
-      books: { include: ReturnType<typeof previewInclude>; orderBy: { createdAt: 'desc' }; take: 4 };
+      _count: { select: { works: true } };
+      works: { include: ReturnType<typeof previewInclude>; orderBy: { createdAt: 'desc' }; take: 4 };
     };
   }>
 ) {
@@ -26,8 +32,8 @@ function serializeShelf(
     id: shelf.id,
     name: shelf.name,
     description: shelf.description,
-    bookCount: shelf._count.books,
-    books: shelf.books.map((item) => toBookView(item.book)),
+    bookCount: shelf._count.works,
+    books: shelf.works.map((item) => toWorkView(item.work)),
     createdAt: shelf.createdAt.toISOString(),
     updatedAt: shelf.updatedAt.toISOString()
   };
@@ -38,8 +44,8 @@ export async function GET() {
   const shelves = await prisma.shelf.findMany({
     orderBy: { updatedAt: 'desc' },
     include: {
-      _count: { select: { books: true } },
-      books: {
+      _count: { select: { works: true } },
+      works: {
         orderBy: { createdAt: 'desc' },
         take: 4,
         include: previewInclude(user.id)

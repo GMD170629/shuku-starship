@@ -42,7 +42,7 @@ async function main() {
 
   await json('/api/monitor-folders');
   await json('/api/import-tasks');
-  const books = await json('/api/books?pageSize=5');
+  const books = await json('/api/works?pageSize=5');
   expect(Array.isArray(books.books), 'books payload missing books array');
   console.log('[acceptance] import system smoke check passed');
 }

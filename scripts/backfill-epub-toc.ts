@@ -74,57 +74,9 @@ async function backfillLibraryEditions() {
   return updated;
 }
 
-async function backfillLegacyBooks() {
-  const books = await prisma.book.findMany({
-    where: { format: 'EPUB', hidden: false },
-    include: { files: { where: { kind: 'EPUB' }, orderBy: { sortOrder: 'asc' } } },
-    orderBy: { createdAt: 'asc' }
-  });
-
-  let updated = 0;
-  for (const book of books) {
-    const file = book.files[0];
-    const rawPath = file?.path ?? book.managedFilePath;
-    if (!rawPath) continue;
-    const epubPath = await resolveEpubPath(rawPath);
-    const metadata = await parseEpubMetadata(epubPath);
-    console.log(`${dryRun ? '[dry-run] ' : ''}legacy book ${book.id}: ${metadata.chapters.length} chapters from ${epubPath}`);
-    updated += 1;
-    if (dryRun) continue;
-    await prisma.$transaction([
-      prisma.bookChapter.deleteMany({ where: { bookId: book.id } }),
-      prisma.readingUnit.deleteMany({ where: { bookId: book.id, unitType: 'chapter' } }),
-      prisma.bookChapter.createMany({
-        data: metadata.chapters.map((chapter) => ({
-          bookId: book.id,
-          title: chapter.title,
-          href: chapter.href,
-          mediaType: chapter.mediaType ?? null,
-          sortOrder: chapter.sortOrder
-        }))
-      }),
-      prisma.readingUnit.createMany({
-        data: metadata.chapters.map((chapter) => ({
-          bookId: book.id,
-          unitType: 'chapter',
-          title: chapter.title,
-          href: chapter.href,
-          filePath: null,
-          mediaType: chapter.mediaType ?? null,
-          sortOrder: chapter.sortOrder,
-          metadataJson: JSON.stringify({ idref: chapter.idref })
-        }))
-      }),
-      prisma.book.update({ where: { id: book.id }, data: { chapterCount: metadata.chapters.length } })
-    ]);
-  }
-  return updated;
-}
-
 async function main() {
   const editionCount = await backfillLibraryEditions();
-  const legacyCount = await backfillLegacyBooks();
-  console.log(`${dryRun ? 'dry run complete' : 'backfill complete'}: editions=${editionCount}, legacyBooks=${legacyCount}`);
+  console.log(`${dryRun ? 'dry run complete' : 'backfill complete'}: editions=${editionCount}`);
 }
 
 main()

@@ -2,11 +2,13 @@ import { createHash } from 'node:crypto';
 import { accessSync, existsSync } from 'node:fs';
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, extname, join, resolve } from 'node:path';
-import type { Book, BookFile } from '@prisma/client';
+import type { LibraryEdition, LibraryFile, LibraryWork } from '@prisma/client';
 import { prisma } from '@shuku/database';
 import JSZip from 'jszip';
 
-type BookWithFiles = Book & { files: BookFile[] };
+type WorkWithEditions = LibraryWork & {
+  editions: Array<LibraryEdition & { files: LibraryFile[] }>;
+};
 export type CoverSize = 'small' | 'medium' | 'large';
 
 const coverWidths: Record<CoverSize, number> = {
@@ -31,18 +33,18 @@ function workspaceRoot() {
   return join(process.cwd(), 'storage');
 }
 
-function coverDirectory(bookId: string) {
-  return join(workspaceRoot(), 'covers', bookId);
+function coverDirectory(workId: string) {
+  return join(workspaceRoot(), 'covers', workId);
 }
 
-export function coverPathFor(bookId: string, size: CoverSize) {
-  const svgPath = join(coverDirectory(bookId), `${size}.svg`);
+export function coverPathFor(workId: string, size: CoverSize) {
+  const svgPath = join(coverDirectory(workId), `${size}.svg`);
   if (existsSync(svgPath)) return svgPath;
-  return join(coverDirectory(bookId), `${size}.webp`);
+  return join(coverDirectory(workId), `${size}.webp`);
 }
 
-function coverOutputPathFor(bookId: string, size: CoverSize, ext: 'webp' | 'svg') {
-  return join(coverDirectory(bookId), `${size}.${ext}`);
+function coverOutputPathFor(workId: string, size: CoverSize, ext: 'webp' | 'svg') {
+  return join(coverDirectory(workId), `${size}.${ext}`);
 }
 
 function stableGradient(seed: string) {
@@ -78,10 +80,11 @@ function linesFor(text: string, maxChars: number, maxLines: number) {
   return lines;
 }
 
-async function textCover(book: BookWithFiles) {
-  const gradient = stableGradient(book.id);
-  const titleLines = linesFor(book.title, 14, 4);
-  const author = book.author ?? basename(book.managedFilePath);
+async function textCover(work: WorkWithEditions) {
+  const gradient = stableGradient(work.id);
+  const titleLines = linesFor(work.title, 14, 4);
+  const firstFile = work.editions.flatMap((edition) => edition.files).sort((a, b) => a.sortOrder - b.sortOrder)[0];
+  const author = work.author ?? (firstFile ? basename(firstFile.path) : '未知作者');
   const titleSvg = titleLines
     .map((line, index) => `<text x="54" y="${240 + index * 58}" class="title">${escapeXml(line)}</text>`)
     .join('');
@@ -107,7 +110,7 @@ async function textCover(book: BookWithFiles) {
       <rect width="900" height="1280" fill="url(#r)"/>
       <circle cx="820" cy="1130" r="230" fill="rgba(255,255,255,.13)"/>
       <circle cx="92" cy="104" r="46" fill="rgba(255,255,255,.24)"/>
-      <text x="54" y="120" class="kicker">${escapeXml(book.format)}</text>
+      <text x="54" y="120" class="kicker">${escapeXml(work.workType)}</text>
       ${titleSvg}
       <text x="54" y="1140" class="author">${escapeXml(author)}</text>
     </svg>
@@ -148,32 +151,33 @@ async function imageFileCover(filePath: string) {
   return readFile(filePath);
 }
 
-async function sourceCover(book: BookWithFiles) {
-  const sortedFiles = [...book.files].sort((a, b) => a.sortOrder - b.sortOrder);
+async function sourceCover(work: WorkWithEditions) {
+  const sortedFiles = work.editions.flatMap((edition) => edition.files.map((file) => ({ ...file, editionFormat: edition.format }))).sort((a, b) => a.sortOrder - b.sortOrder);
   const firstFile = sortedFiles[0];
-  const sourcePath = firstFile?.path ?? book.managedFilePath;
+  const sourcePath = firstFile?.path;
+  if (!sourcePath) throw new Error('作品没有可用源文件');
   const ext = extname(sourcePath).toLowerCase();
 
-  if (book.format === 'COMIC' && ['.cbz', '.zip'].includes(ext)) return zipFirstImageCover(sourcePath);
-  if (book.format === 'EPUB') return textCover(book);
-  throw new Error(`不支持的封面来源：${book.format}`);
+  if (work.workType === 'COMIC' && ['.cbz', '.zip'].includes(ext)) return zipFirstImageCover(sourcePath);
+  if (work.workType === 'EPUB') return textCover(work);
+  throw new Error(`不支持的封面来源：${work.workType}`);
 }
 
 export class CoverService {
-  static coverPathFor(bookId: string, size: CoverSize) {
-    return coverPathFor(bookId, size);
+  static coverPathFor(workId: string, size: CoverSize) {
+    return coverPathFor(workId, size);
   }
 
-  static async generateBookCover(book: BookWithFiles) {
-    await prisma.book.update({ where: { id: book.id }, data: { coverStatus: 'PENDING' } });
-    await mkdir(coverDirectory(book.id), { recursive: true });
+  static async generateWorkCover(work: WorkWithEditions) {
+    await prisma.libraryWork.update({ where: { id: work.id }, data: { coverStatus: 'PENDING' } });
+    await mkdir(coverDirectory(work.id), { recursive: true });
 
     let input: Buffer;
     let status: 'READY' | 'FAILED' = 'READY';
     try {
-      input = await sourceCover(book);
+      input = await sourceCover(work);
     } catch {
-      input = await textCover(book);
+      input = await textCover(work);
       status = 'FAILED';
     }
 
@@ -184,38 +188,46 @@ export class CoverService {
           sharp(input, { limitInputPixels: false })
             .resize({ width: coverWidths[size], withoutEnlargement: false })
             .webp({ quality: size === 'large' ? 84 : 80 })
-            .toFile(coverOutputPathFor(book.id, size, 'webp'))
+            .toFile(coverOutputPathFor(work.id, size, 'webp'))
         )
       );
-      await Promise.all((Object.keys(coverWidths) as CoverSize[]).map((size) => rm(coverOutputPathFor(book.id, size, 'svg'), { force: true })));
+      await Promise.all((Object.keys(coverWidths) as CoverSize[]).map((size) => rm(coverOutputPathFor(work.id, size, 'svg'), { force: true })));
 
-      await prisma.book.update({
-        where: { id: book.id },
+      await prisma.libraryWork.update({
+        where: { id: work.id },
         data: {
           coverStatus: status,
-          coverPath: coverPathFor(book.id, 'medium')
+          coverPath: coverPathFor(work.id, 'medium')
         }
       });
       return status;
     } catch {
-      const fallback = await textCover(book);
-      await Promise.all((Object.keys(coverWidths) as CoverSize[]).map((size) => writeFile(coverOutputPathFor(book.id, size, 'svg'), fallback)));
-      await Promise.all((Object.keys(coverWidths) as CoverSize[]).map((size) => rm(coverOutputPathFor(book.id, size, 'webp'), { force: true })));
-      await prisma.book.update({
-        where: { id: book.id },
+      const fallback = await textCover(work);
+      await Promise.all((Object.keys(coverWidths) as CoverSize[]).map((size) => writeFile(coverOutputPathFor(work.id, size, 'svg'), fallback)));
+      await Promise.all((Object.keys(coverWidths) as CoverSize[]).map((size) => rm(coverOutputPathFor(work.id, size, 'webp'), { force: true })));
+      await prisma.libraryWork.update({
+        where: { id: work.id },
         data: {
           coverStatus: 'FAILED',
-          coverPath: coverPathFor(book.id, 'medium')
+          coverPath: coverPathFor(work.id, 'medium')
         }
       });
       return 'FAILED';
     }
   }
 
-  static async ensureBookCover(book: BookWithFiles) {
-    const medium = coverPathFor(book.id, 'medium');
+  static async generateBookCover(work: WorkWithEditions) {
+    return this.generateWorkCover(work);
+  }
+
+  static async ensureWorkCover(work: WorkWithEditions) {
+    const medium = coverPathFor(work.id, 'medium');
     const existing = await stat(medium).catch(() => null);
     if (existing?.isFile()) return;
-    await CoverService.generateBookCover(book);
+    await CoverService.generateWorkCover(work);
+  }
+
+  static async ensureBookCover(work: WorkWithEditions) {
+    await this.ensureWorkCover(work);
   }
 }

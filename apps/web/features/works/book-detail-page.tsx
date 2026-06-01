@@ -9,7 +9,7 @@ import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
 import { Progress } from '../../components/ui/progress';
 import { Select } from '../../components/ui/select';
-import type { BookView } from '../../lib/books';
+import type { WorkView } from '../../lib/books';
 
 function Info({ label, value, green = false }: { label: string; value: string; green?: boolean }) {
   return (
@@ -37,7 +37,7 @@ type ComicSectionView = { id: string; title: string; index: number; fileId: stri
 
 export function BookDetailPage({ bookId }: { bookId: string }) {
   const router = useRouter();
-  const [book, setBook] = useState<BookView | null>(null);
+  const [book, setBook] = useState<WorkView | null>(null);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
   const [metadata, setMetadata] = useState<DetailMetadata | null>(null);
@@ -58,8 +58,8 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   });
 
   const loadBook = useCallback(() => {
-    fetch(`/api/books/${bookId}`)
-      .then((response) => response.json() as Promise<{ ok: boolean; data?: { book: BookView; metadata?: DetailMetadata; readingUnits?: ReadingUnitView[]; comicSections?: ComicSectionView[] }; error?: { message: string } }>)
+    fetch(`/api/works/${bookId}`)
+      .then((response) => response.json() as Promise<{ ok: boolean; data?: { book: WorkView; metadata?: DetailMetadata; readingUnits?: ReadingUnitView[]; comicSections?: ComicSectionView[] }; error?: { message: string } }>)
       .then((payload) => {
         if (!payload.ok) throw new Error(payload.error?.message ?? '读取读物失败');
         const nextBook = payload.data?.book ?? null;
@@ -97,7 +97,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
     setError('');
     setMessage('');
     try {
-      const response = await fetch(`/api/books/${bookId}`, {
+      const response = await fetch(`/api/works/${bookId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -112,7 +112,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
           organized: true
         })
       });
-      const payload = (await response.json()) as { ok: boolean; data?: { book: BookView }; error?: { message: string } };
+      const payload = (await response.json()) as { ok: boolean; data?: { book: WorkView }; error?: { message: string } };
       if (!payload.ok || !payload.data?.book) throw new Error(payload.error?.message ?? '保存失败');
       setBook(payload.data.book);
       setEditing(false);
@@ -130,7 +130,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
     setMessage('');
     try {
       const response = await fetch(path, { method: 'POST' });
-      const payload = (await response.json()) as { ok: boolean; data?: { book?: BookView }; error?: { message: string } };
+      const payload = (await response.json()) as { ok: boolean; data?: { book?: WorkView }; error?: { message: string } };
       if (!payload.ok) throw new Error(payload.error?.message ?? '操作失败');
       if (payload.data?.book) setBook(payload.data.book);
       if (options.refreshBook) loadBook();
@@ -148,7 +148,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
     setError('');
     setMessage('');
     try {
-      const response = await fetch(`/api/books/${bookId}/volumes/${volumeId}/move`, {
+      const response = await fetch(`/api/works/${bookId}/volumes/${volumeId}/move`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ direction })
@@ -169,12 +169,12 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
     setError('');
     setMessage('');
     try {
-      const response = await fetch(`/api/books/${bookId}`, {
+      const response = await fetch(`/api/works/${bookId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ignored })
       });
-      const payload = (await response.json()) as { ok: boolean; data?: { book: BookView }; error?: { message: string } };
+      const payload = (await response.json()) as { ok: boolean; data?: { book: WorkView }; error?: { message: string } };
       if (!payload.ok || !payload.data?.book) throw new Error(payload.error?.message ?? '操作失败');
       setBook(payload.data.book);
       setMessage(ignored ? '读物已忽略' : '读物已恢复显示');
@@ -191,7 +191,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
     setError('');
     setMessage('');
     try {
-      const response = await fetch(`/api/books/${bookId}`, { method: 'DELETE' });
+      const response = await fetch(`/api/works/${bookId}`, { method: 'DELETE' });
       const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
       if (!payload.ok) throw new Error(payload.error?.message ?? '删除失败');
       setMessage('已删除数据库记录，源文件未删除');
@@ -210,7 +210,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
     try {
       const formData = new FormData();
       formData.append('cover', file);
-      const response = await fetch(`/api/books/${bookId}/cover/upload`, { method: 'POST', body: formData });
+      const response = await fetch(`/api/works/${bookId}/cover/upload`, { method: 'POST', body: formData });
       const payload = (await response.json()) as { ok: boolean; data?: { coverUrl: string }; error?: { message: string } };
       if (!payload.ok) throw new Error(payload.error?.message ?? '上传封面失败');
       setCoverBust(Date.now());
@@ -256,7 +256,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
             <div className="mt-5 flex flex-wrap gap-3">
               <Button icon={BookOpen} onClick={() => router.push(comicSections[0] && book.editionId ? `/reader/${book.editionId}?volume=${encodeURIComponent(comicSections[0].id)}` : `/reader/${book.editionId ?? book.id}`)}>{book.progress > 0 ? '继续阅读' : '开始阅读'}</Button>
               <Button variant="secondary" icon={Edit3} onClick={() => setEditing((value) => !value)}>编辑信息</Button>
-              <Button disabled={saving} variant="secondary" icon={RefreshCw} onClick={() => postAction(`/api/books/${book.id}/cover/regenerate`, '封面已重新生成', { refreshCover: true })}>重新生成封面</Button>
+              <Button disabled={saving} variant="secondary" icon={RefreshCw} onClick={() => postAction(`/api/works/${book.id}/cover/regenerate`, '封面已重新生成', { refreshCover: true })}>重新生成封面</Button>
               <Button disabled={saving} variant={book.ignored ? 'secondary' : 'danger'} icon={book.ignored ? EyeOff : Trash2} onClick={() => setIgnored(!book.ignored)}>{book.ignored ? '恢复显示' : '忽略读物'}</Button>
               <Button disabled={saving} variant="danger" icon={Trash2} onClick={() => void deleteRecord()}>删除记录</Button>
             </div>
@@ -364,8 +364,8 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
                 <Button variant="secondary" onClick={() => router.push(`/reader/${edition.id}${edition.volumes[0] ? `?volume=${encodeURIComponent(edition.volumes[0].id)}` : ''}`)}>阅读</Button>
-                {!edition.primary ? <Button disabled={saving} variant="secondary" onClick={() => postAction(`/api/books/${book.id}/editions/${edition.id}/primary`, '已设为主版本', { refreshBook: true })}>设为主版本</Button> : null}
-                {book.editions.length > 1 ? <Button disabled={saving} variant="secondary" onClick={() => postAction(`/api/books/${book.id}/editions/${edition.id}/split`, '版本已拆出为新作品', { refreshBook: true })}>拆出作品</Button> : null}
+                {!edition.primary ? <Button disabled={saving} variant="secondary" onClick={() => postAction(`/api/works/${book.id}/editions/${edition.id}/primary`, '已设为主版本', { refreshBook: true })}>设为主版本</Button> : null}
+                {book.editions.length > 1 ? <Button disabled={saving} variant="secondary" onClick={() => postAction(`/api/works/${book.id}/editions/${edition.id}/split`, '版本已拆出为新作品', { refreshBook: true })}>拆出作品</Button> : null}
               </div>
             </div>
           ))}

@@ -1,4 +1,4 @@
-import type { Book, BookFile } from '@prisma/client';
+import type { LibraryEdition, LibraryFile, LibraryWork } from '@prisma/client';
 
 export type OrganizeIssueCode =
   | 'NEW_IMPORT'
@@ -11,8 +11,8 @@ export type OrganizeIssueCode =
 export type DuplicateReason = 'hash' | 'size' | 'title';
 
 export type DuplicateMatch = {
-  bookId: string;
-  otherBookId: string;
+  workId: string;
+  otherWorkId: string;
   reasons: DuplicateReason[];
 };
 
@@ -25,7 +25,9 @@ export const issueLabels: Record<OrganizeIssueCode, string> = {
   DUPLICATE: '疑似重复'
 };
 
-type BookForOrganize = Book & { files?: BookFile[] };
+export type WorkForOrganize = LibraryWork & {
+  editions?: Array<LibraryEdition & { files?: LibraryFile[] }>;
+};
 
 export function normalizeTitleForCompare(title: string) {
   return title
@@ -44,7 +46,7 @@ function titleLooksOdd(title: string) {
   return false;
 }
 
-export function duplicateMatches(books: BookForOrganize[]) {
+export function duplicateMatches(works: WorkForOrganize[]) {
   const matches = new Map<string, Map<string, Set<DuplicateReason>>>();
   const addMatch = (a: string, b: string, reason: DuplicateReason) => {
     if (a === b) return;
@@ -56,15 +58,18 @@ export function duplicateMatches(books: BookForOrganize[]) {
     pair.get(second)!.add(reason);
   };
 
-  const byHash = new Map<string, BookForOrganize[]>();
-  const bySize = new Map<string, BookForOrganize[]>();
-  const byTitle = new Map<string, BookForOrganize[]>();
+  const byHash = new Map<string, WorkForOrganize[]>();
+  const bySize = new Map<string, WorkForOrganize[]>();
+  const byTitle = new Map<string, WorkForOrganize[]>();
 
-  for (const book of books) {
-    if (book.contentHash) byHash.set(book.contentHash, [...(byHash.get(book.contentHash) ?? []), book]);
-    if (book.sizeBytes > BigInt(0)) bySize.set(String(book.sizeBytes), [...(bySize.get(String(book.sizeBytes)) ?? []), book]);
-    const titleKey = normalizeTitleForCompare(book.title);
-    if (titleKey.length >= 4) byTitle.set(titleKey, [...(byTitle.get(titleKey) ?? []), book]);
+  for (const work of works) {
+    const files = (work.editions ?? []).flatMap((edition) => edition.files ?? []);
+    const fullHash = files.find((file) => file.fullHash)?.fullHash;
+    const sizeBytes = files.reduce((total, file) => total + BigInt(file.sizeBytes), BigInt(0));
+    if (fullHash) byHash.set(fullHash, [...(byHash.get(fullHash) ?? []), work]);
+    if (sizeBytes > BigInt(0)) bySize.set(String(sizeBytes), [...(bySize.get(String(sizeBytes)) ?? []), work]);
+    const titleKey = normalizeTitleForCompare(work.title);
+    if (titleKey.length >= 4) byTitle.set(titleKey, [...(byTitle.get(titleKey) ?? []), work]);
   }
 
   for (const group of byHash.values()) {
@@ -78,11 +83,11 @@ export function duplicateMatches(books: BookForOrganize[]) {
   }
 
   return [...matches.entries()].flatMap(([bookId, others]) =>
-    [...others.entries()].map(([otherBookId, reasons]) => ({ bookId, otherBookId, reasons: [...reasons] }))
+    [...others.entries()].map(([otherWorkId, reasons]) => ({ workId: bookId, otherWorkId, reasons: [...reasons] }))
   );
 }
 
-function pairGroup(group: BookForOrganize[], reason: DuplicateReason, addMatch: (a: string, b: string, reason: DuplicateReason) => void) {
+function pairGroup(group: WorkForOrganize[], reason: DuplicateReason, addMatch: (a: string, b: string, reason: DuplicateReason) => void) {
   for (let i = 0; i < group.length; i += 1) {
     for (let j = i + 1; j < group.length; j += 1) addMatch(group[i].id, group[j].id, reason);
   }
@@ -91,19 +96,19 @@ function pairGroup(group: BookForOrganize[], reason: DuplicateReason, addMatch: 
 export function duplicateBookIds(matches: DuplicateMatch[]) {
   const ids = new Set<string>();
   for (const match of matches) {
-    ids.add(match.bookId);
-    ids.add(match.otherBookId);
+    ids.add(match.workId);
+    ids.add(match.otherWorkId);
   }
   return ids;
 }
 
-export function issuesForBook(book: BookForOrganize, duplicateIds: Set<string>): OrganizeIssueCode[] {
+export function issuesForBook(book: WorkForOrganize, duplicateIds: Set<string>): OrganizeIssueCode[] {
   const issues: OrganizeIssueCode[] = [];
   if (!book.organized) issues.push('NEW_IMPORT');
   if (!book.coverPath || book.coverStatus !== 'READY') issues.push('MISSING_COVER');
   if (!book.author?.trim()) issues.push('MISSING_AUTHOR');
   if (titleLooksOdd(book.title)) issues.push('ODD_TITLE');
-  if (book.importStatus === 'FAILED' || book.importError) issues.push('IMPORT_FAILED');
+  if ((book.editions ?? []).some((edition) => edition.importStatus === 'FAILED' || edition.importError)) issues.push('IMPORT_FAILED');
   if (duplicateIds.has(book.id)) issues.push('DUPLICATE');
   return [...new Set(issues)];
 }

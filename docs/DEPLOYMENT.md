@@ -57,9 +57,9 @@ Web 和 scan-worker 会检查：
 - 继续阅读已改为 `/api/dashboard/continue-reading`
 - 最近新增已改为 `/api/dashboard/recent-books`
 - 系统状态已改为 `/api/dashboard/system-status` 和 `/api/system/health`
-- 书库、书架、移动端列表已改为 `/api/books`
-- 详情页已改为 `/api/books/[id]`
-- 阅读器已改为 EPUB 文件流和 `/api/books/[id]/pages`
+- 书库、书架、移动端列表已改为 `/api/works`
+- 详情页已改为 `/api/works/[id]`
+- 阅读器已改为 `/api/editions/[id]/file` 和 `/api/volumes/[id]/pages`
 - 导入任务页使用真实 `ImportTask` 和 `ImportLog`
 - 设置页使用 `MonitorFolder`、`SystemSetting`、真实 health 和真实阅读进度更新时间
 - Demo 数据保留在 `docs/demo/`、`scripts/demo/`，只能通过显式 `DEMO_MODE=true pnpm db:seed:demo` 写入。

@@ -2,7 +2,7 @@
 
 import { Archive, BookMarked, BookOpen, CheckCircle2, ChevronLeft, ChevronRight, Download, Home, Moon, Search, Settings, User, Wifi } from 'lucide-react';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import type { BookView } from '../../lib/books';
+import type { WorkView } from '../../lib/books';
 import { Cover } from '../book/cover';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
@@ -12,7 +12,7 @@ import { Progress } from '../ui/progress';
 type MobilePage = 'mhome' | 'mshelf' | 'msearch' | 'mprofile' | 'mdetail' | 'mreader';
 type UserInfo = { id: string; email: string; name: string; role: string };
 type Summary = { totalBooks: number; latestSyncAt: string | null };
-type ContinueItem = { book: BookView; progress: number; lastReadAt: string; chapter: string | null } | null;
+type ContinueItem = { book: WorkView; progress: number; lastReadAt: string; chapter: string | null } | null;
 
 function MobileFrame({ children }: { children: ReactNode }) {
   return <div className="mx-auto h-[844px] w-[390px] overflow-hidden rounded-[42px] border-[10px] border-slate-900 bg-[#F8FAFC] shadow-2xl"><div className="h-full overflow-hidden">{children}</div></div>;
@@ -22,7 +22,7 @@ function MiniMetric({ value, label }: { value: string; label: string }) {
   return <div className="rounded-2xl bg-slate-50 p-3"><div className="font-semibold text-slate-950">{value}</div><div className="mt-1 text-xs text-slate-500">{label}</div></div>;
 }
 
-function MobileBookRow({ book, onClick }: { book: BookView; onClick: () => void }) {
+function MobileBookRow({ book, onClick }: { book: WorkView; onClick: () => void }) {
   return (
     <button onClick={onClick} className="flex w-full items-center gap-3 rounded-3xl bg-white p-3 text-left shadow-sm">
       <Cover book={book} className="h-20 w-14" small />
@@ -42,7 +42,7 @@ function Empty({ children }: { children: ReactNode }) {
 
 export function MobileApp() {
   const [mobilePage, setMobilePage] = useState<MobilePage>('mhome');
-  const [books, setBooks] = useState<BookView[]>([]);
+  const [books, setBooks] = useState<WorkView[]>([]);
   const [selectedId, setSelectedId] = useState('');
   const [continueItem, setContinueItem] = useState<ContinueItem>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -53,7 +53,7 @@ export function MobileApp() {
 
   useEffect(() => {
     Promise.all([
-      fetch('/api/books?pageSize=20').then((response) => response.json()).catch(() => null),
+      fetch('/api/works?pageSize=20').then((response) => response.json()).catch(() => null),
       fetch('/api/dashboard/continue-reading').then((response) => response.json()).catch(() => null),
       fetch('/api/dashboard/summary').then((response) => response.json()).catch(() => null),
       fetch('/api/auth/me').then((response) => response.json()).catch(() => null),
@@ -69,7 +69,7 @@ export function MobileApp() {
 
   const selectedBook = useMemo(() => books.find((book) => book.id === selectedId) ?? continueItem?.book ?? books[0] ?? null, [books, continueItem, selectedId]);
 
-  function openBook(book: BookView) {
+  function openBook(book: WorkView) {
     setSelectedId(book.id);
     setMobilePage('mdetail');
   }

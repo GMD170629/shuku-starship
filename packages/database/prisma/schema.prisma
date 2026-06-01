@@ -49,7 +49,6 @@ model User {
   passwordHash String
   role         String            @default("admin")
   sessions     Session[]
-  progresses   ReadingProgress[]
   libraryProgresses LibraryReadingProgress[]
   readerPreferences ReaderPreference[]
   createdAt    DateTime          @default(now())
@@ -75,7 +74,6 @@ model MonitorFolder {
   ignoreHidden Boolean    @default(true)
   minFileSizeBytes Int     @default(10240)
   description String?
-  books       Book[]
   works       LibraryWork[]
   editions    LibraryEdition[]
   importTasks ImportTask[]
@@ -211,84 +209,10 @@ model LibraryFile {
   @@index([sizeBytes, mtimeMs])
 }
 
-model Book {
-  id            String            @id @default(cuid())
-  monitorFolderId String?
-  monitorFolder   MonitorFolder?  @relation(fields: [monitorFolderId], references: [id], onDelete: SetNull)
-  origin        BookOrigin        @default(MANUAL)
-  title         String
-  author        String?
-  description   String?           @db.Text
-  seriesName    String?
-  seriesIndex   Float?
-  format        ReadingFormat
-  status        ReadingStatus     @default(WANT)
-  tags          String            @db.Text
-  coverPath     String?
-  coverStatus   CoverStatus       @default(PENDING)
-  hidden        Boolean           @default(false)
-  organized     Boolean           @default(false)
-  managedFilePath String
-  contentHash   String            @unique
-  sizeBytes     BigInt            @default(0)
-  pageCount     Int?
-  chapterCount  Int?
-  language      String?
-  publisher     String?
-  publishedAt   String?
-  identifier    String?
-  isbn          String?
-  importStatus  BookImportStatus @default(PENDING)
-  importError   String? @db.Text
-  files         BookFile[]
-  chapters      BookChapter[]
-  readingUnits  ReadingUnit[]
-  assets        BookAsset[]
-  metadataItems BookMetadata[]
-  progresses    ReadingProgress[]
-  importTasks   ImportTask[]
-  shelves       ShelfBook[]
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
-
-  @@index([format])
-  @@index([title])
-  @@index([author])
-  @@index([hidden])
-  @@index([organized])
-  @@index([monitorFolderId])
-}
-
-model BookFile {
-  id           String         @id @default(cuid())
-  bookId       String
-  book         Book           @relation(fields: [bookId], references: [id], onDelete: Cascade)
-  path         String
-  filePathHash String?        @unique
-  fingerprint  String?
-  fullHash     String?
-  hashStatus   FileHashStatus @default(FAILED)
-  mtimeMs      BigInt         @default(0)
-  kind         ReadingFormat
-  mimeType     String
-  sizeBytes    BigInt         @default(0)
-  sortOrder    Int            @default(0)
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
-
-  @@unique([bookId, path])
-  @@index([bookId, sortOrder])
-  @@index([fingerprint])
-  @@index([fullHash])
-  @@index([sizeBytes, mtimeMs])
-}
-
 model ImportTask {
   id            String         @id @default(cuid())
   monitorFolderId String?
   monitorFolder   MonitorFolder? @relation(fields: [monitorFolderId], references: [id], onDelete: SetNull)
-  bookId        String?
-  book          Book?          @relation(fields: [bookId], references: [id], onDelete: SetNull)
   workId        String?
   work          LibraryWork?   @relation(fields: [workId], references: [id], onDelete: SetNull)
   editionId     String?
@@ -331,24 +255,6 @@ model ImportLog {
   @@index([importTaskId, createdAt])
 }
 
-model ReadingProgress {
-  id         String   @id @default(cuid())
-  userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  bookId     String
-  book       Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
-  readerType String
-  position   String   @default("0")
-  page       Int?
-  percent    Float    @default(0)
-  extra      String   @db.Text
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-
-  @@unique([userId, bookId])
-  @@index([bookId])
-}
-
 model ReaderPreference {
   id         String   @id @default(cuid())
   userId     String
@@ -373,7 +279,6 @@ model Shelf {
   id          String      @id @default(cuid())
   name        String
   description String?     @db.Text
-  books       ShelfBook[]
   works       ShelfWork[]
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
@@ -391,85 +296,6 @@ model ShelfWork {
   @@id([shelfId, workId])
   @@index([workId])
   @@index([shelfId, createdAt])
-}
-
-model ShelfBook {
-  shelfId   String
-  bookId    String
-  shelf     Shelf    @relation(fields: [shelfId], references: [id], onDelete: Cascade)
-  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
-  createdAt DateTime @default(now())
-
-  @@id([shelfId, bookId])
-  @@index([bookId])
-  @@index([shelfId, createdAt])
-}
-
-
-model BookChapter {
-  id        String   @id @default(cuid())
-  bookId    String
-  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
-  title     String
-  href      String
-  mediaType String?
-  sortOrder Int
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([bookId, sortOrder])
-}
-
-model BookMetadata {
-  id        String   @id @default(cuid())
-  bookId    String
-  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
-  source    String
-  rawJson   String   @db.Text
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([bookId])
-}
-
-model ReadingUnit {
-  id           String   @id @default(cuid())
-  bookId       String
-  book         Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
-  unitType     String
-  title        String
-  href         String
-  filePath     String?
-  mediaType    String?
-  sortOrder    Int
-  width        Int?
-  height       Int?
-  size         BigInt?
-  metadataJson String   @db.Text
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  @@index([bookId, sortOrder])
-  @@index([bookId, unitType])
-}
-
-model BookAsset {
-  id        String   @id @default(cuid())
-  bookId    String
-  book      Book     @relation(fields: [bookId], references: [id], onDelete: Cascade)
-  assetType String
-  filePath  String
-  url       String?
-  mediaType String?
-  width     Int?
-  height    Int?
-  size      BigInt?
-  sortOrder Int      @default(0)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  @@index([bookId, assetType])
-  @@index([bookId, sortOrder])
 }
 
 model LibraryReadingUnit {

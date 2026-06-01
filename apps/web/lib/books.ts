@@ -1,19 +1,15 @@
 import type {
-  Book,
-  BookFile,
   LibraryEdition,
   LibraryFile,
   LibraryReadingProgress,
   LibraryVolume,
   LibraryWork,
-  MonitorFolder,
   ReadingFormat,
-  ReadingProgress,
   ReadingStatus
 } from '@prisma/client';
 import { formatLabels, statusLabels } from './book-metadata';
 
-export type BookView = {
+export type WorkView = {
   id: string;
   workId: string;
   editionId: string | null;
@@ -86,8 +82,8 @@ export type BookView = {
     progress: number;
     lastReadAt: string | null;
     coverUrl: string;
-    files: BookView['files'];
-    volumes: BookView['volumes'];
+    files: WorkView['files'];
+    volumes: WorkView['volumes'];
   }>;
 };
 
@@ -119,16 +115,6 @@ export function formatLabel(format: ReadingFormat) {
   return formatLabels[format] ?? '未知';
 }
 
-function publicFormat(book: Book) {
-  if (book.format === 'COMIC') {
-    const ext = book.managedFilePath.split('.').pop()?.toLowerCase();
-    if (ext === 'cbz') return 'CBZ';
-    if (ext === 'zip') return 'ZIP';
-    return '漫画';
-  }
-  return formatLabel(book.format);
-}
-
 function publicEditionFormat(edition: Pick<LibraryEdition, 'format'> & { files?: Pick<LibraryFile, 'path'>[] }) {
   if (edition.format === 'COMIC') {
     const ext = edition.files?.[0]?.path.split('.').pop()?.toLowerCase();
@@ -137,73 +123,6 @@ function publicEditionFormat(edition: Pick<LibraryEdition, 'format'> & { files?:
     return '漫画';
   }
   return formatLabel(edition.format);
-}
-
-function publicType(format: ReadingFormat): 'ebook' | 'comic' {
-  return format === 'COMIC' ? 'comic' : 'ebook';
-}
-
-export function toBookView(
-  book: Book & {
-    files?: BookFile[];
-    monitorFolder?: MonitorFolder | null;
-    progresses?: ReadingProgress[];
-  }
-): BookView {
-  const progress = book.progresses?.[0];
-  const percent = Math.max(0, Math.min(100, Math.round(progress?.percent ?? 0)));
-  return {
-    id: book.id,
-    workId: book.id,
-    editionId: book.id,
-    monitorFolderId: book.monitorFolderId,
-    title: book.title,
-    author: book.author ?? '未知作者',
-    type: publicType(book.format),
-    formatValue: book.format,
-    format: publicFormat(book),
-    size: formatBytes(book.sizeBytes),
-    progress: percent,
-    statusValue: book.status,
-    status: statusLabels[book.status],
-    ignored: book.hidden,
-    organized: book.organized,
-    tags: parseTags(book.tags),
-    seriesName: book.seriesName,
-    seriesIndex: book.seriesIndex,
-    added: book.createdAt.toISOString().slice(0, 10),
-    importedAt: book.createdAt.toISOString(),
-    lastReadAt: progress?.updatedAt.toISOString() ?? null,
-    lastRead: progress?.updatedAt.toISOString().slice(0, 10) ?? '尚未阅读',
-    chapter: progress?.page ? `第 ${progress.page} 页` : '未开始',
-    chapterCount: book.chapterCount,
-    pageCount: book.pageCount,
-    desc: book.description ?? '暂无简介，可在详情页补充元数据。',
-    path: book.managedFilePath,
-    fileHash: book.contentHash,
-    gradient: gradients[Math.abs(hashCode(book.id)) % gradients.length],
-    coverStatus: book.coverStatus,
-    coverUrl: `/api/books/${book.id}/cover?size=medium`,
-    totalUnits: book.format === 'COMIC' ? (book.pageCount ?? 0) : (book.chapterCount ?? 0),
-    readingProgress: percent,
-    importStatus: book.importStatus,
-    importError: book.importError,
-    files: (book.files ?? []).map((file) => ({
-      id: file.id,
-      path: file.path,
-      mimeType: file.mimeType,
-      kind: file.kind,
-      sortOrder: file.sortOrder,
-      size: formatBytes(file.sizeBytes)
-    })),
-    versionCount: 1,
-    volumeCount: book.files?.length ?? 1,
-    primaryEditionId: book.id,
-    primaryEditionName: '默认版本',
-    recentEditionId: book.id,
-    volumes: [],
-    editions: []
-  };
 }
 
 export type WorkWithLibrary = LibraryWork & {
@@ -238,7 +157,7 @@ function volumeView(workId: string, volume: LibraryVolume) {
   };
 }
 
-export function toWorkView(work: WorkWithLibrary): BookView {
+export function toWorkView(work: WorkWithLibrary): WorkView {
   const editions = [...(work.editions ?? [])].filter((edition) => !edition.hidden).sort((a, b) => Number(b.primary) - Number(a.primary) || a.createdAt.getTime() - b.createdAt.getTime());
   const recentProgress = editions.flatMap((edition) => edition.progresses ?? []).sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())[0] ?? null;
   const primary = editions.find((edition) => edition.id === work.primaryEditionId) ?? editions.find((edition) => edition.primary) ?? editions[0] ?? null;
@@ -309,7 +228,7 @@ export function toWorkView(work: WorkWithLibrary): BookView {
     fileHash: firstFile?.fullHash ?? '',
     gradient: gradients[Math.abs(hashCode(work.id)) % gradients.length],
     coverStatus: work.coverStatus,
-    coverUrl: `/api/books/${work.id}/cover?size=medium`,
+    coverUrl: `/api/works/${work.id}/cover?size=medium`,
     totalUnits: displayEdition ? editionUnits(displayEdition) : 0,
     readingProgress: percent,
     importStatus: displayEdition?.importStatus ?? 'PENDING',

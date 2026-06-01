@@ -30,7 +30,7 @@ type BackupItem = {
   sizeBytes: number;
   createdAt: string;
   counts?: {
-    books: number;
+    works: number;
     readingProgresses: number;
     monitorFolders: number;
   };
@@ -339,7 +339,7 @@ export function SettingsPage() {
                       <div className="mt-1 text-sm text-slate-500">{new Date(backup.createdAt).toLocaleString()} · {formatBytes(backup.sizeBytes)}</div>
                       {backup.counts ? (
                         <div className="mt-2 text-xs text-slate-500">
-                          {backup.counts.books} 本读物 · {backup.counts.readingProgresses} 条阅读进度 · {backup.counts.monitorFolders} 个监控文件夹
+                          {backup.counts.works} 部作品 · {backup.counts.readingProgresses} 条阅读进度 · {backup.counts.monitorFolders} 个监控文件夹
                         </div>
                       ) : null}
                     </div>

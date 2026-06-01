@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { BookView } from '../../lib/books';
+import type { WorkView } from '../../lib/books';
 import { enqueuePreference, enqueueProgress, flushPreferenceQueue, flushProgressQueue } from '../../lib/pwa/progressQueue';
 import { ComicReader, type ComicImageFit, type ComicMode, type ComicPageMeta } from './comic-reader';
 import { EbookReader } from './epub-reader';
@@ -18,7 +18,7 @@ type ReaderOpeningRect = {
 };
 
 type ReaderOpeningContext = {
-  bookId: string;
+  editionId: string;
   title: string;
   author: string;
   format: string;
@@ -39,7 +39,7 @@ type ProgressPayload = {
 type BootstrapPayload = {
   ok: boolean;
   data?: {
-    book: BookView;
+    book: WorkView;
     readerType: 'ebook' | 'comic' | 'unknown';
     progress: ProgressPayload | null;
     preferences: {
@@ -80,7 +80,7 @@ const defaultSettings: ReaderSettings = {
   reversePages: false
 };
 
-function readerTypeForBook(book: BookView | null): ReaderKind | 'unknown' {
+function readerTypeForBook(book: WorkView | null): ReaderKind | 'unknown' {
   if (!book) return 'unknown';
   if (book.formatValue === 'EPUB') return 'epub';
   if (book.formatValue === 'COMIC') return 'comic';
@@ -125,27 +125,27 @@ function writeCache(key: string, value: unknown) {
   }
 }
 
-function progressCacheKey(bookId: string) {
-  return `shuku:reader:progress:${bookId}`;
+function progressCacheKey(editionId: string) {
+  return `shuku:reader:progress:${editionId}`;
 }
 
 function settingsCacheKey(type: string) {
   return `shuku:reader:preferences:${type}`;
 }
 
-function safeOpeningContext(bookId: string) {
+function safeOpeningContext(editionId: string) {
   if (typeof window === 'undefined') return null;
   try {
     const raw = window.sessionStorage.getItem(readerOpeningStorageKey);
     if (!raw) return null;
     window.sessionStorage.removeItem(readerOpeningStorageKey);
     const parsed = JSON.parse(raw) as Partial<ReaderOpeningContext>;
-    if (parsed.bookId !== bookId || !parsed.title || !parsed.coverUrl || !parsed.gradient) return null;
+    if (parsed.editionId !== editionId || !parsed.title || !parsed.coverUrl || !parsed.gradient) return null;
     const rect = parsed.rect && typeof parsed.rect.left === 'number' && typeof parsed.rect.top === 'number' && typeof parsed.rect.width === 'number' && typeof parsed.rect.height === 'number'
       ? parsed.rect
       : null;
     return {
-      bookId: parsed.bookId,
+      editionId: parsed.editionId,
       title: parsed.title,
       author: typeof parsed.author === 'string' ? parsed.author : '',
       format: typeof parsed.format === 'string' ? parsed.format : '',
@@ -158,8 +158,8 @@ function safeOpeningContext(bookId: string) {
   }
 }
 
-function largeCoverUrl(book: BookView) {
-  return book.coverUrl ? book.coverUrl.replace(/size=(small|medium|large)/, 'size=large') : `/api/books/${book.id}/cover?size=large`;
+function largeCoverUrl(book: WorkView) {
+  return book.coverUrl ? book.coverUrl.replace(/size=(small|medium|large)/, 'size=large') : `/api/works/${book.id}/cover?size=large`;
 }
 
 function coerceSettings(current: ReaderSettings, savedSettings: Record<string, unknown>) {
@@ -241,10 +241,10 @@ function mergeChangedExtra(current: Record<string, unknown>, next: Record<string
   return changed ? { ...current, ...next } : current;
 }
 
-export function ReaderPage({ bookId }: { bookId: string }) {
+export function ReaderPage({ editionId }: { editionId: string }) {
   const router = useRouter();
-  const [openingContext] = useState<ReaderOpeningContext | null>(() => safeOpeningContext(bookId));
-  const [book, setBook] = useState<BookView | null>(null);
+  const [openingContext] = useState<ReaderOpeningContext | null>(() => safeOpeningContext(editionId));
+  const [book, setBook] = useState<WorkView | null>(null);
   const [error, setError] = useState('');
   const [settings, setSettings] = useState<ReaderSettings>(defaultSettings);
   const [progress, setProgress] = useState<ReaderProgress>(defaultProgress);
@@ -258,7 +258,7 @@ export function ReaderPage({ bookId }: { bookId: string }) {
   const [comicPages, setComicPages] = useState<ComicPageMeta[]>([]);
   const [comicPageCount, setComicPageCount] = useState<number | null>(null);
 
-  const bookRef = useRef<BookView | null>(null);
+  const bookRef = useRef<WorkView | null>(null);
   const readerTypeRef = useRef<ReaderKind | 'unknown'>('unknown');
   const settingsRef = useRef(settings);
   const progressRef = useRef(progress);
@@ -283,10 +283,10 @@ export function ReaderPage({ bookId }: { bookId: string }) {
 
   useEffect(() => {
     setReaderReady(false);
-  }, [bookId, bootstrapRetryToken]);
+  }, [editionId, bootstrapRetryToken]);
 
   useEffect(() => {
-    const cached = readCache<{ progress: ReaderProgress; extra: Record<string, unknown> }>(progressCacheKey(bookId));
+    const cached = readCache<{ progress: ReaderProgress; extra: Record<string, unknown> }>(progressCacheKey(editionId));
     if (cached) {
       setProgress(cached.progress);
       setProgressExtra(cached.extra ?? {});
@@ -294,7 +294,7 @@ export function ReaderPage({ bookId }: { bookId: string }) {
 
     let active = true;
     const search = typeof window === 'undefined' ? '' : window.location.search;
-    fetch(`/api/reader/${bookId}/bootstrap${search}`)
+    fetch(`/api/reader/${editionId}/bootstrap${search}`)
       .then((response) => response.json() as Promise<BootstrapPayload>)
       .then((payload) => {
         if (!active) return;
@@ -335,7 +335,7 @@ export function ReaderPage({ bookId }: { bookId: string }) {
     return () => {
       active = false;
     };
-  }, [bookId, bootstrapRetryToken]);
+  }, [editionId, bootstrapRetryToken]);
 
   function progressPayload() {
     const currentBook = bookRef.current;
@@ -476,7 +476,7 @@ export function ReaderPage({ bookId }: { bookId: string }) {
       router.push('/mobile');
       return;
     }
-    if (bookRef.current) router.push(`/books/${bookRef.current.workId ?? bookRef.current.id}`);
+    if (bookRef.current) router.push(`/works/${bookRef.current.workId ?? bookRef.current.id}`);
   }
 
   if (error) {
@@ -502,7 +502,7 @@ export function ReaderPage({ bookId }: { bookId: string }) {
   return (
     <>
       <ReaderShell
-        bookId={book.editionId ?? book.id}
+        editionId={book.editionId ?? book.id}
         title={book.title}
         readerType={readerType}
         progress={progress}
@@ -514,7 +514,7 @@ export function ReaderPage({ bookId }: { bookId: string }) {
       >
         {(readerEvents) => readerType === 'epub' ? (
           <EbookReader
-            bookId={book.editionId ?? book.id}
+            editionId={book.editionId ?? book.id}
             title={book.title}
             theme={settings.theme}
             fontSize={settings.fontSize}
@@ -564,7 +564,7 @@ function prefersReducedReaderMotion() {
   return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
-function ReaderOpeningOverlay({ context, book, ready }: { context: ReaderOpeningContext | null; book: BookView | null; ready: boolean }) {
+function ReaderOpeningOverlay({ context, book, ready }: { context: ReaderOpeningContext | null; book: WorkView | null; ready: boolean }) {
   const source = book
     ? { title: book.title, author: book.author, format: book.format, coverUrl: largeCoverUrl(book), gradient: book.gradient, rect: context?.rect ?? null }
     : context;

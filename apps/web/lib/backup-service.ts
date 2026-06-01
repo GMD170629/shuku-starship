@@ -2,7 +2,6 @@ import { createReadStream } from 'node:fs';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
 import { Readable } from 'node:stream';
-import type { Book, BookFile, ImportLog, ImportTask, MonitorFolder, ReadingProgress, User } from '@prisma/client';
 import yauzl from 'yauzl';
 import { prisma } from './prisma';
 
@@ -18,7 +17,7 @@ type BackupMetadata = {
   id: string;
   kind: BackupKind;
   app: 'shuku-starship';
-  version: 1;
+  version: 2;
   createdAt: string;
   format: 'zip';
   contents: string[];
@@ -26,8 +25,14 @@ type BackupMetadata = {
   counts: {
     users: number;
     monitorFolders: number;
-    books: number;
-    bookFiles: number;
+    works: number;
+    editions: number;
+    volumes: number;
+    files: number;
+    readingUnits: number;
+    metadataItems: number;
+    shelves: number;
+    shelfWorks: number;
     readingProgresses: number;
     importTasks: number;
     importLogs: number;
@@ -36,23 +41,20 @@ type BackupMetadata = {
 };
 
 type DatabaseExport = {
-  users: Array<Omit<User, 'createdAt' | 'updatedAt'> & { createdAt: string; updatedAt: string }>;
-  monitorFolders: Array<Omit<MonitorFolder, 'createdAt' | 'updatedAt'> & { createdAt: string; updatedAt: string }>;
-  books: Array<Omit<Book, 'sizeBytes' | 'createdAt' | 'updatedAt'> & { sizeBytes: string; createdAt: string; updatedAt: string }>;
-  bookFiles: Array<Omit<BookFile, 'sizeBytes' | 'mtimeMs' | 'createdAt' | 'updatedAt'> & { sizeBytes: string; mtimeMs: string; createdAt: string; updatedAt: string }>;
-  readingProgresses: Array<Omit<ReadingProgress, 'createdAt' | 'updatedAt'> & { createdAt: string; updatedAt: string }>;
-  importTasks: Array<Omit<ImportTask, 'createdAt' | 'updatedAt' | 'startedAt' | 'finishedAt'> & {
-    createdAt: string;
-    updatedAt: string;
-    startedAt: string | null;
-    finishedAt: string | null;
-  }>;
-  importLogs: Array<Omit<ImportLog, 'createdAt'> & { createdAt: string }>;
-  coverIndex: Array<{
-    bookId: string;
-    coverPath: string | null;
-    coverStatus: string;
-  }>;
+  users: Array<Record<string, unknown>>;
+  monitorFolders: Array<Record<string, unknown>>;
+  works: Array<Record<string, unknown>>;
+  editions: Array<Record<string, unknown>>;
+  volumes: Array<Record<string, unknown>>;
+  files: Array<Record<string, unknown>>;
+  readingUnits: Array<Record<string, unknown>>;
+  metadataItems: Array<Record<string, unknown>>;
+  shelves: Array<Record<string, unknown>>;
+  shelfWorks: Array<Record<string, unknown>>;
+  readingProgresses: Array<Record<string, unknown>>;
+  importTasks: Array<Record<string, unknown>>;
+  importLogs: Array<Record<string, unknown>>;
+  coverIndex: Array<Record<string, unknown>>;
 };
 
 type SettingsExport = {
@@ -268,12 +270,15 @@ function hasPassedAutomaticTime(date = new Date()) {
   return date.getHours() > 3 || (date.getHours() === 3 && date.getMinutes() >= 0);
 }
 
-function toDate(value: string) {
-  return new Date(value);
-}
-
-function toBigInt(value: string | number | bigint) {
-  return BigInt(value);
+function reviveRecord<T extends Record<string, unknown>>(record: T) {
+  const next: Record<string, unknown> = { ...record };
+  for (const key of ['createdAt', 'updatedAt', 'startedAt', 'finishedAt']) {
+    if (typeof next[key] === 'string') next[key] = new Date(next[key] as string);
+  }
+  for (const key of ['sizeBytes', 'mtimeMs', 'size']) {
+    if (typeof next[key] === 'string' || typeof next[key] === 'number') next[key] = BigInt(next[key] as string | number);
+  }
+  return next as T;
 }
 
 export class BackupService {
@@ -289,12 +294,18 @@ export class BackupService {
     await mkdir(backupsRoot(), { recursive: true });
     const createdAt = new Date();
     const id = backupId(kind, createdAt);
-    const [users, monitorFolders, books, bookFiles, readingProgresses, importTasks, importLogs] = await Promise.all([
+    const [users, monitorFolders, works, editions, volumes, files, readingUnits, metadataItems, shelves, shelfWorks, readingProgresses, importTasks, importLogs] = await Promise.all([
       prisma.user.findMany({ orderBy: { createdAt: 'asc' } }),
       prisma.monitorFolder.findMany({ orderBy: { createdAt: 'asc' } }),
-      prisma.book.findMany({ orderBy: { createdAt: 'asc' } }),
-      prisma.bookFile.findMany({ orderBy: [{ bookId: 'asc' }, { sortOrder: 'asc' }] }),
-      prisma.readingProgress.findMany({ orderBy: { updatedAt: 'desc' } }),
+      prisma.libraryWork.findMany({ orderBy: { createdAt: 'asc' } }),
+      prisma.libraryEdition.findMany({ orderBy: [{ workId: 'asc' }, { createdAt: 'asc' }] }),
+      prisma.libraryVolume.findMany({ orderBy: [{ editionId: 'asc' }, { sortOrder: 'asc' }] }),
+      prisma.libraryFile.findMany({ orderBy: [{ editionId: 'asc' }, { sortOrder: 'asc' }] }),
+      prisma.libraryReadingUnit.findMany({ orderBy: [{ editionId: 'asc' }, { sortOrder: 'asc' }] }),
+      prisma.libraryMetadata.findMany({ orderBy: [{ editionId: 'asc' }, { createdAt: 'asc' }] }),
+      prisma.shelf.findMany({ orderBy: { createdAt: 'asc' } }),
+      prisma.shelfWork.findMany({ orderBy: [{ shelfId: 'asc' }, { createdAt: 'asc' }] }),
+      prisma.libraryReadingProgress.findMany({ orderBy: { updatedAt: 'desc' } }),
       prisma.importTask.findMany({ orderBy: { createdAt: 'asc' } }),
       prisma.importLog.findMany({ orderBy: { createdAt: 'asc' } })
     ]);
@@ -302,15 +313,21 @@ export class BackupService {
     const databaseExport: DatabaseExport = {
       users: JSON.parse(jsonStringify(users)),
       monitorFolders: JSON.parse(jsonStringify(monitorFolders)),
-      books: JSON.parse(jsonStringify(books)),
-      bookFiles: JSON.parse(jsonStringify(bookFiles)),
+      works: JSON.parse(jsonStringify(works)),
+      editions: JSON.parse(jsonStringify(editions)),
+      volumes: JSON.parse(jsonStringify(volumes)),
+      files: JSON.parse(jsonStringify(files)),
+      readingUnits: JSON.parse(jsonStringify(readingUnits)),
+      metadataItems: JSON.parse(jsonStringify(metadataItems)),
+      shelves: JSON.parse(jsonStringify(shelves)),
+      shelfWorks: JSON.parse(jsonStringify(shelfWorks)),
       readingProgresses: JSON.parse(jsonStringify(readingProgresses)),
       importTasks: JSON.parse(jsonStringify(importTasks)),
       importLogs: JSON.parse(jsonStringify(importLogs)),
-      coverIndex: books.map((book) => ({
-        bookId: book.id,
-        coverPath: book.coverPath,
-        coverStatus: book.coverStatus
+      coverIndex: works.map((work) => ({
+        workId: work.id,
+        coverPath: work.coverPath,
+        coverStatus: work.coverStatus
       }))
     };
 
@@ -318,20 +335,26 @@ export class BackupService {
       id,
       kind,
       app: 'shuku-starship',
-      version: 1,
+      version: 2,
       createdAt: createdAt.toISOString(),
       format: 'zip',
       contents: backupContents,
-      scope: ['database', 'reading-metadata', 'tags', 'reading-progress', 'monitor-folder-settings', 'cover-cache-index'],
+      scope: ['database-v2', 'library-works', 'library-editions', 'reading-metadata', 'tags', 'reading-progress', 'monitor-folder-settings', 'cover-cache-index'],
       counts: {
         users: users.length,
         monitorFolders: monitorFolders.length,
-        books: books.length,
-        bookFiles: bookFiles.length,
+        works: works.length,
+        editions: editions.length,
+        volumes: volumes.length,
+        files: files.length,
+        readingUnits: readingUnits.length,
+        metadataItems: metadataItems.length,
+        shelves: shelves.length,
+        shelfWorks: shelfWorks.length,
         readingProgresses: readingProgresses.length,
         importTasks: importTasks.length,
         importLogs: importLogs.length,
-        coverIndexEntries: books.length
+        coverIndexEntries: works.length
       }
     };
 
@@ -397,98 +420,78 @@ export class BackupService {
     const entries = await readZipEntries(backupPath(id));
     const metadata = parseJsonEntry<BackupMetadata>(entries, 'metadata.json');
     const databaseExport = parseJsonEntry<DatabaseExport>(entries, 'database-export.json');
-    if (metadata.app !== 'shuku-starship' || metadata.version !== 1) {
-      throw new Error('备份格式不兼容');
+    if (metadata.app !== 'shuku-starship' || metadata.version !== 2) {
+      throw new Error('BACKUP_VERSION_UNSUPPORTED');
     }
 
     await prisma.$transaction(async (tx) => {
-      await tx.readingProgress.deleteMany();
       await tx.importLog.deleteMany();
       await tx.importTask.deleteMany();
-      await tx.bookFile.deleteMany();
-      await tx.book.deleteMany();
+      await tx.libraryReadingProgress.deleteMany();
+      await tx.shelfWork.deleteMany();
+      await tx.shelf.deleteMany();
+      await tx.libraryMetadata.deleteMany();
+      await tx.libraryReadingUnit.deleteMany();
+      await tx.libraryFile.deleteMany();
+      await tx.libraryVolume.deleteMany();
+      await tx.libraryEdition.deleteMany();
+      await tx.libraryWork.deleteMany();
       await tx.monitorFolder.deleteMany();
 
       for (const user of databaseExport.users) {
         await tx.user.upsert({
-          where: { id: user.id },
-          create: {
-            ...user,
-            createdAt: toDate(user.createdAt),
-            updatedAt: toDate(user.updatedAt)
-          },
-          update: {
-            email: user.email,
-            name: user.name,
-            passwordHash: user.passwordHash,
-            role: user.role,
-            updatedAt: toDate(user.updatedAt)
-          }
+          where: { id: String(user.id) },
+          create: reviveRecord(user) as never,
+          update: reviveRecord(user) as never
         });
       }
 
       for (const path of databaseExport.monitorFolders) {
-        await tx.monitorFolder.create({
-          data: {
-            ...path,
-            createdAt: toDate(path.createdAt),
-            updatedAt: toDate(path.updatedAt)
-          }
-        });
+        await tx.monitorFolder.create({ data: reviveRecord(path) as never });
       }
 
-      for (const book of databaseExport.books) {
-        await tx.book.create({
-          data: {
-            ...book,
-            sizeBytes: toBigInt(book.sizeBytes),
-            createdAt: toDate(book.createdAt),
-            updatedAt: toDate(book.updatedAt)
-          }
-        });
+      for (const work of databaseExport.works) {
+        await tx.libraryWork.create({ data: reviveRecord(work) as never });
       }
 
-      for (const file of databaseExport.bookFiles) {
-        await tx.bookFile.create({
-          data: {
-            ...file,
-            sizeBytes: toBigInt(file.sizeBytes),
-            mtimeMs: toBigInt(file.mtimeMs),
-            createdAt: toDate(file.createdAt),
-            updatedAt: toDate(file.updatedAt)
-          }
-        });
+      for (const edition of databaseExport.editions) {
+        await tx.libraryEdition.create({ data: reviveRecord(edition) as never });
+      }
+
+      for (const volume of databaseExport.volumes) {
+        await tx.libraryVolume.create({ data: reviveRecord(volume) as never });
+      }
+
+      for (const file of databaseExport.files) {
+        await tx.libraryFile.create({ data: reviveRecord(file) as never });
+      }
+
+      for (const unit of databaseExport.readingUnits) {
+        await tx.libraryReadingUnit.create({ data: reviveRecord(unit) as never });
+      }
+
+      for (const item of databaseExport.metadataItems) {
+        await tx.libraryMetadata.create({ data: reviveRecord(item) as never });
+      }
+
+      for (const shelf of databaseExport.shelves) {
+        await tx.shelf.create({ data: reviveRecord(shelf) as never });
+      }
+
+      for (const shelfWork of databaseExport.shelfWorks) {
+        await tx.shelfWork.create({ data: reviveRecord(shelfWork) as never });
       }
 
       for (const progress of databaseExport.readingProgresses) {
-        await tx.readingProgress.create({
-          data: {
-            ...progress,
-            createdAt: toDate(progress.createdAt),
-            updatedAt: toDate(progress.updatedAt)
-          }
-        });
+        await tx.libraryReadingProgress.create({ data: reviveRecord(progress) as never });
       }
 
       for (const task of databaseExport.importTasks ?? []) {
-        await tx.importTask.create({
-          data: {
-            ...task,
-            startedAt: task.startedAt ? toDate(task.startedAt) : null,
-            finishedAt: task.finishedAt ? toDate(task.finishedAt) : null,
-            createdAt: toDate(task.createdAt),
-            updatedAt: toDate(task.updatedAt)
-          }
-        });
+        await tx.importTask.create({ data: reviveRecord(task) as never });
       }
 
       for (const log of databaseExport.importLogs ?? []) {
-        await tx.importLog.create({
-          data: {
-            ...log,
-            createdAt: toDate(log.createdAt)
-          }
-        });
+        await tx.importLog.create({ data: reviveRecord(log) as never });
       }
     }, { timeout: 30_000 });
 

@@ -15,23 +15,54 @@ const demoBooks = [
 async function main() {
   for (const book of demoBooks) {
     const contentHash = createHash('sha256').update(book.file).digest('hex');
-    await prisma.book.upsert({
-      where: { contentHash },
+    const work = await prisma.libraryWork.upsert({
+      where: { mergeKey: `demo:${contentHash}` },
       create: {
         title: book.title,
+        normalizedTitle: book.title.toLowerCase(),
         author: book.author,
-        format: book.format,
+        normalizedAuthor: book.author.toLowerCase(),
+        workType: book.format,
         tags: JSON.stringify(['demo']),
-        managedFilePath: book.file,
-        contentHash,
-        sizeBytes: BigInt(book.sizeBytes),
         origin: 'MANUAL',
         coverStatus: 'FAILED',
-        pageCount: book.format === 'COMIC' ? 1 : null,
-        chapterCount: book.format === 'EPUB' ? 1 : null
+        mergeKey: `demo:${contentHash}`
       },
       update: {}
     });
+    const edition = await prisma.libraryEdition.upsert({
+      where: { workId_versionKey: { workId: work.id, versionKey: `demo:${contentHash}` } },
+      create: {
+        workId: work.id,
+        origin: 'MANUAL',
+        format: book.format,
+        versionName: 'Demo',
+        versionKey: `demo:${contentHash}`,
+        sizeBytes: BigInt(book.sizeBytes),
+        coverStatus: 'FAILED',
+        importStatus: 'COMPLETED',
+        pageCount: book.format === 'COMIC' ? 1 : null,
+        chapterCount: book.format === 'EPUB' ? 1 : null,
+        primary: true
+      },
+      update: {}
+    });
+    await prisma.libraryFile.upsert({
+      where: { path: book.file },
+      create: {
+        editionId: edition.id,
+        path: book.file,
+        filePathHash: contentHash,
+        fingerprint: `demo:${contentHash}`,
+        fullHash: contentHash,
+        hashStatus: 'FULL',
+        kind: book.format,
+        mimeType: book.format === 'EPUB' ? 'application/epub+zip' : 'application/zip',
+        sizeBytes: BigInt(book.sizeBytes)
+      },
+      update: {}
+    });
+    await prisma.libraryWork.update({ where: { id: work.id }, data: { primaryEditionId: edition.id } });
   }
   console.log(`demo seed complete: ${demoBooks.length} demo books`);
 }

@@ -15,21 +15,21 @@ import {
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent } from 'react';
-import type { BookView } from '../../lib/books';
+import type { WorkView } from '../../lib/books';
 import { Cover } from '../book/cover';
 import { cn } from '../ui/cn';
 import { Progress } from '../ui/progress';
 
 type MobileTab = 'shelf' | 'search' | 'reading' | 'me';
-type BooksPayload = { ok: boolean; data?: { books: BookView[]; total: number }; error?: { message: string } };
-type ContinueItem = { book: BookView; progress: number; lastReadAt: string; chapter: string | null } | null;
+type BooksPayload = { ok: boolean; data?: { books: WorkView[]; total: number }; error?: { message: string } };
+type ContinueItem = { book: WorkView; progress: number; lastReadAt: string; chapter: string | null } | null;
 type Summary = { totalBooks: number; latestSyncAt: string | null };
 type UserInfo = { email: string; name: string; role: string };
 type SystemStatus = {
   currentImportTask: { progress: number; status: string } | null;
   latestImportTask: { status: string; progress: number; finishedAt?: string | null } | null;
 };
-type OpenBookHandler = (book: BookView, sourceElement?: HTMLElement | null) => void;
+type OpenBookHandler = (book: WorkView, sourceElement?: HTMLElement | null) => void;
 
 const tabs: Array<{ key: MobileTab; label: string; icon: typeof Library }> = [
   { key: 'shelf', label: '书架', icon: Library },
@@ -49,19 +49,19 @@ function formatDate(value: string | null | undefined) {
   return new Date(value).toLocaleString();
 }
 
-function bookMeta(book: BookView) {
+function bookMeta(book: WorkView) {
   return `${book.author} · ${book.format}`;
 }
 
-function readingState(book: BookView) {
+function readingState(book: WorkView) {
   if (book.progress > 0) return `阅读中 ${book.progress}%`;
   if (book.statusValue === 'FINISHED') return '已读';
   return '未读';
 }
 
-function openingCoverUrl(book: BookView) {
+function openingCoverUrl(book: WorkView) {
   if (book.coverUrl) return book.coverUrl.replace(/size=(small|medium|large)/, 'size=large');
-  return `/api/books/${book.id}/cover?size=large`;
+  return `/api/works/${book.id}/cover?size=large`;
 }
 
 function readerOpeningSource(target: EventTarget | null) {
@@ -69,11 +69,11 @@ function readerOpeningSource(target: EventTarget | null) {
   return target.closest('[data-mobile-book-entry="true"]') as HTMLElement | null;
 }
 
-function storeReaderOpeningContext(book: BookView, sourceElement?: HTMLElement | null) {
+function storeReaderOpeningContext(book: WorkView, sourceElement?: HTMLElement | null) {
   const coverElement = sourceElement?.querySelector('[data-book-cover="true"]') ?? sourceElement;
   const rect = coverElement?.getBoundingClientRect();
   const payload = {
-    bookId: book.id,
+    editionId: book.editionId ?? book.id,
     title: book.title,
     author: book.author,
     format: book.format,
@@ -92,8 +92,8 @@ export function MobileReaderApp() {
   const router = useRouter();
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const [tab, setTab] = useState<MobileTab>('shelf');
-  const [books, setBooks] = useState<BookView[]>([]);
-  const [searchBooks, setSearchBooks] = useState<BookView[]>([]);
+  const [books, setBooks] = useState<WorkView[]>([]);
+  const [searchBooks, setSearchBooks] = useState<WorkView[]>([]);
   const [continueItem, setContinueItem] = useState<ContinueItem>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [user, setUser] = useState<UserInfo | null>(null);
@@ -120,7 +120,7 @@ export function MobileReaderApp() {
     setLoading(true);
     setError('');
     Promise.all([
-      fetch('/api/books?pageSize=40&visibility=active&sort=recent_read').then((response) => response.json() as Promise<BooksPayload>),
+      fetch('/api/works?pageSize=40&visibility=active&sort=recent_read').then((response) => response.json() as Promise<BooksPayload>),
       fetch('/api/dashboard/continue-reading').then((response) => response.json()).catch(() => null),
       fetch('/api/dashboard/summary').then((response) => response.json()).catch(() => null),
       fetch('/api/auth/me').then((response) => response.json()).catch(() => null),
@@ -156,7 +156,7 @@ export function MobileReaderApp() {
     }
     const timer = window.setTimeout(() => {
       setSearchLoading(true);
-      fetch(`/api/books?pageSize=40&visibility=active&sort=recent_read&search=${encodeURIComponent(search)}`)
+      fetch(`/api/works?pageSize=40&visibility=active&sort=recent_read&search=${encodeURIComponent(search)}`)
         .then((response) => response.json() as Promise<BooksPayload>)
         .then((payload) => {
           if (!payload.ok) throw new Error(payload.error?.message ?? '搜索失败');
@@ -176,7 +176,7 @@ export function MobileReaderApp() {
   const recentBooks = books.slice(0, 40);
   const displayedSearchBooks = searchText.trim() ? searchBooks : [];
 
-  function openReader(book: BookView, sourceElement?: HTMLElement | null) {
+  function openReader(book: WorkView, sourceElement?: HTMLElement | null) {
     storeReaderOpeningContext(book, sourceElement);
     router.push(`/reader/${book.editionId ?? book.id}?from=mobile`);
   }
@@ -191,7 +191,7 @@ export function MobileReaderApp() {
     try {
       const form = new FormData();
       form.append('file', file);
-      const response = await fetch('/api/books/import', { method: 'POST', body: form });
+      const response = await fetch('/api/works/import', { method: 'POST', body: form });
       const payload = (await response.json()) as { ok: boolean; data?: { title: string; duplicate?: boolean }; error?: { message: string } };
       if (!payload.ok) throw new Error(payload.error?.message ?? '上传失败');
       setMessage(payload.data?.duplicate ? `《${payload.data.title}》已存在` : `《${payload.data?.title ?? file.name}》已上传`);
@@ -346,7 +346,7 @@ function ShelfView({
   onUpload,
   onSettings
 }: {
-  books: BookView[];
+  books: WorkView[];
   continueItem: ContinueItem;
   loading: boolean;
   error: string;
@@ -422,7 +422,7 @@ function ContinueCard({ item, onOpenBook }: { item: NonNullable<ContinueItem>; o
   );
 }
 
-function BookGrid({ books, onOpenBook }: { books: BookView[]; onOpenBook: OpenBookHandler }) {
+function BookGrid({ books, onOpenBook }: { books: WorkView[]; onOpenBook: OpenBookHandler }) {
   return (
     <div className="grid grid-cols-2 gap-4">
       {books.map((book) => (
@@ -432,7 +432,7 @@ function BookGrid({ books, onOpenBook }: { books: BookView[]; onOpenBook: OpenBo
   );
 }
 
-function BookTile({ book, onOpen }: { book: BookView; onOpen: OpenBookHandler }) {
+function BookTile({ book, onOpen }: { book: WorkView; onOpen: OpenBookHandler }) {
   return (
     <button
       type="button"
@@ -464,7 +464,7 @@ function SearchView({
   onSearchTextChange,
   onOpenBook
 }: {
-  books: BookView[];
+  books: WorkView[];
   loading: boolean;
   searchText: string;
   onSearchTextChange: (value: string) => void;
@@ -488,7 +488,7 @@ function ReadingView({
   onOpenBook,
   onGoShelf
 }: {
-  books: BookView[];
+  books: WorkView[];
   loading: boolean;
   onOpenBook: OpenBookHandler;
   onGoShelf: () => void;

@@ -33,5 +33,5 @@ export async function POST(request: Request, { params }: { params: { id: string 
     data: { coverPath, coverStatus: 'READY' }
   });
 
-  return ok({ bookId: updated.id, coverUrl: `/api/books/${updated.id}/cover?size=medium&v=${Date.now()}` });
+  return ok({ bookId: updated.id, coverUrl: `/api/works/${updated.id}/cover?size=medium&v=${Date.now()}` });
 }

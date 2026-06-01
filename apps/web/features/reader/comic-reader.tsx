@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type TouchEvent } from 'react';
 import { cn } from '../../components/ui/cn';
-import type { BookView } from '../../lib/books';
+import type { WorkView } from '../../lib/books';
 import type { ReaderControls, ReaderProgress } from './reader-shell';
 
 export type ComicMode = 'single' | 'double' | 'continuous';
@@ -10,7 +10,7 @@ export type ComicDirection = 'ltr' | 'rtl';
 export type ComicImageFit = 'width' | 'height' | 'contain' | 'original';
 
 type ComicReaderProps = {
-  book: BookView;
+  book: WorkView;
   sectionId?: string | null;
   sectionTitle?: string | null;
   initialPages?: ComicPageMeta[];
@@ -56,7 +56,7 @@ function archivePageUrl(bookId: string, pageIndex: number, sectionId?: string | 
   return `/api/volumes/${volumeId}/pages/${pageIndex}${query ? `?${query}` : ''}`;
 }
 
-function isArchiveComicFile(file: BookView['files'][number] | undefined) {
+function isArchiveComicFile(file: WorkView['files'][number] | undefined) {
   if (!file) return false;
   const lowerPath = file.path.toLowerCase();
   return lowerPath.endsWith('.cbz') || lowerPath.endsWith('.zip') || file.mimeType === 'application/vnd.comicbook+zip' || file.mimeType === 'application/zip';

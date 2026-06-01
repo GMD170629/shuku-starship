@@ -9,13 +9,13 @@ import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { PageTitle } from '../../components/ui/page-title';
 import { Select } from '../../components/ui/select';
-import type { BookView } from '../../lib/books';
+import type { WorkView } from '../../lib/books';
 
 type Issue = { code: string; label: string };
 type Duplicate = { bookId: string; otherBookId: string; reasons: Array<{ code: string; label: string }> };
 type PendingResponse = {
   ok: boolean;
-  data?: { books: BookView[]; issues: Record<string, Issue[]>; duplicates: Duplicate[]; total: number };
+  data?: { books: WorkView[]; issues: Record<string, Issue[]>; duplicates: Duplicate[]; total: number };
   error?: { message: string };
 };
 
@@ -31,7 +31,7 @@ function parseTags(value: string) {
 
 export function OrganizePage() {
   const router = useRouter();
-  const [books, setBooks] = useState<BookView[]>([]);
+  const [books, setBooks] = useState<WorkView[]>([]);
   const [issues, setIssues] = useState<Record<string, Issue[]>>({});
   const [duplicates, setDuplicates] = useState<Duplicate[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -80,7 +80,7 @@ export function OrganizePage() {
     setError('');
     setMessage('');
     try {
-      const response = await fetch('/api/books/bulk', {
+      const response = await fetch('/api/works/bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: selectedIds, ...body })
@@ -98,13 +98,13 @@ export function OrganizePage() {
     }
   }
 
-  async function hideOne(book: BookView) {
+  async function hideOne(book: WorkView) {
     if (!window.confirm(`确认隐藏「${book.title}」吗？不会删除源文件。`)) return;
     setBusy(true);
     setError('');
     setMessage('');
     try {
-      const response = await fetch('/api/books/bulk', {
+      const response = await fetch('/api/works/bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: [book.id], ignored: true })
@@ -160,7 +160,7 @@ export function OrganizePage() {
       <div className="grid grid-cols-[repeat(auto-fill,minmax(170px,220px))] gap-4">
         {books.map((book) => (
           <div key={book.id} className="space-y-2">
-            <BookCard book={book} selectionEnabled selected={selectedIds.includes(book.id)} onSelectedChange={(checked) => setSelected(book.id, checked)} onClick={() => router.push(`/books/${book.id}`)} />
+            <BookCard book={book} selectionEnabled selected={selectedIds.includes(book.id)} onSelectedChange={(checked) => setSelected(book.id, checked)} onClick={() => router.push(`/works/${book.id}`)} />
             <div className="flex flex-wrap gap-1.5">
               {(issues[book.id] ?? []).map((issue) => (
                 <button key={issue.code} type="button" onClick={() => issue.code === 'DUPLICATE' ? setDuplicateOpenFor(book.id) : undefined}>

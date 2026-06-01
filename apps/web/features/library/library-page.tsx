@@ -9,11 +9,11 @@ import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
 import { PageTitle } from '../../components/ui/page-title';
 import { Select } from '../../components/ui/select';
-import type { BookView } from '../../lib/books';
+import type { WorkView } from '../../lib/books';
 
 type BooksResponse = {
   ok: boolean;
-  data?: { books: BookView[]; total: number; page: number; pageSize: number; totalPages: number };
+  data?: { books: WorkView[]; total: number; page: number; pageSize: number; totalPages: number };
   error?: { message: string };
 };
 
@@ -59,7 +59,7 @@ export function LibraryPage() {
   const [visibility, setVisibility] = useState<'active' | 'ignored' | 'all'>('active');
   const [sort, setSort] = useState('updated');
   const [search, setSearch] = useState('');
-  const [books, setBooks] = useState<BookView[]>([]);
+  const [books, setBooks] = useState<WorkView[]>([]);
   const [page, setPage] = useState(1);
   const [meta, setMeta] = useState({ total: 0, pageSize: 24, totalPages: 1 });
   const [error, setError] = useState('');
@@ -105,7 +105,7 @@ export function LibraryPage() {
   useEffect(() => {
     let active = true;
     setLoading(true);
-    fetch(`/api/books?${query}`)
+    fetch(`/api/works?${query}`)
       .then((response) => response.json() as Promise<BooksResponse>)
       .then((payload) => {
         if (!active) return;
@@ -161,7 +161,7 @@ export function LibraryPage() {
     setError('');
     setMessage('');
     try {
-      const response = await fetch('/api/books/bulk', {
+      const response = await fetch('/api/works/bulk', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: selected, ...body })
@@ -192,7 +192,7 @@ export function LibraryPage() {
     try {
       const form = new FormData();
       form.append('file', file);
-      const response = await fetch('/api/books/import', { method: 'POST', body: form });
+      const response = await fetch('/api/works/import', { method: 'POST', body: form });
       const payload = (await response.json()) as { ok: boolean; data?: { title: string; duplicate?: boolean }; error?: { message: string } };
       if (!payload.ok) throw new Error(payload.error?.message ?? '导入失败');
       setMessage(payload.data?.duplicate ? `《${payload.data.title}》已存在` : `《${payload.data?.title ?? file.name}》已导入`);
@@ -204,13 +204,13 @@ export function LibraryPage() {
     }
   }
 
-  async function deleteBook(book: BookView) {
+  async function deleteBook(book: WorkView) {
     if (!window.confirm(`确认删除《${book.title}》的数据库记录吗？源文件不会被删除。`)) return;
     setBusy(true);
     setError('');
     setMessage('');
     try {
-      const response = await fetch(`/api/books/${book.id}`, { method: 'DELETE' });
+      const response = await fetch(`/api/works/${book.id}`, { method: 'DELETE' });
       const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
       if (!payload.ok) throw new Error(payload.error?.message ?? '删除失败');
       setMessage('已删除数据库记录，源文件未删除');
@@ -381,7 +381,7 @@ export function LibraryPage() {
                   selected={selected.includes(book.id)}
                   onSelectedChange={(checked) => setBookSelected(book.id, checked)}
                   onDelete={() => void deleteBook(book)}
-                  onClick={() => router.push(`/books/${book.id}`)}
+                  onClick={() => router.push(`/works/${book.id}`)}
                 />
               ))}
             </div>

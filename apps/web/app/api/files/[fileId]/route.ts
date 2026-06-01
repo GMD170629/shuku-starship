@@ -6,11 +6,11 @@ import { readableFilePath } from '../../../../lib/storage-path';
 
 export async function GET(request: Request, { params }: { params: { fileId: string } }) {
   const user = await requireUser();
-  const file = await prisma.bookFile.findUnique({
+  const file = await prisma.libraryFile.findUnique({
     where: { id: params.fileId },
-    include: { book: true }
+    include: { edition: { include: { work: true } } }
   });
-  if (!file || file.book.hidden) return fail('文件不存在或无权访问', 404);
+  if (!file || file.edition.hidden || file.edition.work.hidden) return fail('文件不存在或无权访问', 404);
 
   const readable = await readableFilePath(file.path);
   if (!readable) return fail('文件不可读', 404);
@@ -19,7 +19,7 @@ export async function GET(request: Request, { params }: { params: { fileId: stri
     request,
     userId: user.id,
     route: '/api/files/[fileId]',
-    bookId: file.bookId,
+    bookId: file.edition.workId,
     fileId: file.id,
     path: readable.path,
     stat: readable.stat,
