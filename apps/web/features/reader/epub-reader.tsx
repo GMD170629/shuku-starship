@@ -16,6 +16,7 @@ type EpubReaderProps = {
   ebookPageTurnAnimation: EbookPageTurnAnimation;
   initialCfi: string;
   initialScrollTop: number;
+  initialPercentage: number;
   onControls: (controls: ReaderControls | null) => void;
   onProgress: (progress: ReaderProgress, extra?: Record<string, unknown>) => void;
   onActivity: () => void;
@@ -32,6 +33,7 @@ type EpubLocationStore = {
 
 type EpubView = {
   document?: Document;
+  iframe?: HTMLIFrameElement;
 };
 
 type EpubBookWithReadiness = Book & {
@@ -49,6 +51,12 @@ type ReaderDocument = Document & {
   __shukuReaderEventsBound?: boolean;
 };
 
+type NavigationIntent = 'initial' | 'next' | 'prev' | 'display' | 'progress' | 'index' | 'scroll';
+
+type RenditionWithReporting = Rendition & {
+  reportLocation?: () => unknown;
+};
+
 const themeTokens: Record<ReaderTheme, { color: string; background: string; link: string }> = {
   day: { color: '#1E293B', background: '#F7F7F4', link: '#2563EB' },
   warm: { color: '#2B2118', background: '#FDF6EA', link: '#B45309' },
@@ -61,6 +69,14 @@ const fontFamilies: Record<ReaderFontFamily, string> = {
   serif: 'Georgia, Cambria, "Times New Roman", serif',
   sans: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
 };
+
+const executableElementSelector = 'script, iframe, object, embed';
+const urlAttributeNames = ['href', 'src', 'xlink:href', 'formaction', 'action', 'data', 'poster', 'srcset'];
+const activeStylePattern = /(?:javascript\s*:|expression\s*\()/i;
+const fallbackExecutableElementPattern = /<\s*(script|iframe|object|embed)\b[^>]*(?:\/\s*>|>[\s\S]*?<\s*\/\s*\1\s*>)/gi;
+const fallbackEventAttributePattern = /\s+on[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'=<>`]+)/gi;
+const fallbackDangerousUrlAttributePattern = /\s+(href|src|xlink:href|formaction|action|data|poster|srcset)\s*=\s*(?:"\s*javascript:[^"]*"|'\s*javascript:[^']*'|\s*javascript:[^\s"'=<>`]+)/gi;
+const fallbackActiveStyleAttributePattern = /\s+style\s*=\s*(?:"[^"]*(?:javascript\s*:|expression\s*\()[^"]*"|'[^']*(?:javascript\s*:|expression\s*\()[^']*'|[^\s"'=<>`]*(?:javascript\s*:|expression\s*\()[^\s"'=<>`]*)/gi;
 
 function applyTheme(rendition: Rendition, theme: ReaderTheme, fontSize: number, lineHeight: number, fontFamily: ReaderFontFamily) {
   const tokens = themeTokens[theme];
@@ -90,6 +106,11 @@ function clampPercent(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
 
+function normalizedPercentage(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value > 1 ? value / 100 : value));
+}
+
 function readerViewportForContainer(container: HTMLElement) {
   return {
     width: container.clientWidth || window.innerWidth,
@@ -97,15 +118,14 @@ function readerViewportForContainer(container: HTMLElement) {
   };
 }
 
-function isCenterClick(event: MouseEvent, viewport: { width: number; height: number }) {
-  const { width, height } = viewport;
-  const x = readerPageX(event.clientX, width);
-  return x >= width * 0.33 && x <= width * 0.67 && event.clientY >= height * 0.2 && event.clientY <= height * 0.85;
-}
-
 function readerPageX(clientX: number, width: number) {
   if (width <= 0) return clientX;
   return ((clientX % width) + width) % width;
+}
+
+function isCenterPointer(clientX: number, clientY: number, viewport: { width: number; height: number }) {
+  const x = readerPageX(clientX, viewport.width);
+  return x >= viewport.width * 0.33 && x <= viewport.width * 0.67 && clientY >= viewport.height * 0.2 && clientY <= viewport.height * 0.85;
 }
 
 function isInteractiveElement(target: EventTarget | null) {
@@ -113,36 +133,78 @@ function isInteractiveElement(target: EventTarget | null) {
   return Boolean(target.closest('a, button, input, textarea, select, label, [contenteditable="true"]'));
 }
 
-const executableElementSelector = 'script, iframe, object, embed';
-const urlAttributeNames = ['href', 'src', 'xlink:href', 'formaction'];
-
 function sanitizeEpubDocument(document: Document) {
   document.querySelectorAll(executableElementSelector).forEach((element) => element.remove());
   document.querySelectorAll('*').forEach((element) => {
     Array.from(element.attributes).forEach((attribute) => {
       const name = attribute.name.toLowerCase();
       const value = attribute.value.trim().toLowerCase();
-      if (name.startsWith('on') || (urlAttributeNames.includes(name) && value.startsWith('javascript:'))) {
+      if (
+        name.startsWith('on')
+        || (urlAttributeNames.includes(name) && value.includes('javascript:'))
+        || (name === 'style' && activeStylePattern.test(attribute.value))
+      ) {
         element.removeAttribute(attribute.name);
       }
     });
   });
 }
 
-function scrollTopFromView(view: EpubView | null) {
+function sanitizeEpubMarkupFallback(markup: string) {
+  return markup
+    .replace(fallbackExecutableElementPattern, '')
+    .replace(fallbackEventAttributePattern, '')
+    .replace(fallbackDangerousUrlAttributePattern, '')
+    .replace(fallbackActiveStyleAttributePattern, '');
+}
+
+function sanitizeEpubMarkup(markup: string) {
+  if (typeof DOMParser === 'undefined' || typeof XMLSerializer === 'undefined') {
+    return sanitizeEpubMarkupFallback(markup);
+  }
+
+  try {
+    const document = new DOMParser().parseFromString(markup, 'application/xhtml+xml');
+    if (document.querySelector('parsererror')) return sanitizeEpubMarkupFallback(markup);
+    sanitizeEpubDocument(document);
+    return new XMLSerializer().serializeToString(document);
+  } catch {
+    return sanitizeEpubMarkupFallback(markup);
+  }
+}
+
+function allowScriptsForEpubView(view: EpubView) {
+  const iframe = view.iframe;
+  if (!iframe) return;
+  const current = iframe.getAttribute('sandbox') || '';
+  if (!current.includes('allow-scripts')) {
+    iframe.setAttribute('sandbox', `${current} allow-scripts`.trim());
+  }
+}
+
+function scrollElementFromView(view: EpubView | null) {
   const doc = view?.document;
-  if (!doc) return 0;
-  return doc.scrollingElement?.scrollTop ?? doc.documentElement.scrollTop ?? doc.body.scrollTop ?? 0;
+  return doc?.scrollingElement ?? doc?.documentElement ?? doc?.body ?? null;
+}
+
+function scrollTopFromView(view: EpubView | null) {
+  return scrollElementFromView(view)?.scrollTop ?? 0;
 }
 
 function scrollViewTo(view: EpubView | null, top: number) {
-  const target = view?.document?.scrollingElement ?? view?.document?.documentElement ?? view?.document?.body;
-  target?.scrollTo({ top });
+  scrollElementFromView(view)?.scrollTo({ top });
+}
+
+function canScrollPage(view: EpubView | null, direction: 1 | -1) {
+  const target = scrollElementFromView(view);
+  if (!target) return false;
+  if (direction > 0) return target.scrollTop + target.clientHeight < target.scrollHeight - 4;
+  return target.scrollTop > 4;
 }
 
 function scrollViewByPage(view: EpubView | null, direction: 1 | -1) {
-  const target = view?.document?.scrollingElement ?? view?.document?.documentElement ?? view?.document?.body;
-  if (!target) return false;
+  const target = scrollElementFromView(view);
+  if (!target || !canScrollPage(view, direction)) return false;
   target.scrollBy({ top: target.clientHeight * 0.86 * direction, behavior: 'smooth' });
   return true;
 }
@@ -165,7 +227,17 @@ function isRtlBook(book: EpubBookWithReadiness) {
 }
 
 function waitForAnimationFrame() {
-  return new Promise((resolve) => window.requestAnimationFrame(resolve));
+  return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+}
+
+function wait(ms: number) {
+  return new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+}
+
+async function waitForNavigationAction(action: () => Promise<unknown>, timeoutMs = 1800) {
+  const actionPromise = action();
+  actionPromise.catch(() => undefined);
+  await Promise.race([actionPromise, wait(timeoutMs)]);
 }
 
 function prefersReducedMotion() {
@@ -183,7 +255,7 @@ function resetPageTurnAnimation(element: HTMLElement | null) {
 async function runKindlePageTurn(element: HTMLElement, direction: 1 | -1, action: () => Promise<unknown>) {
   const distance = Math.min(28, Math.max(14, element.clientWidth * 0.026));
   element.style.willChange = 'transform, opacity';
-  await action();
+  await waitForNavigationAction(action);
   await waitForAnimationFrame();
   const animation = element.animate([
     { transform: `translate3d(${direction * distance}px, 0, 0)`, opacity: 0.72 },
@@ -193,8 +265,22 @@ async function runKindlePageTurn(element: HTMLElement, direction: 1 | -1, action
     easing: 'cubic-bezier(0.22, 1, 0.36, 1)',
     fill: 'both'
   });
-  await animation.finished.catch(() => undefined);
+  await Promise.race([animation.finished.catch(() => undefined), wait(260)]);
   resetPageTurnAnimation(element);
+}
+
+function isAbortError(reason: unknown) {
+  return reason instanceof DOMException && reason.name === 'AbortError';
+}
+
+function reportRenditionLocation(rendition: Rendition | null) {
+  const reporter = (rendition as RenditionWithReporting | null)?.reportLocation;
+  if (typeof reporter !== 'function') return;
+  try {
+    reporter.call(rendition);
+  } catch {
+    // epub.js can briefly have no current view while it is swapping sections.
+  }
 }
 
 export function EbookReader({
@@ -209,6 +295,7 @@ export function EbookReader({
   ebookPageTurnAnimation,
   initialCfi,
   initialScrollTop,
+  initialPercentage,
   onControls,
   onProgress,
   onActivity,
@@ -219,15 +306,23 @@ export function EbookReader({
   const bookRef = useRef<Book | null>(null);
   const renditionRef = useRef<Rendition | null>(null);
   const currentViewRef = useRef<EpubView | null>(null);
+  const currentCfiRef = useRef(initialCfi);
+  const navigationTailRef = useRef<Promise<unknown>>(Promise.resolve());
+  const navigationTokenRef = useRef(0);
+  const initialScrollTopRef = useRef(initialScrollTop);
+  const initialPercentageRef = useRef(initialPercentage);
   const onActivityRef = useRef(onActivity);
   const onProgressRef = useRef(onProgress);
   const onTapRef = useRef(onTap);
   const onReadyRef = useRef(onReady);
   const ebookPageTurnAnimationRef = useRef(ebookPageTurnAnimation);
-  const navigationBusyRef = useRef(false);
-  const lastNavigationAtRef = useRef(0);
+  const themeRef = useRef(theme);
+  const fontSizeRef = useRef(fontSize);
+  const lineHeightRef = useRef(lineHeight);
+  const fontFamilyRef = useRef(fontFamily);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [navigating, setNavigating] = useState(false);
   const [retryToken, setRetryToken] = useState(0);
 
   useEffect(() => {
@@ -236,20 +331,37 @@ export function EbookReader({
     onTapRef.current = onTap;
     onReadyRef.current = onReady;
     ebookPageTurnAnimationRef.current = ebookPageTurnAnimation;
-  }, [ebookPageTurnAnimation, onActivity, onProgress, onReady, onTap]);
+    themeRef.current = theme;
+    fontSizeRef.current = fontSize;
+    lineHeightRef.current = lineHeight;
+    fontFamilyRef.current = fontFamily;
+  }, [ebookPageTurnAnimation, fontFamily, fontSize, lineHeight, onActivity, onProgress, onReady, onTap, theme]);
+
+  useEffect(() => {
+    if (initialCfi) currentCfiRef.current = initialCfi;
+    initialScrollTopRef.current = initialScrollTop;
+    initialPercentageRef.current = initialPercentage;
+  }, [initialCfi, initialPercentage, initialScrollTop]);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return undefined;
+
     let canceled = false;
     let initializingReader = true;
     let destroyRequested = false;
     let readerDestroyed = false;
     let localRendition: Rendition | null = null;
+    let lastRenderedAt = 0;
+    let lastRelocatedAt = 0;
     const abortController = new AbortController();
+
     setLoading(true);
+    setNavigating(false);
     setError('');
     container.replaceChildren();
+    navigationTailRef.current = Promise.resolve();
+    navigationTokenRef.current += 1;
 
     const book = ePub();
     bookRef.current = book;
@@ -274,6 +386,161 @@ export function EbookReader({
       window.setTimeout(() => book.destroy(), 10000);
     };
 
+    const finishVisibleCommit = async (startedAt: number) => {
+      await waitForAnimationFrame();
+      await waitForAnimationFrame();
+      if (lastRenderedAt <= startedAt && lastRelocatedAt <= startedAt) {
+        await wait(80);
+      }
+    };
+
+    const runNavigation = (intent: NavigationIntent, action: () => Promise<unknown>, options: { direction?: 1 | -1; cover?: boolean } = {}) => {
+      const token = navigationTokenRef.current + 1;
+      navigationTokenRef.current = token;
+      const cover = options.cover ?? intent !== 'scroll';
+      const task = navigationTailRef.current.catch(() => undefined).then(async () => {
+        if (canceled || readerDestroyed) return;
+        const startedAt = performance.now();
+        if (cover) setNavigating(true);
+        const direction = options.direction;
+        const shouldAnimate = direction !== undefined
+          && ebookFlow === 'paginated'
+          && ebookPageTurnAnimationRef.current === 'kindle'
+          && !prefersReducedMotion();
+        try {
+          if (shouldAnimate) await runKindlePageTurn(container, direction, action);
+          else await waitForNavigationAction(action);
+          reportRenditionLocation(localRendition);
+          if (cover) await finishVisibleCommit(startedAt);
+        } finally {
+          resetPageTurnAnimation(container);
+          if (cover && navigationTokenRef.current === token && !canceled) {
+            setNavigating(false);
+          }
+        }
+      });
+      navigationTailRef.current = task;
+      return task.then(() => undefined);
+    };
+
+    const updateScrolledProgress = (view: EpubView, locations: EpubLocationStore) => {
+      if (ebookFlow !== 'scrolled') return;
+      const scrollElement = scrollElementFromView(view);
+      const cfi = currentCfiRef.current;
+      const max = Math.max(1, (scrollElement?.scrollHeight ?? 1) - (scrollElement?.clientHeight ?? 0));
+      const chapterPercent = clampPercent((scrollTopFromView(view) / max) * 100);
+      const locationTotal = locations.length();
+      const pageIndex = cfi && locationTotal > 0 ? Math.max(1, locations.locationFromCfi(cfi) + 1) : 1;
+      onProgressRef.current({
+        page: pageIndex,
+        total: locationTotal || null,
+        percent: chapterPercent,
+        position: cfi,
+        label: `${chapterPercent}%`
+      }, { scrollTop: scrollTopFromView(view), cfi, percentage: chapterPercent, chapterPercent, pageIndex, totalPages: locationTotal || null });
+    };
+
+    const setupDocumentEvents = (document: ReaderDocument, locations: EpubLocationStore, runNext: () => Promise<void>, runPrev: () => Promise<void>) => {
+      if (document.__shukuReaderEventsBound) return;
+      document.__shukuReaderEventsBound = true;
+      let touchStartX = 0;
+      let touchStartY = 0;
+      let touchStartTime = 0;
+      let suppressClickUntil = 0;
+
+      document.addEventListener('keydown', (event) => {
+        if (isInteractiveElement(event.target)) return;
+        if (event.key === 'ArrowLeft' || event.key === 'PageUp' || (event.key === ' ' && event.shiftKey)) {
+          event.preventDefault();
+          onActivityRef.current();
+          void runPrev();
+          return;
+        }
+        if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' ') {
+          event.preventDefault();
+          onActivityRef.current();
+          void runNext();
+          return;
+        }
+        if (event.key === 'Home' || event.key === 'End') {
+          event.preventDefault();
+          onActivityRef.current();
+          const targetPercent = event.key === 'Home' ? 0 : 1;
+          void runNavigation('progress', async () => {
+            const cfi = locations.cfiFromPercentage(targetPercent);
+            if (cfi) await renditionRef.current?.display(cfi);
+          });
+          return;
+        }
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          onActivityRef.current();
+        }
+      });
+
+      document.addEventListener('click', (event) => {
+        if (Date.now() < suppressClickUntil) return;
+        const target = event.target;
+        const link = target instanceof Element ? target.closest('a') : null;
+        if (link) {
+          event.preventDefault();
+          return;
+        }
+        if (isInteractiveElement(target)) return;
+        const viewport = readerViewportForContainer(container);
+        const x = readerPageX(event.clientX, viewport.width);
+        if (isCenterPointer(event.clientX, event.clientY, viewport)) {
+          onTapRef.current();
+          return;
+        }
+        onActivityRef.current();
+        if (x < viewport.width * 0.33) void runPrev();
+        else if (x > viewport.width * 0.67) void runNext();
+      });
+
+      document.addEventListener('touchstart', (event) => {
+        const touch = event.changedTouches[0];
+        if (!touch) return;
+        touchStartX = touch.clientX;
+        touchStartY = touch.clientY;
+        touchStartTime = Date.now();
+      }, { passive: true });
+
+      document.addEventListener('touchend', (event) => {
+        if (isInteractiveElement(event.target)) return;
+        const touch = event.changedTouches[0];
+        if (!touch) return;
+        const deltaX = touch.clientX - touchStartX;
+        const deltaY = touch.clientY - touchStartY;
+        const elapsed = Date.now() - touchStartTime;
+        if (Math.abs(deltaX) >= 48 && Math.abs(deltaX) > Math.abs(deltaY) * 1.4 && elapsed < 900) {
+          suppressClickUntil = Date.now() + 450;
+          onActivityRef.current();
+          void (deltaX < 0 ? runNext() : runPrev());
+          return;
+        }
+        if (Math.abs(deltaX) < 12 && Math.abs(deltaY) < 12) {
+          suppressClickUntil = Date.now() + 450;
+          const viewport = readerViewportForContainer(container);
+          const x = readerPageX(touch.clientX, viewport.width);
+          if (isCenterPointer(touch.clientX, touch.clientY, viewport)) {
+            onTapRef.current();
+            return;
+          }
+          onActivityRef.current();
+          if (x < viewport.width * 0.33) void runPrev();
+          else if (x > viewport.width * 0.67) void runNext();
+        }
+      }, { passive: true });
+
+      document.addEventListener('scroll', () => {
+        if (ebookFlow !== 'scrolled') return;
+        onActivityRef.current();
+        const view = currentViewRef.current;
+        if (view) updateScrolledProgress(view, locations);
+      }, { passive: true });
+    };
+
     fetch(`/api/books/${bookId}/file`, { signal: abortController.signal })
       .then((response) => {
         if (!response.ok) throw new Error('EPUB 文件加载失败');
@@ -287,7 +554,11 @@ export function EbookReader({
       .then(async () => {
         if (canceled || destroyRequested) return;
         book.spine.hooks.content.register(sanitizeEpubDocument);
+        book.spine.hooks.serialize.register((output: string, section: { output?: string }) => {
+          section.output = sanitizeEpubMarkup(section.output ?? output);
+        });
         const rendition = book.renderTo(container, {
+          manager: 'default',
           width: '100%',
           height: '100%',
           flow: ebookFlow === 'scrolled' ? 'scrolled-doc' : 'paginated',
@@ -296,197 +567,37 @@ export function EbookReader({
         });
         localRendition = rendition;
         renditionRef.current = rendition;
-        applyTheme(rendition, theme, fontSize, lineHeight, fontFamily);
+        applyTheme(rendition, themeRef.current, fontSizeRef.current, lineHeightRef.current, fontFamilyRef.current);
+
         const rawNext = () => (isRtlBook(book as EpubBookWithReadiness) ? rendition.prev() : rendition.next());
         const rawPrev = () => (isRtlBook(book as EpubBookWithReadiness) ? rendition.next() : rendition.prev());
-        const navigateOnce = (direction: 1 | -1, action: () => Promise<unknown>) => {
-          if (navigationBusyRef.current || Date.now() - lastNavigationAtRef.current < 220) {
-            return Promise.resolve();
-          }
-          navigationBusyRef.current = true;
-          const shouldAnimate = ebookFlow === 'paginated' && ebookPageTurnAnimationRef.current === 'kindle' && !prefersReducedMotion();
-          const navigation = shouldAnimate
-            ? runKindlePageTurn(container, direction, action)
-            : action();
-          return navigation.finally(() => {
-            resetPageTurnAnimation(container);
-            navigationBusyRef.current = false;
-            lastNavigationAtRef.current = Date.now();
-          });
-        };
-        const goNext = () => navigateOnce(1, rawNext);
-        const goPrev = () => navigateOnce(-1, rawPrev);
-
         const locations = book.locations as unknown as EpubLocationStore;
         const locationsReady = locations.generate(1200).catch(() => undefined);
 
+        const runNext = async () => {
+          if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, 1)) return;
+          await runNavigation('next', rawNext, { direction: 1 });
+        };
+        const runPrev = async () => {
+          if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, -1)) return;
+          await runNavigation('prev', rawPrev, { direction: -1 });
+        };
+
         rendition.on('rendered', (_section: unknown, view: EpubView) => {
+          lastRenderedAt = performance.now();
           currentViewRef.current = view;
+          allowScriptsForEpubView(view);
           const document = view.document as ReaderDocument | undefined;
-          if (document) sanitizeEpubDocument(document);
-          if (document && !document.__shukuReaderEventsBound) {
-            document.__shukuReaderEventsBound = true;
-            let touchStartX = 0;
-            let touchStartY = 0;
-            let touchStartTime = 0;
-            let suppressClickUntil = 0;
-
-            document.addEventListener('keydown', (event) => {
-              if (isInteractiveElement(event.target)) return;
-              if (event.key === 'ArrowLeft' || event.key === 'PageUp' || (event.key === ' ' && event.shiftKey)) {
-                event.preventDefault();
-                onActivityRef.current();
-                if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, -1)) return;
-                void goPrev();
-                return;
-              }
-              if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' ') {
-                event.preventDefault();
-                onActivityRef.current();
-                if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, 1)) return;
-                void goNext();
-                return;
-              }
-              if (event.key === 'Home' || event.key === 'End') {
-                event.preventDefault();
-                onActivityRef.current();
-                if (ebookFlow === 'scrolled') {
-                  const target = currentViewRef.current?.document?.scrollingElement ?? currentViewRef.current?.document?.documentElement;
-                  if (target) {
-                    const top = event.key === 'Home' ? 0 : Math.max(0, target.scrollHeight - target.clientHeight);
-                    target.scrollTo({ top, behavior: 'smooth' });
-                    return;
-                  }
-                }
-                void locationsReady.then(() => {
-                  const cfi = locations.cfiFromPercentage(event.key === 'Home' ? 0 : 1);
-                  if (cfi) void rendition.display(cfi);
-                });
-                return;
-              }
-              if (event.key === 'Escape') {
-                event.preventDefault();
-                onActivityRef.current();
-              }
-            });
-
-            document.addEventListener('click', (event) => {
-              if (Date.now() < suppressClickUntil) return;
-              if (isInteractiveElement(event.target)) return;
-              const viewport = readerViewportForContainer(container);
-              const { width } = viewport;
-              const x = readerPageX(event.clientX, width);
-              if (isCenterClick(event, viewport)) {
-                onTapRef.current();
-                return;
-              }
-              onActivityRef.current();
-              if (x < width * 0.33) {
-                if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, -1)) return;
-                void goPrev();
-              } else if (x > width * 0.67) {
-                if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, 1)) return;
-                void goNext();
-              }
-            });
-
-            document.addEventListener('touchstart', (event) => {
-              const touch = event.changedTouches[0];
-              if (!touch) return;
-              touchStartX = touch.clientX;
-              touchStartY = touch.clientY;
-              touchStartTime = Date.now();
-            }, { passive: true });
-
-            document.addEventListener('touchend', (event) => {
-              if (isInteractiveElement(event.target)) return;
-              const touch = event.changedTouches[0];
-              if (!touch) return;
-              const deltaX = touch.clientX - touchStartX;
-              const deltaY = touch.clientY - touchStartY;
-              const elapsed = Date.now() - touchStartTime;
-              if (Math.abs(deltaX) >= 48 && Math.abs(deltaX) > Math.abs(deltaY) * 1.4 && elapsed < 900) {
-                suppressClickUntil = Date.now() + 450;
-                onActivityRef.current();
-                if (deltaX < 0) {
-                  if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, 1)) return;
-                  void goNext();
-                } else {
-                  if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, -1)) return;
-                  void goPrev();
-                }
-                return;
-              }
-              if (Math.abs(deltaX) < 12 && Math.abs(deltaY) < 12) {
-                const { width } = readerViewportForContainer(container);
-                const x = readerPageX(touch.clientX, width);
-                suppressClickUntil = Date.now() + 450;
-                if (x >= width * 0.33 && x <= width * 0.67) {
-                  onTapRef.current();
-                  return;
-                }
-                onActivityRef.current();
-                if (x < width * 0.33) {
-                  if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, -1)) return;
-                  void goPrev();
-                } else {
-                  if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, 1)) return;
-                  void goNext();
-                }
-              }
-            }, { passive: true });
-          }
-          view.document?.addEventListener('scroll', () => {
-            if (ebookFlow !== 'scrolled') return;
-            onActivityRef.current();
-            const top = scrollTopFromView(view);
-            const scrollElement = view.document?.scrollingElement ?? view.document?.documentElement;
-            const max = Math.max(1, (scrollElement?.scrollHeight ?? 1) - (scrollElement?.clientHeight ?? 0));
-            onProgressRef.current({
-              page: 1,
-              total: null,
-              percent: clampPercent((top / max) * 100),
-              position: initialCfi || '',
-              label: `${clampPercent((top / max) * 100)}%`
-            }, { scrollTop: top, cfi: initialCfi || '', percentage: clampPercent((top / max) * 100), chapterIndex: 1 });
-          }, { passive: true });
-        });
-
-        onControls({
-          next: async () => {
-            onActivityRef.current();
-            if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, 1)) return;
-            await goNext();
-          },
-          prev: async () => {
-            onActivityRef.current();
-            if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, -1)) return;
-            await goPrev();
-          },
-          jumpToProgress: async (value) => {
-            onActivityRef.current();
-            if (ebookFlow === 'scrolled') {
-              const view = currentViewRef.current;
-              const target = view?.document?.scrollingElement ?? view?.document?.documentElement;
-              if (target) {
-                const max = Math.max(0, target.scrollHeight - target.clientHeight);
-                target.scrollTo({ top: Math.round(max * (clampPercent(value) / 100)), behavior: 'smooth' });
-                return;
-              }
-            }
-            await locationsReady;
-            const cfi = locations.cfiFromPercentage(Math.max(0, Math.min(1, value / 100)));
-            if (cfi) await rendition.display(cfi);
-          },
-          jumpToIndex: async (index) => {
-            onActivityRef.current();
-            await rendition.display(Math.max(0, index - 1));
-          }
+          if (!document) return;
+          sanitizeEpubDocument(document);
+          setupDocumentEvents(document, locations, runNext, runPrev);
         });
 
         rendition.on('relocated', async (location: Location) => {
+          lastRelocatedAt = performance.now();
           await locationsReady;
           const cfi = location.start?.cfi ?? '';
+          if (cfi) currentCfiRef.current = cfi;
           const locationTotal = locations.length();
           const globalPage = cfi && locationTotal > 0 ? Math.max(1, locations.locationFromCfi(cfi) + 1) : Math.max(1, (location.start?.index ?? 0) + 1);
           const percent = locationTotal > 1
@@ -503,19 +614,63 @@ export function EbookReader({
           }, { percentage: percent, pageIndex: globalPage, totalPages: locationTotal || (displayed?.total ?? null), chapterIndex: location.start?.index ?? 0, scrollTop, cfi });
         });
 
-        await rendition.display(initialCfi || undefined);
-        if (ebookFlow === 'scrolled' && initialScrollTop > 0) {
-          window.setTimeout(() => scrollViewTo(currentViewRef.current, initialScrollTop), 150);
+        onControls({
+          next: async () => {
+            onActivityRef.current();
+            await runNext();
+          },
+          prev: async () => {
+            onActivityRef.current();
+            await runPrev();
+          },
+          jumpToProgress: async (value) => {
+            onActivityRef.current();
+            await locationsReady;
+            const cfi = locations.cfiFromPercentage(Math.max(0, Math.min(1, value / 100)));
+            if (cfi) {
+              await runNavigation('progress', async () => {
+                await rendition.display(cfi);
+              });
+            }
+          },
+          jumpToIndex: async (index) => {
+            onActivityRef.current();
+            await runNavigation('index', async () => {
+              await rendition.display(Math.max(0, index - 1));
+            });
+          }
+        });
+
+        await runNavigation('initial', async () => {
+          if (initialCfi) {
+            try {
+              await rendition.display(initialCfi);
+              return;
+            } catch {
+              currentCfiRef.current = '';
+            }
+          }
+          await locationsReady;
+          const fallbackPercentage = initialPercentageRef.current;
+          const fallbackCfi = fallbackPercentage > 0 ? locations.cfiFromPercentage(normalizedPercentage(fallbackPercentage)) : '';
+          await rendition.display(fallbackCfi || undefined);
+        });
+
+        if (ebookFlow === 'scrolled' && initialScrollTopRef.current > 0) {
+          window.setTimeout(() => {
+            if (!canceled) scrollViewTo(currentViewRef.current, initialScrollTopRef.current);
+          }, 150);
         }
       })
       .then(() => {
         if (!canceled) {
           setLoading(false);
+          setNavigating(false);
           onReadyRef.current?.();
         }
       })
       .catch((reason: unknown) => {
-        if (!canceled) setError(reason instanceof Error ? reason.message : 'EPUB 加载失败');
+        if (!canceled && !isAbortError(reason)) setError(reason instanceof Error ? reason.message : 'EPUB 加载失败');
       })
       .finally(() => {
         initializingReader = false;
@@ -537,12 +692,14 @@ export function EbookReader({
         window.removeEventListener('error', suppressStaleCleanupWindowError, { capture: true });
       }, 30000);
     };
-  }, [bookId, ebookFlow, retryToken]);
+  }, [bookId, ebookFlow, onControls, retryToken]);
 
   useEffect(() => {
     const rendition = renditionRef.current;
     if (!rendition) return;
     applyTheme(rendition, theme, fontSize, lineHeight, fontFamily);
+    const container = containerRef.current;
+    rendition.resize(container?.clientWidth ?? window.innerWidth, container?.clientHeight ?? window.innerHeight);
   }, [fontFamily, fontSize, lineHeight, theme]);
 
   const tokens = themeTokens[theme];
@@ -554,9 +711,14 @@ export function EbookReader({
         style={{ maxWidth: `${pageWidth}px`, background: tokens.background }}
       >
         <div ref={containerRef} className="h-full w-full" aria-label={`${title} EPUB 阅读器`} />
-        {loading ? <div className="pointer-events-none absolute inset-0" style={{ background: tokens.background }} /> : null}
+        {loading || navigating ? (
+          <div
+            className="pointer-events-none absolute inset-0 z-10 transition-opacity duration-100"
+            style={{ background: tokens.background, opacity: loading ? 1 : 0.96 }}
+          />
+        ) : null}
         {error ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-red-950/90 p-6 text-center text-sm text-red-100">
+          <div className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-3 bg-red-950/90 p-6 text-center text-sm text-red-100">
             <div>{error}</div>
             <button
               type="button"

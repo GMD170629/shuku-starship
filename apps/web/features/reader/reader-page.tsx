@@ -492,6 +492,7 @@ export function ReaderPage({ bookId }: { bookId: string }) {
             ebookPageTurnAnimation={settings.ebookPageTurnAnimation}
             initialCfi={progress.position}
             initialScrollTop={typeof progressExtra.scrollTop === 'number' ? progressExtra.scrollTop : 0}
+            initialPercentage={progress.percent}
             onControls={setControls}
             onProgress={handleProgress}
             onActivity={() => undefined}
