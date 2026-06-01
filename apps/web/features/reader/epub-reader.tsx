@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import ePub, { type Book, type Location, type Rendition } from 'epubjs';
-import type { EbookFlow, EbookPageTurnAnimation, ReaderControls, ReaderFontFamily, ReaderProgress, ReaderTheme } from './reader-shell';
+import { readerThemeSurfaces, type EbookFlow, type EbookPageTurnAnimation, type ReaderControls, type ReaderFontFamily, type ReaderProgress, type ReaderTheme } from './reader-shell';
 
 type EpubReaderProps = {
   bookId: string;
@@ -58,10 +58,10 @@ type RenditionWithReporting = Rendition & {
 };
 
 const themeTokens: Record<ReaderTheme, { color: string; background: string; link: string }> = {
-  day: { color: '#1E293B', background: '#F7F7F4', link: '#2563EB' },
-  warm: { color: '#2B2118', background: '#FDF6EA', link: '#B45309' },
-  night: { color: '#E2E8F0', background: '#0F172A', link: '#93C5FD' },
-  black: { color: '#F8FAFC', background: '#000000', link: '#93C5FD' }
+  day: { color: '#1E293B', background: readerThemeSurfaces.day.background, link: '#2563EB' },
+  warm: { color: '#2B2118', background: readerThemeSurfaces.warm.background, link: '#B45309' },
+  night: { color: '#E2E8F0', background: readerThemeSurfaces.night.background, link: '#93C5FD' },
+  black: { color: '#F8FAFC', background: readerThemeSurfaces.black.background, link: '#93C5FD' }
 };
 
 const fontFamilies: Record<ReaderFontFamily, string> = {

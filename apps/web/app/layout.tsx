@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   manifest: '/manifest.webmanifest',
   appleWebApp: {
     capable: true,
-    statusBarStyle: 'black-translucent',
+    statusBarStyle: 'default',
     title: '书库星舰'
   },
   icons: {
@@ -22,8 +22,8 @@ export const metadata: Metadata = {
 
 export const viewport: Viewport = {
   themeColor: [
-    { media: '(prefers-color-scheme: light)', color: '#0F172A' },
-    { media: '(prefers-color-scheme: dark)', color: '#0F172A' }
+    { media: '(prefers-color-scheme: light)', color: '#F6F7F9' },
+    { media: '(prefers-color-scheme: dark)', color: '#F6F7F9' }
   ],
   colorScheme: 'light dark'
 };

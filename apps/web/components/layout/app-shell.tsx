@@ -50,6 +50,10 @@ function isActive(pathname: string, href: string) {
   return pathname.startsWith(cleanHref);
 }
 
+function isStandaloneDisplay() {
+  return window.matchMedia('(display-mode: standalone)').matches || ('standalone' in navigator && Boolean((navigator as Navigator & { standalone?: boolean }).standalone));
+}
+
 export function AppShell({ children }: { children: ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
@@ -66,10 +70,12 @@ export function AppShell({ children }: { children: ReactNode }) {
   const isOffline = pathname === '/offline';
 
   useEffect(() => {
-    if (pathname !== '/' || new URLSearchParams(window.location.search).get('source') !== 'pwa') return;
-    const standalone = window.matchMedia('(display-mode: standalone)').matches || ('standalone' in navigator && Boolean((navigator as Navigator & { standalone?: boolean }).standalone));
+    if (pathname !== '/') return;
+    const searchParams = new URLSearchParams(window.location.search);
+    const pwaLaunch = searchParams.get('source') === 'pwa';
+    const standalone = isStandaloneDisplay();
     const mobileViewport = window.matchMedia('(max-width: 767px)').matches;
-    if (standalone || mobileViewport) router.replace('/mobile?source=pwa');
+    if (standalone || (pwaLaunch && mobileViewport)) router.replace('/mobile?source=pwa');
   }, [pathname, router]);
 
   useEffect(() => {

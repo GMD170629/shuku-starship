@@ -1,9 +1,9 @@
-const VERSION = 'shuku-pwa-v0.4.0';
+const VERSION = 'shuku-pwa-v0.4.1';
 const SHELL_CACHE = `${VERSION}-app-shell`;
 const STATIC_CACHE = `${VERSION}-static`;
 const PRIVATE_COVER_CACHE = `${VERSION}-private-cover`;
 const PRIVATE_API_CACHE = `${VERSION}-private-api`;
-const SHELL_URLS = ['/offline', '/mobile', '/manifest.webmanifest', '/icons/icon-192.svg', '/icons/icon-512.svg', '/icons/maskable-512.svg'];
+const SHELL_URLS = ['/offline', '/mobile', '/mobile?source=pwa', '/manifest.webmanifest', '/icons/icon-192.svg', '/icons/icon-512.svg', '/icons/maskable-512.svg'];
 const PRIVATE_CACHES = [PRIVATE_COVER_CACHE, PRIVATE_API_CACHE];
 
 function isSameOrigin(url) {
@@ -69,7 +69,8 @@ async function networkFirstPage(request) {
   try {
     return await fetch(request);
   } catch {
-    return (await cache.match(request)) || (await cache.match('/offline')) || Response.error();
+    const url = new URL(request.url);
+    return (await cache.match(request)) || (await cache.match(url.pathname)) || (await cache.match('/offline')) || Response.error();
   }
 }
 

@@ -83,11 +83,11 @@ type ComicPagesPayload = {
   };
 };
 
-const themeClasses: Record<ReaderTheme, string> = {
-  day: 'bg-[#F7F7F4] text-slate-950',
-  warm: 'bg-[#F5F1E8] text-slate-950',
-  night: 'bg-[#0F172A] text-slate-100',
-  black: 'bg-black text-slate-100'
+export const readerThemeSurfaces: Record<ReaderTheme, { background: string; textClass: string; statusBarStyle: 'default' | 'black-translucent' }> = {
+  day: { background: '#F7F7F4', textClass: 'text-slate-950', statusBarStyle: 'default' },
+  warm: { background: '#FDF6EA', textClass: 'text-slate-950', statusBarStyle: 'default' },
+  night: { background: '#0F172A', textClass: 'text-slate-100', statusBarStyle: 'black-translucent' },
+  black: { background: '#000000', textClass: 'text-slate-100', statusBarStyle: 'black-translucent' }
 };
 
 function clampPercent(value: number) {
@@ -130,6 +130,34 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
   const [navItems, setNavItems] = useState<ReaderNavigationItem[]>(navigationItems ?? []);
   const [navLoading, setNavLoading] = useState(false);
   const dark = isDarkTheme(settings.theme);
+  const themeSurface = readerThemeSurfaces[settings.theme];
+
+  useEffect(() => {
+    const previousHtmlBackground = document.documentElement.style.backgroundColor;
+    const previousBodyBackground = document.body.style.backgroundColor;
+    const previousColorScheme = document.documentElement.style.colorScheme;
+    const themeColorMetas = Array.from(document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]'));
+    const statusBarMeta = document.querySelector<HTMLMetaElement>('meta[name="apple-mobile-web-app-status-bar-style"]');
+    const previousThemeColors = themeColorMetas.map((meta) => meta.content);
+    const previousStatusBarStyle = statusBarMeta?.content;
+
+    document.documentElement.style.backgroundColor = themeSurface.background;
+    document.body.style.backgroundColor = themeSurface.background;
+    document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
+    themeColorMetas.forEach((meta) => meta.setAttribute('content', themeSurface.background));
+    statusBarMeta?.setAttribute('content', themeSurface.statusBarStyle);
+
+    return () => {
+      document.documentElement.style.backgroundColor = previousHtmlBackground;
+      document.body.style.backgroundColor = previousBodyBackground;
+      document.documentElement.style.colorScheme = previousColorScheme;
+      themeColorMetas.forEach((meta, index) => {
+        const previousThemeColor = previousThemeColors[index];
+        if (previousThemeColor) meta.setAttribute('content', previousThemeColor);
+      });
+      if (previousStatusBarStyle && statusBarMeta) statusBarMeta.setAttribute('content', previousStatusBarStyle);
+    };
+  }, [dark, themeSurface.background, themeSurface.statusBarStyle]);
 
   function setControlsVisibility(visible: boolean) {
     controlsVisibleRef.current = visible;
@@ -290,8 +318,9 @@ export function ReaderShell({ bookId, title, readerType, progress, controls, set
 
   return (
     <div
-      className={cn('fixed inset-0 z-50 h-[100dvh] overflow-hidden transition-colors', themeClasses[settings.theme])}
+      className={cn('fixed inset-0 z-50 h-[100dvh] overflow-hidden transition-colors', themeSurface.textClass)}
       style={{
+        backgroundColor: themeSurface.background,
         paddingTop: 'env(safe-area-inset-top)',
         paddingBottom: 'env(safe-area-inset-bottom)',
         paddingLeft: 'env(safe-area-inset-left)',

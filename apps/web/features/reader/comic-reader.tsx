@@ -469,7 +469,7 @@ export function ComicReader({
         aria-hidden={hidden ? 'true' : undefined}
         className={hidden ? '' : cn(imageClass, 'shadow-2xl')}
         loading={hidden ? 'eager' : 'lazy'}
-        style={hidden ? undefined : { transform: `scale(${zoom})`, transformOrigin: 'top center' }}
+        style={hidden ? undefined : { transform: `scale(${zoom})`, transformOrigin: mode === 'continuous' ? 'top center' : 'center center' }}
         onLoad={() => markImageLoaded(pageNumber)}
         onError={() => markImageFailed(pageNumber)}
       />
@@ -504,7 +504,8 @@ export function ComicReader({
     >
       {mode !== 'continuous' ? (
         <div
-          className={cn('mx-auto flex min-h-full w-full items-start justify-center gap-2 md:gap-4', pagedFrameClass)}
+          className={cn('mx-auto flex min-h-full w-full justify-center gap-2 md:gap-4', pagedFrameClass)}
+          style={{ alignItems: 'safe center' }}
           onClick={handlePagedClick}
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
