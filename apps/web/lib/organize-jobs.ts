@@ -93,6 +93,43 @@ export async function listOrganizeJobs(userId: string, pageSize: number) {
   }));
 }
 
+export async function getOrganizeJob(userId: string, jobId: string) {
+  await ensureRecentOrganizeJobs();
+  const job = await prisma.organizeJob.findFirst({
+    where: { id: jobId, work: { hidden: false } },
+    include: {
+      suggestions: { orderBy: [{ status: 'asc' }, { confidence: 'desc' }, { createdAt: 'asc' }] },
+      duplicates: { orderBy: [{ status: 'asc' }, { confidence: 'desc' }, { createdAt: 'asc' }] },
+      work: {
+        include: {
+          editions: {
+            where: { hidden: false },
+            orderBy: [{ primary: 'desc' }, { createdAt: 'asc' }],
+            include: {
+              files: { orderBy: { sortOrder: 'asc' } },
+              volumes: { orderBy: { sortOrder: 'asc' } },
+              progresses: { where: { userId }, take: 1 }
+            }
+          },
+          progresses: { where: { userId }, take: 1 }
+        }
+      }
+    }
+  });
+  if (!job) return null;
+  return {
+    id: job.id,
+    status: job.status,
+    issueCodes: safeJson(job.issueCodes) ?? [],
+    summary: job.summary,
+    errorSummary: job.errorSummary,
+    updatedAt: job.updatedAt.toISOString(),
+    book: toWorkView(job.work),
+    suggestions: job.suggestions.map(serializeSuggestion),
+    duplicates: job.duplicates.map(serializeDuplicate)
+  };
+}
+
 export async function pendingCompatibility(userId: string, pageSize: number) {
   const jobs = await listOrganizeJobs(userId, pageSize);
   const books = jobs.map((job) => job.book);
