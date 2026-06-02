@@ -17,6 +17,8 @@ type BooksResponse = {
   error?: { message: string };
 };
 
+type ImportResponse = { ok: boolean; data?: { title: string; duplicate?: boolean }; error?: { message: string } };
+
 const visibilityOptions = [
   { value: 'active', label: '在库中' },
   { value: 'ignored', label: '已忽略' },
@@ -193,12 +195,13 @@ export function LibraryPage() {
       const form = new FormData();
       form.append('file', file);
       const response = await fetch('/api/works/import', { method: 'POST', body: form });
-      const payload = (await response.json()) as { ok: boolean; data?: { title: string; duplicate?: boolean }; error?: { message: string } };
+      const text = await response.text();
+      const payload = text ? JSON.parse(text) as ImportResponse : { ok: false, error: { message: response.ok ? '导入失败' : `上传失败（HTTP ${response.status}）` } };
       if (!payload.ok) throw new Error(payload.error?.message ?? '导入失败');
       setMessage(payload.data?.duplicate ? `《${payload.data.title}》已存在` : `《${payload.data?.title ?? file.name}》已导入`);
       setReloadKey((key) => key + 1);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '导入失败');
+      setError(reason instanceof SyntaxError ? '上传失败：服务器返回了无法解析的响应，请检查反向代理上传体积限制。' : reason instanceof Error ? reason.message : '导入失败');
     } finally {
       setUploading(false);
     }

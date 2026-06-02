@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
 import { prisma } from '@shuku/database';
-import type { LibraryEdition, LibraryFile, LibraryMetadata, LibraryVolume, LibraryWork, Prisma } from '@prisma/client';
+import type { ImportTask, LibraryEdition, LibraryFile, LibraryMetadata, LibraryVolume, LibraryWork, Prisma } from '@prisma/client';
 
 export type SuggestionField = 'title' | 'author' | 'description' | 'tags' | 'seriesName' | 'seriesIndex' | 'publishedYear';
 export type SuggestionSource = 'filename' | 'embedded' | 'aggregation' | 'external' | 'ai' | 'rule';
@@ -65,6 +65,7 @@ export type OrganizeContext = {
       metadataItems: LibraryMetadata[];
     }>;
   };
+  sourceHints: Array<Pick<ImportTask, 'sourcePath' | 'originalName' | 'origin'>>;
 };
 
 export interface MetadataProvider {
@@ -116,9 +117,39 @@ function cleanTitlePart(value: string) {
     .trim();
 }
 
+function bracketedFolderMetadata(value: string) {
+  const normalized = value.replace(/\s+/g, '');
+  const parts = Array.from(normalized.matchAll(/\[([^\]]+)\]/g)).map((match) => cleanTitlePart(match[1])).filter(Boolean);
+  if (parts.length !== 2 || parts.join('').length !== normalized.length - parts.length * 2) return null;
+  return { title: parts[0], author: parts[1] };
+}
+
 function usableParentTitle(parent: string) {
   if (!parent || ['.', '/', 'books', 'library', 'comics', 'comic', 'manga', '漫画'].includes(parent.toLowerCase())) return null;
   return parent;
+}
+
+function usableParentAuthor(parent: string) {
+  const metadata = bracketedFolderMetadata(parent);
+  return metadata?.author ?? null;
+}
+
+function isManagedStoragePath(filePath: string) {
+  const normalized = filePath.replaceAll('\\', '/');
+  return /\/storage\/library\/[a-z0-9]{2}\//i.test(normalized) || /\/app\/storage\/library\/[a-z0-9]{2}\//i.test(normalized);
+}
+
+function trustedSourcePath(context: OrganizeContext) {
+  const hinted = context.sourceHints.find((hint) => hint.sourcePath && !isManagedStoragePath(hint.sourcePath));
+  if (hinted) return { path: hinted.sourcePath, originalName: hinted.originalName ?? undefined };
+  const firstFile = context.work.editions.flatMap((edition) => edition.files).find((file) => !isManagedStoragePath(file.path));
+  return firstFile ? { path: firstFile.path, originalName: undefined } : null;
+}
+
+function trustedMetadataPath(context: OrganizeContext) {
+  const source = trustedSourcePath(context);
+  if (!source) return null;
+  return source.originalName ? join(dirname(source.path), source.originalName) : source.path;
 }
 
 function parseJson(value: string | null | undefined) {
@@ -144,6 +175,10 @@ export function metadataRefreshProvidersFromSettings(settings: Record<string, st
   if (coerceBoolean(settings['metadata.external.enabled'])) providers.push('external');
   if (coerceBoolean(settings['metadata.ai.enabled'])) providers.push('ai');
   return providers;
+}
+
+export function metadataRefreshProvidersForImport(providers: RefreshProvider[], options: { includeExternal?: boolean } = {}) {
+  return providers.filter((provider) => options.includeExternal !== false || provider !== 'external');
 }
 
 export async function enabledMetadataRefreshProviders() {
@@ -255,6 +290,16 @@ function sameValue(left: unknown, right: unknown) {
   return normalizeKey(left) === normalizeKey(right);
 }
 
+function strictTitleKey(value: unknown) {
+  return normalizeKey(String(value ?? '').normalize('NFKC'));
+}
+
+export function externalTitleMatchesWork(work: Pick<LibraryWork, 'title' | 'seriesName'>, value: unknown) {
+  const candidate = strictTitleKey(value);
+  if (!candidate) return false;
+  return [work.title, work.seriesName].some((item) => strictTitleKey(item) === candidate);
+}
+
 function workValue(work: LibraryWork, field: SuggestionField) {
   if (field === 'tags') return parseJson(work.tags) ?? [];
   return work[field as keyof LibraryWork];
@@ -270,7 +315,9 @@ function makeSuggestion(context: OrganizeContext, field: SuggestionField, sugges
 export function parseMetadataFromFileName(filePath: string) {
   const rawBase = basename(filePath, extname(filePath)).replaceAll('_', ' ').replace(/\s+/g, ' ').trim();
   const base = cleanTitlePart(rawBase);
-  const parent = cleanTitlePart(basename(dirname(filePath)));
+  const rawParent = basename(dirname(filePath));
+  const bracketParent = bracketedFolderMetadata(rawParent);
+  const parent = bracketParent?.title ?? cleanTitlePart(rawParent);
   const withoutYear = base.replace(/\b(19\d{2}|20\d{2})\b/g, ' ').replace(/\s+/g, ' ').trim();
   const rawWithoutYear = rawBase.replace(/\b(19\d{2}|20\d{2})\b/g, ' ').replace(/\s+/g, ' ').trim();
   const year = Number(/\b(19\d{2}|20\d{2})\b/.exec(base)?.[1] ?? /\b(19\d{2}|20\d{2})\b/.exec(parent)?.[1]);
@@ -294,7 +341,7 @@ export function parseMetadataFromFileName(filePath: string) {
     ? cleanTitlePart(dashAuthorTitle[2].replace(/^(?:（[^）]+）|\([^)]*\))\s*/, ''))
     : bracketAuthorTitle?.[1]
       ? cleanTitlePart(bracketAuthorTitle[1].replace(/^(?:（[^）]+）|\([^)]*\))\s*/, ''))
-      : null;
+      : pureVolumeMatch ? (bracketParent?.author ?? usableParentAuthor(rawParent)) : null;
   const title = dashAuthorTitle?.[1]
     ? cleanTitlePart(dashAuthorTitle[1])
     : bracketAuthorTitle?.[2]
@@ -314,9 +361,9 @@ export function parseMetadataFromFileName(filePath: string) {
 export const filenameProvider: MetadataProvider = {
   name: 'filename',
   async detect(context) {
-    const firstFile = context.work.editions.flatMap((edition) => edition.files)[0];
-    if (!firstFile) return [];
-    const parsed = parseMetadataFromFileName(firstFile.path);
+    const sourcePath = trustedMetadataPath(context);
+    if (!sourcePath) return [];
+    const parsed = parseMetadataFromFileName(sourcePath);
     return [
       makeSuggestion(context, 'title', parsed.seriesName && parsed.seriesIndex ? parsed.seriesName : parsed.title, 'filename', 0.72, '从文件名识别标题或系列名'),
       makeSuggestion(context, 'author', parsed.author, 'filename', 0.66, '从“标题 - 作者”文件名识别作者'),
@@ -411,8 +458,9 @@ export const duplicateProvider: DuplicateProvider = {
   }
 };
 
-async function buildContext(workId: string): Promise<OrganizeContext | null> {
-  const work = await prisma.libraryWork.findUnique({
+async function buildContext(workId: string, importTaskId?: string | null): Promise<OrganizeContext | null> {
+  const [work, importTasks] = await Promise.all([
+    prisma.libraryWork.findUnique({
     where: { id: workId },
     include: {
       editions: {
@@ -425,8 +473,15 @@ async function buildContext(workId: string): Promise<OrganizeContext | null> {
         }
       }
     }
-  });
-  return work ? { work } : null;
+    }),
+    prisma.importTask.findMany({
+      where: importTaskId ? { id: importTaskId, workId } : { workId },
+      select: { sourcePath: true, originalName: true, origin: true },
+      orderBy: { createdAt: 'desc' },
+      take: 8
+    })
+  ]);
+  return work ? { work, sourceHints: importTasks } : null;
 }
 
 function dedupeSuggestions(suggestions: PipelineSuggestion[]) {
@@ -440,8 +495,8 @@ function dedupeSuggestions(suggestions: PipelineSuggestion[]) {
   return [...byField.values()].sort((left, right) => right.confidence - left.confidence || suggestionPriority[right.source] - suggestionPriority[left.source]);
 }
 
-export async function detectOrganizeSuggestions(workId: string) {
-  const context = await buildContext(workId);
+export async function detectOrganizeSuggestions(workId: string, importTaskId?: string | null) {
+  const context = await buildContext(workId, importTaskId);
   if (!context) return null;
   const metadataProviders = [embeddedMetadataProvider, filenameProvider, aggregationProvider];
   const suggestions = dedupeSuggestions((await Promise.all(metadataProviders.map((provider) => provider.detect(context)))).flat().concat(await customRuleProvider.apply(context)));
@@ -449,15 +504,16 @@ export async function detectOrganizeSuggestions(workId: string) {
   return { context, suggestions, duplicates };
 }
 
-function contextSearchTitle(context: OrganizeContext) {
-  const firstFile = context.work.editions.flatMap((edition) => edition.files)[0];
-  const parsed = firstFile ? parseMetadataFromFileName(firstFile.path) : null;
+export function contextSearchTitle(context: OrganizeContext) {
+  const sourcePath = trustedMetadataPath(context);
+  const parsed = sourcePath ? parseMetadataFromFileName(sourcePath) : null;
+  if (context.work.workType === 'COMIC') return parsed?.title || context.work.title;
   return context.work.seriesName ?? parsed?.seriesName ?? context.work.title;
 }
 
 function contextAuthor(context: OrganizeContext) {
-  const firstFile = context.work.editions.flatMap((edition) => edition.files)[0];
-  const parsed = firstFile ? parseMetadataFromFileName(firstFile.path) : null;
+  const sourcePath = trustedMetadataPath(context);
+  const parsed = sourcePath ? parseMetadataFromFileName(sourcePath) : null;
   return context.work.author ?? parsed?.author ?? null;
 }
 
@@ -981,9 +1037,9 @@ async function addSuggestionsToJob(jobId: string, suggestions: PipelineSuggestio
 }
 
 export async function refreshOrganizeMetadataProviders(jobId: string, providers: RefreshProvider[], options: ProviderRunOptions = {}) {
-  const job = await prisma.organizeJob.findUnique({ where: { id: jobId }, select: { id: true, workId: true } });
+  const job = await prisma.organizeJob.findUnique({ where: { id: jobId }, select: { id: true, workId: true, importTaskId: true } });
   if (!job) throw new Error('整理任务不存在');
-  const context = await buildContext(job.workId);
+  const context = await buildContext(job.workId, job.importTaskId);
   if (!context) throw new Error('读物不存在');
   const results: ProviderRunResult[] = [];
   for (const provider of [...new Set(providers)]) {
@@ -1005,8 +1061,8 @@ export async function refreshOrganizeMetadataProviders(jobId: string, providers:
   return { added, results };
 }
 
-export async function refreshAndApplyImportMetadata(jobId: string) {
-  const providers = await enabledMetadataRefreshProviders();
+export async function refreshAndApplyImportMetadata(jobId: string, options: { includeExternal?: boolean } = {}) {
+  const providers = metadataRefreshProvidersForImport(await enabledMetadataRefreshProviders(), options);
   if (providers.length === 0) {
     return { providers, refresh: null, applied: 0, enabled: false };
   }
@@ -1021,7 +1077,7 @@ export function metadataQualityFor(suggestions: PipelineSuggestion[], duplicates
 }
 
 export async function createOrRefreshOrganizeJob(options: { workId: string; editionId?: string | null; importTaskId?: string | null }) {
-  const detected = await detectOrganizeSuggestions(options.workId);
+  const detected = await detectOrganizeSuggestions(options.workId, options.importTaskId);
   if (!detected) return null;
   const issues = [
     ...detected.suggestions.map((suggestion) => `SUGGEST_${suggestion.field.toUpperCase()}`),
@@ -1074,7 +1130,10 @@ export async function createOrRefreshOrganizeJob(options: { workId: string; edit
 }
 
 export async function applyMetadataSuggestions(options: { jobId: string; suggestionIds?: string[]; highConfidenceOnly?: boolean; markOrganized?: boolean; dismiss?: boolean }) {
-  const job = await prisma.organizeJob.findUnique({ where: { id: options.jobId }, include: { suggestions: true } });
+  const job = await prisma.organizeJob.findUnique({
+    where: { id: options.jobId },
+    include: { suggestions: true, work: { select: { title: true, seriesName: true } } }
+  });
   if (!job) throw new Error('整理任务不存在');
   if (options.dismiss) {
     await prisma.$transaction([
@@ -1088,6 +1147,7 @@ export async function applyMetadataSuggestions(options: { jobId: string; suggest
     suggestion.status === 'PENDING'
     && (options.suggestionIds ? allowed.has(suggestion.id) : true)
     && (!options.highConfidenceOnly || suggestion.confidence >= 0.8)
+    && (!options.highConfidenceOnly || suggestion.field !== 'title' || suggestion.source !== 'external' || externalTitleMatchesWork(job.work, parseJson(suggestion.suggestedValue) ?? suggestion.suggestedValue))
   );
   const data: Prisma.LibraryWorkUpdateInput = {};
   for (const suggestion of selected) {

@@ -24,6 +24,8 @@ services:
       DATABASE_URL: mysql://shuku:shuku@mysql:3306/shuku_starship
       MONITOR_ROOT: /monitor
       STORAGE_ROOT: /app/storage
+      EPUB_MAX_SIZE_BYTES: ${EPUB_MAX_SIZE_BYTES:-536870912}
+      COMIC_MAX_ARCHIVE_SIZE_BYTES: ${COMIC_MAX_ARCHIVE_SIZE_BYTES:-2147483648}
       FILE_STREAMS_PER_USER: 4
       SLOW_FILE_REQUEST_MS: 1500
       ADMIN_EMAIL: admin@example.com
@@ -47,6 +49,8 @@ services:
       DATABASE_URL: mysql://shuku:shuku@mysql:3306/shuku_starship
       MONITOR_ROOT: /monitor
       STORAGE_ROOT: /app/storage
+      EPUB_MAX_SIZE_BYTES: ${EPUB_MAX_SIZE_BYTES:-536870912}
+      COMIC_MAX_ARCHIVE_SIZE_BYTES: ${COMIC_MAX_ARCHIVE_SIZE_BYTES:-2147483648}
       SESSION_SECRET: dev-session-secret-change-me-at-least-32-chars
     volumes:
       - ./monitor:/monitor:ro

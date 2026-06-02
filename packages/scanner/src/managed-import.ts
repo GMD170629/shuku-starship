@@ -12,8 +12,16 @@ const STORAGE_ROOT = resolve(process.env.STORAGE_ROOT ?? join(process.cwd(), 'st
 const LIBRARY_STORAGE_ROOT = process.env.LIBRARY_STORAGE_ROOT ?? join(STORAGE_ROOT, 'library');
 const BOOK_ASSET_ROOT = join(STORAGE_ROOT, 'books');
 
-const MAX_EPUB_SIZE_BYTES = Number(process.env.EPUB_MAX_SIZE_BYTES ?? 200 * 1024 * 1024);
-const MAX_ARCHIVE_SIZE_BYTES = Number(process.env.COMIC_MAX_ARCHIVE_SIZE_BYTES ?? 2 * 1024 * 1024 * 1024);
+const DEFAULT_MAX_EPUB_SIZE_BYTES = 512 * 1024 * 1024;
+const DEFAULT_MAX_ARCHIVE_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
+
+function envByteLimit(name: string, fallback: number) {
+  const parsed = Number(process.env[name]);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const MAX_EPUB_SIZE_BYTES = envByteLimit('EPUB_MAX_SIZE_BYTES', DEFAULT_MAX_EPUB_SIZE_BYTES);
+const MAX_ARCHIVE_SIZE_BYTES = envByteLimit('COMIC_MAX_ARCHIVE_SIZE_BYTES', DEFAULT_MAX_ARCHIVE_SIZE_BYTES);
 const MAX_ENTRIES = Number(process.env.IMPORT_MAX_ENTRIES ?? 10000);
 const MAX_IMAGE_COUNT = Number(process.env.COMIC_MAX_IMAGE_COUNT ?? 5000);
 const MAX_SINGLE_IMAGE_BYTES = Number(process.env.COMIC_MAX_SINGLE_IMAGE_BYTES ?? 80 * 1024 * 1024);
@@ -22,6 +30,24 @@ const XML_MAX_BYTES = Number(process.env.COMIC_INFO_MAX_BYTES ?? 2 * 1024 * 1024
 const supportedExts = new Set(['.epub', '.cbz', '.zip']);
 const imageExts = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif']);
 const collator = new Intl.Collator('zh-Hans-CN', { numeric: true, sensitivity: 'base' });
+
+export function formatImportByteLimit(bytes: number) {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${Number.isInteger(value) ? value : value.toFixed(1)}${units[unitIndex]}`;
+}
+
+export function importFileSizeLimitBytesForExt(ext: string) {
+  const normalized = ext.startsWith('.') ? ext.toLowerCase() : `.${ext.toLowerCase()}`;
+  if (normalized === '.epub') return MAX_EPUB_SIZE_BYTES;
+  if (normalized === '.cbz' || normalized === '.zip') return MAX_ARCHIVE_SIZE_BYTES;
+  return null;
+}
 
 export type ImportManagedBookOptions = {
   sourceFilePath: string;
@@ -45,6 +71,7 @@ export type ImportManagedBookResult = {
   duplicate: boolean;
   merged?: boolean;
   mergeReason?: string;
+  refreshExternalMetadata?: boolean;
 };
 
 type ParsedEpubChapter = { title: string; href: string; idref?: string; mediaType?: string; sortOrder: number };
@@ -97,6 +124,7 @@ export type ParsedComicVolume = {
   seriesName: string;
   seriesIndex: number;
   title: string;
+  author?: string | null;
 } | null;
 
 function storageUrl(path: string) {
@@ -126,10 +154,22 @@ function cleanComicTitlePart(value: string) {
     .trim();
 }
 
+function bracketedComicFolderMetadata(value: string) {
+  const parts = Array.from(value.matchAll(/\[([^\]]+)\]/g)).map((match) => cleanComicTitlePart(match[1])).filter(Boolean);
+  if (parts.length !== 2 || parts.join('').length !== value.replace(/\s+/g, '').length - parts.length * 2) return null;
+  return { title: parts[0], author: parts[1] };
+}
+
 function comicParentTitle(filePath: string) {
   const parent = cleanComicTitlePart(basename(dirname(filePath)));
   if (!parent || ['.', '/', 'books', 'library', 'comics', 'comic', 'manga', '漫画'].includes(parent.toLowerCase())) return null;
-  return parent;
+  return bracketedComicFolderMetadata(parent)?.title ?? parent;
+}
+
+function comicParentAuthor(filePath: string) {
+  const parent = cleanComicTitlePart(basename(dirname(filePath)));
+  if (!parent || ['.', '/', 'books', 'library', 'comics', 'comic', 'manga', '漫画'].includes(parent.toLowerCase())) return null;
+  return bracketedComicFolderMetadata(parent)?.author ?? null;
 }
 
 export function parseComicVolumeFromName(filePath: string, originalName?: string): ParsedComicVolume {
@@ -145,7 +185,8 @@ export function parseComicVolumeFromName(filePath: string, originalName?: string
     const match = pattern.exec(baseTitle.trim());
     const seriesIndex = Number(match?.[1]);
     if (parent && Number.isFinite(seriesIndex)) {
-      return { seriesName: parent, seriesIndex, title: `${parent} (${seriesIndex})` };
+      const author = comicParentAuthor(filePath);
+      return author ? { seriesName: parent, seriesIndex, title: `${parent} (${seriesIndex})`, author } : { seriesName: parent, seriesIndex, title: `${parent} (${seriesIndex})` };
     }
   }
 
@@ -424,7 +465,7 @@ async function buildEpubChapters(epubPath: string, opfPath: string, opfXml: stri
 
 export async function parseEpubMetadata(epubPath: string): Promise<ParsedEpubMetadata> {
   const fileStat = await stat(epubPath);
-  if (fileStat.size > MAX_EPUB_SIZE_BYTES) throw new Error('EPUB 文件过大');
+  if (fileStat.size > MAX_EPUB_SIZE_BYTES) throw new Error(`EPUB 文件过大：当前限制 ${formatImportByteLimit(MAX_EPUB_SIZE_BYTES)}，可通过 EPUB_MAX_SIZE_BYTES 调整`);
   await openZip(epubPath).then((zip) => zip.close());
   const containerXml = await readZipText(epubPath, 'META-INF/container.xml');
   const opfPath = /full-path="([^"]+)"/.exec(containerXml)?.[1];
@@ -553,7 +594,7 @@ async function parseComicArchive(filePath: string, originalName?: string): Promi
   const format = ext === '.cbz' ? 'cbz' : 'zip';
   const fileStat = await stat(filePath);
   if (!fileStat.isFile()) throw new Error('漫画压缩包不存在或不可读');
-  if (fileStat.size > MAX_ARCHIVE_SIZE_BYTES) throw new Error(`漫画压缩包超过限制（${MAX_ARCHIVE_SIZE_BYTES} bytes）`);
+  if (fileStat.size > MAX_ARCHIVE_SIZE_BYTES) throw new Error(`漫画压缩包过大：当前限制 ${formatImportByteLimit(MAX_ARCHIVE_SIZE_BYTES)}，可通过 COMIC_MAX_ARCHIVE_SIZE_BYTES 调整`);
   const { images, comicInfoEntry } = await listArchiveEntries(filePath);
   if (images.length === 0) throw new Error('漫画压缩包内没有可导入的图片');
   if (images.length > MAX_IMAGE_COUNT) throw new Error(`漫画图片数量超过限制（${MAX_IMAGE_COUNT}）`);
@@ -647,6 +688,16 @@ function comicWorkTitle(parsed: Pick<ParsedComicArchive, 'title' | 'comicInfo'>,
   const parent = sourceParentPath(options);
   if (parent && options.origin === 'WATCH') return cleanComicTitlePart(basename(parent));
   return parsed.title;
+}
+
+async function workHasExternalMetadata(workId: string) {
+  const count = await prisma.metadataSuggestion.count({
+    where: {
+      source: 'external',
+      job: { workId }
+    }
+  });
+  return count > 0;
 }
 
 function workMergeKey(format: 'epub' | 'cbz' | 'zip', title: string, author?: string | null, identifier?: string | null, isbn?: string | null) {
@@ -882,7 +933,7 @@ async function importReadableComic(options: ImportManagedBookOptions & { importT
   const parsed = await parseComicArchive(options.sourceFilePath, options.originalName);
   const volumeInfo = comicVolumeFromParsed(parsed, options.sourceFilePath, options.originalName);
   const title = comicWorkTitle(parsed, volumeInfo, options);
-  const author = parsed.author;
+  const author = volumeInfo?.author || parsed.author;
   const mergeKey = workMergeKey('cbz', title, author);
   const sourceKey = sourceGroupKey(options, title);
   const volumeIndex = Number.isFinite(volumeInfo?.seriesIndex) ? Number(volumeInfo?.seriesIndex) : null;
@@ -897,6 +948,7 @@ async function importReadableComic(options: ImportManagedBookOptions & { importT
     origin: options.origin,
     monitorFolderId: options.monitorFolderId
   });
+  const refreshExternalMetadata = created || !(await workHasExternalMetadata(work.id));
   const duplicate = await findComicDuplicateVolume(work.id, volumeIndex, volumeTitle);
   if (duplicate) {
     return {
@@ -912,7 +964,8 @@ async function importReadableComic(options: ImportManagedBookOptions & { importT
       importStatus: 'completed',
       duplicate: true,
       merged: true,
-      mergeReason: 'duplicate-comic-metadata'
+      mergeReason: 'duplicate-comic-metadata',
+      refreshExternalMetadata: false
     };
   }
 
@@ -1032,7 +1085,8 @@ async function importReadableComic(options: ImportManagedBookOptions & { importT
       importStatus: 'completed',
       duplicate: false,
       merged: !created || !createdEdition,
-      mergeReason: created ? 'new-comic-work' : createdEdition ? 'new-comic-version' : 'same-comic-series'
+      mergeReason: created ? 'new-comic-work' : createdEdition ? 'new-comic-version' : 'same-comic-series',
+      refreshExternalMetadata
     };
   } catch (error) {
     if (coverPath) await unlink(coverPath).catch(() => undefined);
@@ -1078,7 +1132,7 @@ export async function importManagedBook(options: ImportManagedBookOptions): Prom
         return null;
       });
       if (job) {
-        await refreshAndApplyImportMetadata(job.id)
+        await refreshAndApplyImportMetadata(job.id, { includeExternal: result.refreshExternalMetadata !== false })
           .then((metadataResult) => {
             if (!metadataResult.enabled) {
               return logImport(importTaskId, 'info', 'metadata auto refresh skipped: no enabled providers');

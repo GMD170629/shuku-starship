@@ -22,6 +22,7 @@ import { Progress } from '../ui/progress';
 
 type MobileTab = 'shelf' | 'search' | 'reading' | 'me';
 type BooksPayload = { ok: boolean; data?: { books: WorkView[]; total: number }; error?: { message: string } };
+type ImportPayload = { ok: boolean; data?: { title: string; duplicate?: boolean }; error?: { message: string } };
 type ContinueItem = { book: WorkView; progress: number; lastReadAt: string; chapter: string | null } | null;
 type Summary = { totalBooks: number; latestSyncAt: string | null };
 type UserInfo = { email: string; name: string; role: string };
@@ -192,13 +193,14 @@ export function MobileReaderApp() {
       const form = new FormData();
       form.append('file', file);
       const response = await fetch('/api/works/import', { method: 'POST', body: form });
-      const payload = (await response.json()) as { ok: boolean; data?: { title: string; duplicate?: boolean }; error?: { message: string } };
+      const text = await response.text();
+      const payload = text ? JSON.parse(text) as ImportPayload : { ok: false, error: { message: response.ok ? '上传失败' : `上传失败（HTTP ${response.status}）` } };
       if (!payload.ok) throw new Error(payload.error?.message ?? '上传失败');
       setMessage(payload.data?.duplicate ? `《${payload.data.title}》已存在` : `《${payload.data?.title ?? file.name}》已上传`);
       setReloadKey((value) => value + 1);
       selectTab('shelf');
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '上传失败');
+      setError(reason instanceof SyntaxError ? '上传失败：服务器返回了无法解析的响应，请检查反向代理上传体积限制。' : reason instanceof Error ? reason.message : '上传失败');
     } finally {
       setUploading(false);
     }

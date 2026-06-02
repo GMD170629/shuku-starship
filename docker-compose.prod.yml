@@ -50,6 +50,8 @@ services:
       DEMO_MODE: ${DEMO_MODE:-false}
       NEXT_PUBLIC_DEMO_MODE: ${NEXT_PUBLIC_DEMO_MODE:-false}
       STORAGE_ROOT: /app/storage
+      EPUB_MAX_SIZE_BYTES: ${EPUB_MAX_SIZE_BYTES:-536870912}
+      COMIC_MAX_ARCHIVE_SIZE_BYTES: ${COMIC_MAX_ARCHIVE_SIZE_BYTES:-2147483648}
       PORT: 3000
       HOSTNAME: 0.0.0.0
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
@@ -87,6 +89,8 @@ services:
       MONITOR_ROOT: ${MONITOR_ROOT:-/monitor}
       DEMO_MODE: ${DEMO_MODE:-false}
       STORAGE_ROOT: /app/storage
+      EPUB_MAX_SIZE_BYTES: ${EPUB_MAX_SIZE_BYTES:-536870912}
+      COMIC_MAX_ARCHIVE_SIZE_BYTES: ${COMIC_MAX_ARCHIVE_SIZE_BYTES:-2147483648}
     volumes:
       - ${STORAGE_PATH:-./data/storage}:/app/storage
       - ${MONITOR_HOST_PATH:-./monitor}:/monitor:ro

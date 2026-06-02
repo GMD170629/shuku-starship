@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { candidateToSuggestions, metadataRefreshProvidersFromSettings, normalizeAiSuggestionConfidence, parseDoubanSearchHtml, parseDoubanSubjectHtml, parseMetadataFromFileName, safeCacheQueryKey } from './organize-pipeline';
+import { candidateToSuggestions, contextSearchTitle, externalTitleMatchesWork, metadataRefreshProvidersForImport, metadataRefreshProvidersFromSettings, normalizeAiSuggestionConfidence, parseDoubanSearchHtml, parseDoubanSubjectHtml, parseMetadataFromFileName, safeCacheQueryKey } from './organize-pipeline';
 
 describe('parseMetadataFromFileName', () => {
   it('parses Chinese volume markers', () => {
@@ -23,6 +23,16 @@ describe('parseMetadataFromFileName', () => {
     assert.equal(parsed.title, '野生的最终BOSS出现了');
     assert.equal(parsed.seriesName, '野生的最终BOSS出现了');
     assert.equal(parsed.seriesIndex, 8);
+  });
+
+  it('parses two-part bracket comic folders as title and author for pure volumes', () => {
+    assert.deepEqual(parseMetadataFromFileName('/monitor/[齐木楠雄的灾难][麻生周一]/Vol.05.cbz'), {
+      title: '齐木楠雄的灾难',
+      author: '麻生周一',
+      seriesName: '齐木楠雄的灾难',
+      seriesIndex: 5,
+      publishedYear: null
+    });
   });
 
   it('keeps pure sibling volume numbers distinct', () => {
@@ -53,6 +63,12 @@ describe('metadata auto refresh policy', () => {
     assert.deepEqual(metadataRefreshProvidersFromSettings({ 'metadata.external.enabled': 'true', 'metadata.ai.enabled': 'on' }), ['external', 'ai']);
   });
 
+  it('can skip external metadata refresh for later volumes of an existing work', () => {
+    assert.deepEqual(metadataRefreshProvidersForImport(['external', 'ai'], { includeExternal: false }), ['ai']);
+    assert.deepEqual(metadataRefreshProvidersForImport(['external'], { includeExternal: false }), []);
+    assert.deepEqual(metadataRefreshProvidersForImport(['external', 'ai']), ['external', 'ai']);
+  });
+
   it('caps AI confidence below the high-confidence auto-apply threshold', () => {
     assert.equal(normalizeAiSuggestionConfidence(1), 0.74);
     assert.equal(normalizeAiSuggestionConfidence(0.81), 0.74);
@@ -66,6 +82,28 @@ describe('metadata auto refresh policy', () => {
     assert.ok(safe.length <= 180);
     assert.equal(safeCacheQueryKey(key), safe);
     assert.notEqual(safe, key);
+  });
+
+  it('does not use managed storage shard paths as comic metadata query titles', () => {
+    const context = {
+      work: {
+        title: '齐木楠雄的灾难',
+        seriesName: null,
+        workType: 'COMIC',
+        editions: [{
+          files: [{ path: '/app/storage/library/cm/cmpabcdef-uuid.cbz' }],
+          volumes: [],
+          metadataItems: []
+        }]
+      },
+      sourceHints: []
+    } as any;
+    assert.equal(contextSearchTitle(context), '齐木楠雄的灾难');
+  });
+
+  it('only auto-applies external titles that strictly match the work title or series', () => {
+    assert.equal(externalTitleMatchesWork({ title: '齐木楠雄的灾难', seriesName: null } as any, '齐木楠雄的灾难'), true);
+    assert.equal(externalTitleMatchesWork({ title: '齐木楠雄的灾难', seriesName: null } as any, '+20cm的距离'), false);
   });
 });
 

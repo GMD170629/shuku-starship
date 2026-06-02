@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import JSZip from 'jszip';
-import { parseComicVolumeFromName, parseEpubMetadata } from './managed-import';
+import { formatImportByteLimit, importFileSizeLimitBytesForExt, parseComicVolumeFromName, parseEpubMetadata } from './managed-import';
 
 async function writeEpubFixture(files: Record<string, string>) {
   const dir = await mkdtemp(join(tmpdir(), 'shuku-epub-'));
@@ -79,6 +79,15 @@ describe('parseComicVolumeFromName', () => {
     assert.equal(parseComicVolumeFromName(`${root}/第06卷.zip`, '第06卷.zip')?.seriesIndex, 6);
   });
 
+  it('parses two-part bracket comic folders as work title and author for pure volume names', () => {
+    assert.deepEqual(parseComicVolumeFromName('/monitor/[齐木楠雄的灾难][麻生周一]/Vol.05.cbz', 'Vol.05.cbz'), {
+      seriesName: '齐木楠雄的灾难',
+      seriesIndex: 5,
+      title: '齐木楠雄的灾难 (5)',
+      author: '麻生周一'
+    });
+  });
+
   it('keeps sibling pure volume archives as separate volumes', () => {
     const root = '/monitor/星舰漫画';
     const volumes = ['Vol.06.zip', 'Vol.07.zip', 'Vol.08.zip'].map((name) => parseComicVolumeFromName(`${root}/${name}`, name));
@@ -92,6 +101,25 @@ describe('parseComicVolumeFromName', () => {
 
   it('does not invent a series for pure volume archives without a usable parent', () => {
     assert.equal(parseComicVolumeFromName('/books/comics/Vol.08.zip', 'Vol.08.zip'), null);
+  });
+});
+
+describe('import file size limits', () => {
+  function expectedLimit(name: string, fallback: number) {
+    const parsed = Number(process.env[name]);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
+  it('returns configured limits for supported formats', () => {
+    assert.equal(importFileSizeLimitBytesForExt('epub'), expectedLimit('EPUB_MAX_SIZE_BYTES', 512 * 1024 * 1024));
+    assert.equal(importFileSizeLimitBytesForExt('.cbz'), expectedLimit('COMIC_MAX_ARCHIVE_SIZE_BYTES', 2 * 1024 * 1024 * 1024));
+    assert.equal(importFileSizeLimitBytesForExt('.zip'), expectedLimit('COMIC_MAX_ARCHIVE_SIZE_BYTES', 2 * 1024 * 1024 * 1024));
+    assert.equal(importFileSizeLimitBytesForExt('.pdf'), null);
+  });
+
+  it('formats byte limits for user-facing errors', () => {
+    assert.equal(formatImportByteLimit(512 * 1024 * 1024), '512MB');
+    assert.equal(formatImportByteLimit(1536), '1.5KB');
   });
 });
 
