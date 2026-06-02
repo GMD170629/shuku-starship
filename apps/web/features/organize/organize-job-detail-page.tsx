@@ -1,12 +1,13 @@
 'use client';
 
-import { Bot, CheckCircle2, Database, ExternalLink, RefreshCw, Save, XCircle } from 'lucide-react';
+import { CheckCircle2, Database, ExternalLink, RefreshCw, Save, XCircle } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { Cover } from '../../components/book/cover';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { PageTitle } from '../../components/ui/page-title';
+import { MetadataLookupModal } from '../works/metadata-lookup-modal';
 import type { OrganizeJobView } from './organize-page';
 
 type JobResponse = {
@@ -78,6 +79,7 @@ export function OrganizeJobDetailPage({ jobId }: { jobId: string }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [metadataLookupOpen, setMetadataLookupOpen] = useState(false);
 
   const loadJob = useCallback(() => {
     setLoading(true);
@@ -128,27 +130,6 @@ export function OrganizeJobDetailPage({ jobId }: { jobId: string }) {
     }
   }
 
-  async function refreshProviders(providers: string[]) {
-    if (!job) return;
-    setBusy(true);
-    setError('');
-    setMessage('');
-    try {
-      const response = await fetch(`/api/organize/jobs/${job.id}/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ providers })
-      });
-      const payload = (await response.json()) as { ok: boolean; data?: { message?: string }; error?: { message: string } };
-      if (!payload.ok) throw new Error(payload.error?.message ?? '刷新元数据失败');
-      setMessage(payload.data?.message ?? '功能接口已预留，当前尚未启用。');
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '刷新元数据失败');
-    } finally {
-      setBusy(false);
-    }
-  }
-
   if (loading) return <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取整理任务...</div>;
   if (!job) return <div className="rounded-3xl border border-red-100 bg-red-50 p-8 text-sm text-red-700">{error || '整理任务不存在'}</div>;
 
@@ -159,8 +140,7 @@ export function OrganizeJobDetailPage({ jobId }: { jobId: string }) {
         desc="查看当前读物缺少哪些信息，并审核元数据候选和重复/版本风险。"
         action={
           <div className="flex flex-wrap gap-2">
-            <Button disabled={busy} variant="secondary" icon={Database} onClick={() => void refreshProviders(['external'])}>查询外部数据</Button>
-            <Button disabled={busy} variant="secondary" icon={Bot} onClick={() => void refreshProviders(['ai'])}>AI 识别元数据</Button>
+            <Button disabled={busy} variant="secondary" icon={Database} onClick={() => setMetadataLookupOpen(true)}>元数据识别</Button>
             <Button variant="secondary" icon={RefreshCw} onClick={loadJob}>刷新</Button>
           </div>
         }
@@ -280,6 +260,17 @@ export function OrganizeJobDetailPage({ jobId }: { jobId: string }) {
           {job.duplicates.length === 0 ? <div className="rounded-2xl border border-slate-200 p-6 text-sm text-slate-500">暂无重复或不同版本候选。</div> : null}
         </div>
       </section>
+      {job ? (
+        <MetadataLookupModal
+          book={job.book}
+          open={metadataLookupOpen}
+          onClose={() => setMetadataLookupOpen(false)}
+          onApplied={() => {
+            setMessage('元数据已应用');
+            loadJob();
+          }}
+        />
+      ) : null}
     </div>
   );
 }

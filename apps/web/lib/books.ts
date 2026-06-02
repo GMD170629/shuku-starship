@@ -16,6 +16,7 @@ export type WorkView = {
   monitorFolderId: string | null;
   title: string;
   author: string;
+  publisher: string | null;
   type: 'ebook' | 'comic';
   formatValue: ReadingFormat;
   format: string;
@@ -207,6 +208,7 @@ export function toWorkView(work: WorkWithLibrary): WorkView {
     monitorFolderId: work.monitorFolderId,
     title: work.title,
     author: work.author ?? '未知作者',
+    publisher: displayEdition?.publisher ?? primary?.publisher ?? null,
     type: editionType(work.workType),
     formatValue: displayEdition?.format ?? work.workType,
     format: displayEdition ? publicEditionFormat(displayEdition) : formatLabel(work.workType),

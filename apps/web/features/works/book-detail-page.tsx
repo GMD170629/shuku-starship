@@ -1,6 +1,6 @@
 'use client';
 
-import { BookOpen, ChevronDown, ChevronLeft, ChevronRight, Edit3, EyeOff, RefreshCw, Save, Trash2, UploadCloud } from 'lucide-react';
+import { BookOpen, ChevronDown, ChevronLeft, ChevronRight, Database, Edit3, EyeOff, RefreshCw, Save, Trash2, UploadCloud } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Cover } from '../../components/book/cover';
@@ -10,6 +10,7 @@ import { cn } from '../../components/ui/cn';
 import { Progress } from '../../components/ui/progress';
 import { Select } from '../../components/ui/select';
 import type { WorkView } from '../../lib/books';
+import { MetadataLookupModal } from './metadata-lookup-modal';
 
 function Info({ label, value, green = false }: { label: string; value: string; green?: boolean }) {
   return (
@@ -45,6 +46,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   const [comicSections, setComicSections] = useState<ComicSectionView[]>([]);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [metadataLookupOpen, setMetadataLookupOpen] = useState(false);
   const [coverBust, setCoverBust] = useState(0);
   const [form, setForm] = useState({
     title: '',
@@ -259,6 +261,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
             <div className="mt-5 flex flex-wrap gap-3">
               <Button icon={BookOpen} onClick={() => router.push(comicSections[0] && book.editionId ? `/reader/${book.editionId}?volume=${encodeURIComponent(comicSections[0].id)}` : `/reader/${book.editionId ?? book.id}`)}>{book.progress > 0 ? '继续阅读' : '开始阅读'}</Button>
               <Button variant="secondary" icon={Edit3} onClick={() => setEditing((value) => !value)}>编辑信息</Button>
+              <Button disabled={saving} variant="secondary" icon={Database} onClick={() => setMetadataLookupOpen(true)}>元数据识别</Button>
               <Button disabled={saving} variant="secondary" icon={RefreshCw} onClick={() => postAction(`/api/works/${book.id}/cover/regenerate`, '封面已重新生成', { refreshCover: true })}>重新生成封面</Button>
               <Button disabled={saving} variant={book.ignored ? 'secondary' : 'danger'} icon={book.ignored ? EyeOff : Trash2} onClick={() => setIgnored(!book.ignored)}>{book.ignored ? '恢复显示' : '忽略读物'}</Button>
               <Button disabled={saving} variant="danger" icon={Trash2} onClick={() => void deleteRecord()}>删除记录</Button>
@@ -432,6 +435,16 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
           )}
         </div>
       </div>
+      <MetadataLookupModal
+        book={book}
+        open={metadataLookupOpen}
+        onClose={() => setMetadataLookupOpen(false)}
+        onApplied={(nextBook) => {
+          if (nextBook) setBook(nextBook);
+          loadBook();
+          setMessage('元数据已应用');
+        }}
+      />
     </div>
   );
 }

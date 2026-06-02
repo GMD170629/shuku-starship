@@ -50,6 +50,27 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+function toggleExternalSettings(settings: AppSettings, enabled: boolean): AppSettings {
+  return {
+    ...settings,
+    'metadata.external.enabled': String(enabled),
+    'metadata.douban.enabled': String(enabled),
+    'metadata.bangumi.enabled': String(enabled)
+  };
+}
+
+function toggleExternalProvider(settings: AppSettings, providerKey: 'metadata.douban.enabled' | 'metadata.bangumi.enabled', enabled: boolean): AppSettings {
+  return {
+    ...settings,
+    'metadata.external.enabled': String(enabled || settings['metadata.external.enabled'] === 'true'),
+    [providerKey]: String(enabled)
+  };
+}
+
+function hasCompleteAiSettings(settings: AppSettings) {
+  return Boolean(settings['metadata.ai.baseUrl']?.trim() && settings['metadata.ai.model']?.trim() && settings['metadata.ai.apiKey']?.trim());
+}
+
 const themeOptions = [
   { value: 'system', label: '跟随系统' },
   { value: 'light', label: '浅色' },
@@ -70,8 +91,10 @@ export function SettingsPage() {
     timezone: 'Asia/Shanghai',
     'metadata.external.enabled': 'false',
     'metadata.douban.enabled': 'false',
+    'metadata.douban.mode': 'crawler',
     'metadata.douban.baseUrl': '',
     'metadata.douban.apiKey': '',
+    'metadata.douban.userAgent': 'ShukuStarship/0.1 (+https://github.com/GMD170629/shuku-starship)',
     'metadata.bangumi.enabled': 'false',
     'metadata.bangumi.accessToken': '',
     'metadata.bangumi.userAgent': 'ShukuStarship/0.1 (https://github.com/GMD170629/shuku-starship)',
@@ -229,14 +252,20 @@ export function SettingsPage() {
   async function saveSettings() {
     setError('');
     setMessage('');
+    const settingsToSave = hasCompleteAiSettings(settings)
+      ? { ...settings, 'metadata.ai.enabled': 'true' }
+      : settings;
     const response = await fetch('/api/system-settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(settings)
+      body: JSON.stringify(settingsToSave)
     });
     const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
     if (!payload.ok) setError(payload.error?.message ?? '保存设置失败');
-    else setMessage('系统设置已保存');
+    else {
+      setSettings(settingsToSave);
+      setMessage('系统设置已保存');
+    }
   }
 
   return (
@@ -385,10 +414,10 @@ export function SettingsPage() {
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div>
                     <div className="font-semibold">外部数据源</div>
-                    <div className="mt-1 text-sm text-slate-500">电子书使用豆瓣兼容 API，漫画使用 Bangumi 官方 API。外部源只生成待审核建议。</div>
+                    <div className="mt-1 text-sm text-slate-500">电子书使用豆瓣图书抓取或兼容 API，漫画使用 Bangumi 官方 API。打开总开关会启用两个外部来源，导入后仅自动应用高置信度建议。</div>
                   </div>
                   <label className="flex items-center gap-3 rounded-2xl bg-white px-4 py-2 text-sm text-slate-700">
-                    <input type="checkbox" checked={settings['metadata.external.enabled'] === 'true'} onChange={(event) => setSettings({ ...settings, 'metadata.external.enabled': String(event.target.checked) })} />
+                    <input type="checkbox" checked={settings['metadata.external.enabled'] === 'true'} onChange={(event) => setSettings(toggleExternalSettings(settings, event.target.checked))} />
                     启用外部元数据
                   </label>
                 </div>
@@ -399,20 +428,37 @@ export function SettingsPage() {
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <h2 className="font-semibold">豆瓣图书</h2>
-                      <p className="mt-1 text-sm text-slate-500">用于 EPUB。填写豆瓣兼容 JSON API 地址。</p>
+                      <p className="mt-1 text-sm text-slate-500">用于 EPUB。默认直接抓取豆瓣读书页面，也可切换到兼容 JSON API。</p>
                     </div>
                     <label className="flex items-center gap-2 text-sm text-slate-700">
-                      <input type="checkbox" checked={settings['metadata.douban.enabled'] === 'true'} onChange={(event) => setSettings({ ...settings, 'metadata.douban.enabled': String(event.target.checked) })} />
+                      <input type="checkbox" checked={settings['metadata.douban.enabled'] === 'true'} onChange={(event) => setSettings(toggleExternalProvider(settings, 'metadata.douban.enabled', event.target.checked))} />
                       启用
                     </label>
                   </div>
                   <label className="mt-4 block text-sm text-slate-600">
-                    API 地址
-                    <input value={settings['metadata.douban.baseUrl']} onChange={(event) => setSettings({ ...settings, 'metadata.douban.baseUrl': event.target.value })} placeholder="https://example.com" className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
+                    获取方式
+                    <Select
+                      value={settings['metadata.douban.mode'] || 'crawler'}
+                      options={[
+                        { value: 'crawler', label: '直接抓取网页' },
+                        { value: 'api', label: '兼容 JSON API' }
+                      ]}
+                      onChange={(value) => setSettings({ ...settings, 'metadata.douban.mode': value })}
+                      ariaLabel="豆瓣获取方式"
+                      className="mt-2 w-full"
+                    />
+                  </label>
+                  <label className="mt-4 block text-sm text-slate-600">
+                    地址
+                    <input value={settings['metadata.douban.baseUrl']} onChange={(event) => setSettings({ ...settings, 'metadata.douban.baseUrl': event.target.value })} placeholder={settings['metadata.douban.mode'] === 'api' ? 'https://example.com' : 'https://book.douban.com'} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
                   </label>
                   <label className="mt-4 block text-sm text-slate-600">
                     API Key
                     <input type="password" value={settings['metadata.douban.apiKey']} onChange={(event) => setSettings({ ...settings, 'metadata.douban.apiKey': event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
+                  </label>
+                  <label className="mt-4 block text-sm text-slate-600">
+                    User-Agent
+                    <input value={settings['metadata.douban.userAgent']} onChange={(event) => setSettings({ ...settings, 'metadata.douban.userAgent': event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
                   </label>
                 </section>
 
@@ -423,7 +469,7 @@ export function SettingsPage() {
                       <p className="mt-1 text-sm text-slate-500">用于漫画。User-Agent 为必填，Access Token 可选。</p>
                     </div>
                     <label className="flex items-center gap-2 text-sm text-slate-700">
-                      <input type="checkbox" checked={settings['metadata.bangumi.enabled'] === 'true'} onChange={(event) => setSettings({ ...settings, 'metadata.bangumi.enabled': String(event.target.checked) })} />
+                      <input type="checkbox" checked={settings['metadata.bangumi.enabled'] === 'true'} onChange={(event) => setSettings(toggleExternalProvider(settings, 'metadata.bangumi.enabled', event.target.checked))} />
                       启用
                     </label>
                   </div>
@@ -442,7 +488,7 @@ export function SettingsPage() {
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div>
                     <h2 className="font-semibold">AI 元数据识别</h2>
-                    <p className="mt-1 text-sm text-slate-500">使用 OpenAI-compatible Chat Completions，仅发送本地元数据摘要，不读取正文全文。</p>
+                    <p className="mt-1 text-sm text-slate-500">使用 OpenAI-compatible Chat Completions，仅发送本地元数据摘要，不读取正文全文；API 地址、模型和 Key 填写完整后保存会启用 AI 识别。</p>
                   </div>
                   <label className="flex items-center gap-2 text-sm text-slate-700">
                     <input type="checkbox" checked={settings['metadata.ai.enabled'] === 'true'} onChange={(event) => setSettings({ ...settings, 'metadata.ai.enabled': String(event.target.checked) })} />

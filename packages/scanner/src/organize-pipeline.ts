@@ -1,4 +1,6 @@
-import { basename, dirname, extname } from 'node:path';
+import { createHash } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { basename, dirname, extname, join } from 'node:path';
 import { prisma } from '@shuku/database';
 import type { LibraryEdition, LibraryFile, LibraryMetadata, LibraryVolume, LibraryWork, Prisma } from '@prisma/client';
 
@@ -15,7 +17,25 @@ export type PipelineSuggestion = {
   reason: string;
 };
 
-type RefreshProvider = 'external' | 'ai';
+export type RefreshProvider = 'external' | 'ai';
+export type MetadataLookupSource = 'bangumi' | 'douban' | 'ai';
+export type MetadataApplyField = SuggestionField | 'publisher' | 'coverUrl';
+
+export type MetadataCandidate = {
+  id: string;
+  source: MetadataLookupSource;
+  title?: string | null;
+  author?: string | null;
+  publisher?: string | null;
+  description?: string | null;
+  tags?: string[];
+  seriesName?: string | null;
+  seriesIndex?: number | null;
+  publishedYear?: number | null;
+  coverUrl?: string | null;
+  confidence: number;
+  raw: unknown;
+};
 
 type ProviderRunResult = {
   provider: RefreshProvider;
@@ -24,6 +44,10 @@ type ProviderRunResult = {
   cacheHit: boolean;
   message?: string;
   error?: string;
+};
+
+type ProviderRunOptions = {
+  force?: boolean;
 };
 
 export type PipelineDuplicate = {
@@ -69,6 +93,11 @@ const suggestionPriority: Record<SuggestionSource, number> = {
 
 const EXTERNAL_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const AI_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DEFAULT_BANGUMI_USER_AGENT = 'ShukuStarship/0.1 (https://github.com/GMD170629/shuku-starship)';
+const DEFAULT_DOUBAN_BASE_URL = 'https://book.douban.com';
+const DEFAULT_DOUBAN_USER_AGENT = 'ShukuStarship/0.1 (+https://github.com/GMD170629/shuku-starship)';
+const DOUBAN_CRAWLER_CACHE_VERSION = 'v2';
+const CACHE_QUERY_KEY_MAX_LENGTH = 180;
 
 function normalizeKey(value: unknown) {
   return String(value ?? '')
@@ -110,6 +139,18 @@ async function systemSettings(keys: string[]) {
   return Object.fromEntries(rows.map((row) => [row.key, row.value]));
 }
 
+export function metadataRefreshProvidersFromSettings(settings: Record<string, string | null | undefined>): RefreshProvider[] {
+  const providers: RefreshProvider[] = [];
+  if (coerceBoolean(settings['metadata.external.enabled'])) providers.push('external');
+  if (coerceBoolean(settings['metadata.ai.enabled'])) providers.push('ai');
+  return providers;
+}
+
+export async function enabledMetadataRefreshProviders() {
+  const settings = await systemSettings(['metadata.external.enabled', 'metadata.ai.enabled']);
+  return metadataRefreshProvidersFromSettings(settings);
+}
+
 function firstString(...values: unknown[]) {
   for (const value of values) {
     if (typeof value === 'string' && value.trim()) return value.trim();
@@ -132,6 +173,34 @@ function extractYear(value: unknown) {
   return match ? Number(match[1]) : null;
 }
 
+function numberOrNull(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function firstUrl(...values: unknown[]) {
+  const value = firstString(...values);
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function doubanAbstractParts(value: unknown) {
+  return firstString(value)?.split('/').map((part) => part.trim()).filter(Boolean) ?? [];
+}
+
+function doubanPublisherFromAbstract(value: unknown) {
+  const parts = doubanAbstractParts(value);
+  // 豆瓣搜索摘要通常是：作者 / 译者? / 出版社 / 出版日期 / 定价
+  if (parts.length >= 5) return parts[parts.length - 3];
+  if (parts.length >= 4) return parts[1];
+  return null;
+}
+
 async function fetchJson(url: string, options: RequestInit = {}) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 12000);
@@ -144,17 +213,37 @@ async function fetchJson(url: string, options: RequestInit = {}) {
   }
 }
 
+async function fetchText(url: string, options: RequestInit = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(url, { ...options, signal: controller.signal });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.text();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function cachedJson(provider: string, queryKey: string, ttlMs: number, loader: () => Promise<unknown>) {
   const now = new Date();
-  const cached = await prisma.externalMetadataCache.findUnique({ where: { provider_queryKey: { provider, queryKey } } });
+  const cacheKey = safeCacheQueryKey(queryKey);
+  const cached = await prisma.externalMetadataCache.findUnique({ where: { provider_queryKey: { provider, queryKey: cacheKey } } });
   if (cached && (!cached.expiresAt || cached.expiresAt > now)) return { value: parseJson(cached.rawJson), cacheHit: true };
   const value = await loader();
   await prisma.externalMetadataCache.upsert({
-    where: { provider_queryKey: { provider, queryKey } },
-    create: { provider, queryKey, rawJson: JSON.stringify(value), expiresAt: new Date(Date.now() + ttlMs) },
+    where: { provider_queryKey: { provider, queryKey: cacheKey } },
+    create: { provider, queryKey: cacheKey, rawJson: JSON.stringify(value), expiresAt: new Date(Date.now() + ttlMs) },
     update: { rawJson: JSON.stringify(value), expiresAt: new Date(Date.now() + ttlMs) }
   });
   return { value, cacheHit: false };
+}
+
+export function safeCacheQueryKey(queryKey: string) {
+  if (queryKey.length <= CACHE_QUERY_KEY_MAX_LENGTH) return queryKey;
+  const prefix = queryKey.slice(0, 48).replace(/[^a-zA-Z0-9:_./-]/g, '_');
+  const digest = createHash('sha256').update(queryKey).digest('hex');
+  return `${prefix}:sha256:${digest}`;
 }
 
 function stringifyValue(value: unknown) {
@@ -376,30 +465,253 @@ function makeExternalSuggestion(context: OrganizeContext, field: SuggestionField
   return makeSuggestion(context, field, suggestedValue, 'external', confidence, reason);
 }
 
-function doubanBookSuggestions(context: OrganizeContext, payload: unknown, confidence: number) {
+function metadataSourceForCandidate(source: MetadataLookupSource): SuggestionSource {
+  return source === 'ai' ? 'ai' : 'external';
+}
+
+function candidateValue(candidate: MetadataCandidate, field: SuggestionField) {
+  return candidate[field];
+}
+
+function normalizeMetadataCandidate(candidate: MetadataCandidate): MetadataCandidate {
+  const raw = candidate.raw && typeof candidate.raw === 'object' ? candidate.raw as Record<string, unknown> : {};
+  return {
+    ...candidate,
+    publisher: firstString(candidate.publisher, raw.publisher, doubanPublisherFromAbstract(raw.abstract)),
+    coverUrl: firstUrl(candidate.coverUrl, raw.coverUrl, raw.cover_url, raw.image)
+  };
+}
+
+function normalizeMetadataCandidates(candidates: MetadataCandidate[]) {
+  return candidates.map(normalizeMetadataCandidate);
+}
+
+export function candidateToSuggestions(context: OrganizeContext, candidate: MetadataCandidate, fields: SuggestionField[]) {
+  const source = metadataSourceForCandidate(candidate.source);
+  return fields
+    .map((field) => makeSuggestion(context, field, candidateValue(candidate, field), source, candidate.confidence, `${candidate.source} 候选：用户选择应用 ${field}`))
+    .filter((item): item is PipelineSuggestion => Boolean(item));
+}
+
+function doubanCandidates(payload: unknown, confidence: number): MetadataCandidate[] {
   const raw = payload as Record<string, unknown>;
   const books = Array.isArray(raw.books) ? raw.books : Array.isArray(raw.items) ? raw.items : Array.isArray(payload) ? payload as unknown[] : raw.title || raw.id ? [raw] : [];
-  const book = (books[0] ?? raw) as Record<string, unknown>;
-  const pubdate = firstString(book.pubdate, book.publishedAt, book.date);
-  const tags = stringArray(book.tags).length ? stringArray(book.tags) : stringArray(book.tag);
+  return books.map((item, index) => {
+    const book = item as Record<string, unknown>;
+    const pubdate = firstString(book.pubdate, book.publishedAt, book.date);
+    const tags = stringArray(book.tags).length ? stringArray(book.tags) : stringArray(book.tag);
+    const images = book.images && typeof book.images === 'object' ? book.images as Record<string, unknown> : {};
+    return {
+      id: String(book.id ?? book.isbn13 ?? book.isbn10 ?? book.url ?? `douban-${index}`),
+      source: 'douban' as const,
+      title: firstString(book.title, book.subtitle),
+      author: firstString(book.author, book.authors),
+      publisher: firstString(book.publisher),
+      description: firstString(book.summary, book.description),
+      tags,
+      publishedYear: extractYear(pubdate),
+      coverUrl: firstUrl(book.image, book.cover, book.coverUrl, images.large, images.medium, images.small),
+      confidence,
+      raw: book
+    };
+  }).filter((candidate) => candidate.title || candidate.author || candidate.description);
+}
+
+function decodeHtml(value: string) {
+  return value
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)))
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCharCode(parseInt(code, 16)))
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'");
+}
+
+function stripHtml(value: string) {
+  return decodeHtml(value.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/<[^>]+>/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function metaContent(html: string, property: string) {
+  const escaped = property.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`<meta\\s+(?:property|name)=["']${escaped}["']\\s+content=["']([^"']*)["']`, 'i');
+  const match = pattern.exec(html);
+  return match ? decodeHtml(match[1]).trim() : null;
+}
+
+function parseJsonLdBook(html: string) {
+  const match = /<script\s+type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/i.exec(html);
+  if (!match) return null;
+  try {
+    return JSON.parse(match[1].trim()) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function parseDoubanInfoBlock(html: string) {
+  const match = /<div\s+id=["']info["'][^>]*>([\s\S]*?)<\/div>/i.exec(html);
+  const block = match?.[1] ?? '';
+  const text = stripHtml(block).replace(/\s*(作者|出版社|出版年|ISBN|页数|定价|装帧|副标题|原作名|译者):\s*/g, '\n$1: ');
+  const fields: Record<string, string> = {};
+  for (const line of text.split('\n').map((item) => item.trim()).filter(Boolean)) {
+    const fieldMatch = /^(作者|出版社|出版年|ISBN|页数|定价|装帧|副标题|原作名|译者):\s*(.+)$/.exec(line);
+    if (fieldMatch) fields[fieldMatch[1]] = fieldMatch[2].trim();
+  }
+  return fields;
+}
+
+function parseDoubanIntro(html: string) {
+  const heading = html.search(/<h2>\s*<span>内容简介<\/span>/);
+  if (heading < 0) return metaContent(html, 'og:description');
+  const rest = html.slice(heading);
+  const introMatch = /<div class=["']intro["'][^>]*>([\s\S]*?)<\/div>/i.exec(rest);
+  if (!introMatch) return metaContent(html, 'og:description');
+  return stripHtml(introMatch[1]).replace(/\s+/g, '\n').trim();
+}
+
+export function parseDoubanSubjectHtml(html: string, fallback: Partial<MetadataCandidate> = {}): MetadataCandidate | null {
+  const jsonLd = parseJsonLdBook(html);
+  const info = parseDoubanInfoBlock(html);
+  const authorValue = jsonLd?.author;
+  const authors = Array.isArray(authorValue)
+    ? authorValue.map((item) => firstString((item as Record<string, unknown>).name)).filter(Boolean)
+    : stringArray(authorValue);
+  const url = firstString(jsonLd?.url, jsonLd?.sameAs, metaContent(html, 'og:url'), fallback.id);
+  const id = /\/subject\/(\d+)\//.exec(url ?? '')?.[1] ?? String(fallback.id ?? `douban-${normalizeKey(url ?? jsonLd?.name ?? fallback.title)}`);
+  const pubdate = firstString(info['出版年'], fallback.raw && (fallback.raw as Record<string, unknown>).pubdate);
+  const title = firstString(jsonLd?.name, metaContent(html, 'og:title'), fallback.title);
+  const author = authors[0] ?? firstString(info['作者'], fallback.author);
+  const description = firstString(parseDoubanIntro(html), fallback.description);
+  const tags = stringArray(fallback.tags);
+  const isbn = firstString(jsonLd?.isbn, metaContent(html, 'book:isbn'), info.ISBN);
+  const publisher = firstString(info['出版社'], fallback.publisher);
+  const coverUrl = firstUrl(metaContent(html, 'og:image'), fallback.coverUrl);
+  if (!title && !author && !description) return null;
+  return {
+    id,
+    source: 'douban',
+    title,
+    author,
+    publisher,
+    description,
+    tags,
+    publishedYear: extractYear(pubdate),
+    coverUrl,
+    confidence: fallback.confidence ?? 0.78,
+    raw: { ...(fallback.raw as Record<string, unknown> | undefined), id, url, isbn, pubdate, publisher, coverUrl }
+  };
+}
+
+export function parseDoubanSearchHtml(html: string, confidence: number): MetadataCandidate[] {
+  const marker = 'window.__DATA__ = ';
+  const start = html.indexOf(marker);
+  if (start < 0) return [];
+  const dataStart = start + marker.length;
+  const dataEnd = html.indexOf(';', dataStart);
+  if (dataEnd < 0) return [];
+  try {
+    const raw = JSON.parse(html.slice(dataStart, dataEnd)) as Record<string, unknown>;
+    const items = Array.isArray(raw.items) ? raw.items : [];
+    return items
+      .map((item) => item as Record<string, unknown>)
+      .filter((item) => item.tpl_name === 'search_subject' && firstString(item.url)?.includes('/subject/'))
+      .map((item) => {
+        const abstractParts = doubanAbstractParts(item.abstract);
+        const coverUrl = firstUrl(item.cover_url);
+        return {
+          id: String(item.id ?? /\/subject\/(\d+)\//.exec(firstString(item.url) ?? '')?.[1] ?? `douban-${normalizeKey(item.title)}`),
+          source: 'douban' as const,
+          title: firstString(item.title),
+          author: abstractParts[0] ?? null,
+          publisher: doubanPublisherFromAbstract(item.abstract),
+          description: firstString(item.abstract_2),
+          tags: [],
+          publishedYear: extractYear(firstString(item.abstract)),
+          coverUrl,
+          confidence,
+          raw: { ...item, url: firstString(item.url), coverUrl }
+        };
+      })
+      .filter((candidate) => candidate.title || candidate.author);
+  } catch {
+    return [];
+  }
+}
+
+function doubanHeaders(settings: Record<string, string | null | undefined>) {
+  return {
+    Accept: 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
+    'User-Agent': settings['metadata.douban.userAgent'] || DEFAULT_DOUBAN_USER_AGENT,
+    Referer: DEFAULT_DOUBAN_BASE_URL
+  };
+}
+
+function doubanBaseUrl(settings: Record<string, string | null | undefined>) {
+  return (settings['metadata.douban.baseUrl']?.trim() || DEFAULT_DOUBAN_BASE_URL).replace(/\/+$/, '');
+}
+
+async function fetchDoubanSubject(baseUrl: string, subjectUrl: string, headers: Record<string, string>, fallback: Partial<MetadataCandidate>) {
+  const url = subjectUrl.startsWith('http') ? subjectUrl : `${baseUrl}${subjectUrl.startsWith('/') ? '' : '/'}${subjectUrl}`;
+  const cache = await cachedJson('douban-crawler', `${DOUBAN_CRAWLER_CACHE_VERSION}:subject:${url}`, EXTERNAL_TTL_MS, async () => {
+    const html = await fetchText(url, { headers });
+    return parseDoubanSubjectHtml(html, fallback);
+  });
+  const candidate = cache.value as MetadataCandidate | null;
+  return { candidate: candidate ? normalizeMetadataCandidate(candidate) : null, cacheHit: cache.cacheHit };
+}
+
+async function searchDoubanCrawlerCandidates(settings: Record<string, string | null | undefined>, queryText: string, confidence: number) {
+  const baseUrl = doubanBaseUrl(settings);
+  const headers = doubanHeaders(settings);
+  const subjectMatch = /(?:book\.douban\.com\/subject\/)?(\d{4,})/.exec(queryText);
+  if (subjectMatch && queryText.includes('/subject/')) {
+    const subject = await fetchDoubanSubject(baseUrl, `/subject/${subjectMatch[1]}/`, headers, { confidence });
+    return subject.candidate ? { candidates: [subject.candidate], cacheHit: subject.cacheHit } : { candidates: [], cacheHit: subject.cacheHit };
+  }
+  const query = new URLSearchParams({ search_text: queryText }).toString();
+  const search = await cachedJson('douban-crawler', `${DOUBAN_CRAWLER_CACHE_VERSION}:search:${normalizeKey(queryText)}`, EXTERNAL_TTL_MS, async () => {
+    const html = await fetchText(`${baseUrl}/subject_search?${query}`, { headers });
+    return parseDoubanSearchHtml(html, confidence).slice(0, 8);
+  });
+  const candidates = Array.isArray(search.value) ? normalizeMetadataCandidates(search.value as MetadataCandidate[]) : [];
+  return { candidates, cacheHit: search.cacheHit };
+}
+
+function doubanBookSuggestions(context: OrganizeContext, payload: unknown, confidence: number) {
+  const book = doubanCandidates(payload, confidence)[0];
+  if (!book) return [];
   return [
-    makeExternalSuggestion(context, 'title', firstString(book.title, book.subtitle), confidence, '外部数据源 · 豆瓣：匹配图书标题'),
-    makeExternalSuggestion(context, 'author', firstString(book.author, book.authors), confidence, '外部数据源 · 豆瓣：匹配作者'),
-    makeExternalSuggestion(context, 'description', firstString(book.summary, book.description), Math.min(confidence, 0.82), '外部数据源 · 豆瓣：补全简介'),
-    makeExternalSuggestion(context, 'tags', tags, Math.min(confidence, 0.76), '外部数据源 · 豆瓣：补全标签'),
-    makeExternalSuggestion(context, 'publishedYear', extractYear(pubdate), Math.min(confidence, 0.82), '外部数据源 · 豆瓣：补全出版年')
+    makeExternalSuggestion(context, 'title', book.title, confidence, '外部数据源 · 豆瓣：匹配图书标题'),
+    makeExternalSuggestion(context, 'author', book.author, confidence, '外部数据源 · 豆瓣：匹配作者'),
+    makeExternalSuggestion(context, 'description', book.description, Math.min(confidence, 0.82), '外部数据源 · 豆瓣：补全简介'),
+    makeExternalSuggestion(context, 'tags', book.tags, Math.min(confidence, 0.76), '外部数据源 · 豆瓣：补全标签'),
+    makeExternalSuggestion(context, 'publishedYear', book.publishedYear, Math.min(confidence, 0.82), '外部数据源 · 豆瓣：补全出版年')
   ].filter((item): item is PipelineSuggestion => Boolean(item));
 }
 
-async function runDoubanProvider(context: OrganizeContext) {
-  const settings = await systemSettings(['metadata.external.enabled', 'metadata.douban.enabled', 'metadata.douban.baseUrl', 'metadata.douban.apiKey']);
-  if (!coerceBoolean(settings['metadata.external.enabled']) || !coerceBoolean(settings['metadata.douban.enabled'])) return { suggestions: [], enabled: false, cacheHit: false, message: '豆瓣数据源未启用' };
-  const baseUrl = settings['metadata.douban.baseUrl']?.replace(/\/+$/, '');
-  if (!baseUrl) return { suggestions: [], enabled: false, cacheHit: false, message: '豆瓣兼容 API 地址未配置' };
+async function runDoubanProvider(context: OrganizeContext, options: ProviderRunOptions = {}) {
+  const settings = await systemSettings(['metadata.external.enabled', 'metadata.douban.enabled', 'metadata.douban.mode', 'metadata.douban.baseUrl', 'metadata.douban.apiKey', 'metadata.douban.userAgent']);
+  if (!options.force && (!coerceBoolean(settings['metadata.external.enabled']) || !coerceBoolean(settings['metadata.douban.enabled']))) return { suggestions: [], enabled: false, cacheHit: false, message: '豆瓣数据源未启用' };
   const edition = context.work.editions[0];
   const isbn = edition?.isbn ?? edition?.identifier ?? null;
   const title = contextSearchTitle(context);
   const author = contextAuthor(context);
+  const mode = settings['metadata.douban.mode'] === 'api' ? 'api' : 'crawler';
+  if (mode === 'crawler') {
+    const query = isbn || [title, author].filter(Boolean).join(' ');
+    const search = await searchDoubanCrawlerCandidates(settings, query, isbn ? 0.9 : author ? 0.8 : 0.7);
+    const first = search.candidates[0];
+    if (!first) return { suggestions: [], enabled: true, cacheHit: search.cacheHit, message: '豆瓣未找到匹配图书' };
+    const subjectUrl = first.raw && typeof first.raw === 'object' ? firstString((first.raw as Record<string, unknown>).url) : null;
+    const detail = subjectUrl ? await fetchDoubanSubject(doubanBaseUrl(settings), subjectUrl, doubanHeaders(settings), first) : { candidate: first, cacheHit: true };
+    return { suggestions: doubanBookSuggestions(context, detail.candidate ?? first, detail.candidate?.confidence ?? first.confidence), enabled: true, cacheHit: search.cacheHit && detail.cacheHit };
+  }
+  const baseUrl = settings['metadata.douban.baseUrl']?.replace(/\/+$/, '');
+  if (!baseUrl) return { suggestions: [], enabled: false, cacheHit: false, message: '豆瓣兼容 API 地址未配置' };
   const apiKey = settings['metadata.douban.apiKey'];
   const params = new URLSearchParams();
   if (apiKey) params.set('apikey', apiKey);
@@ -420,28 +732,80 @@ async function runDoubanProvider(context: OrganizeContext) {
   return { suggestions: doubanBookSuggestions(context, cache.value, confidence), enabled: true, cacheHit: cache.cacheHit };
 }
 
-function bangumiSubjectSuggestions(context: OrganizeContext, payload: unknown, confidence: number) {
+async function searchDoubanCandidates(_context: OrganizeContext, queryText: string) {
+  const settings = await systemSettings(['metadata.douban.mode', 'metadata.douban.baseUrl', 'metadata.douban.apiKey', 'metadata.douban.userAgent']);
+  const mode = settings['metadata.douban.mode'] === 'api' ? 'api' : 'crawler';
+  if (mode === 'crawler') {
+    const search = await searchDoubanCrawlerCandidates(settings, queryText, 0.78);
+    const enriched = await Promise.all(search.candidates.slice(0, 3).map((candidate) => resolveDoubanCrawlerCandidate(candidate, settings)));
+    return [...enriched, ...search.candidates.slice(3)];
+  }
+  const baseUrl = settings['metadata.douban.baseUrl']?.replace(/\/+$/, '');
+  if (!baseUrl) throw new Error('豆瓣兼容 API 地址未配置');
+  const params = new URLSearchParams({ q: queryText, count: '8' });
+  if (settings['metadata.douban.apiKey']) params.set('apikey', settings['metadata.douban.apiKey']);
+  const query = params.toString();
+  const cache = await cachedJson('douban', `/v2/book/search?${query}`, EXTERNAL_TTL_MS, () => fetchJson(`${baseUrl}/v2/book/search?${query}`, { headers: { Accept: 'application/json' } }));
+  return normalizeMetadataCandidates(doubanCandidates(cache.value, 0.78));
+}
+
+async function resolveDoubanCrawlerCandidate(candidate: MetadataCandidate, settings?: Record<string, string | null | undefined>) {
+  const doubanSettings = settings ?? await systemSettings(['metadata.douban.mode', 'metadata.douban.baseUrl', 'metadata.douban.userAgent']);
+  if (doubanSettings['metadata.douban.mode'] === 'api') return candidate;
+  const raw = candidate.raw && typeof candidate.raw === 'object' ? candidate.raw as Record<string, unknown> : {};
+  const subjectUrl = firstString(raw.url, /^\d+$/.test(candidate.id) ? `/subject/${candidate.id}/` : null);
+  if (!subjectUrl) return candidate;
+  const detail = await fetchDoubanSubject(doubanBaseUrl(doubanSettings), subjectUrl, doubanHeaders(doubanSettings), candidate);
+  return detail.candidate ?? normalizeMetadataCandidate(candidate);
+}
+
+function bangumiCandidates(payload: unknown, confidence: number): MetadataCandidate[] {
   const raw = payload as Record<string, unknown>;
   const data = Array.isArray(raw.data) ? raw.data : Array.isArray(payload) ? payload as unknown[] : raw.name || raw.id ? [raw] : [];
-  const subject = (data.find((item) => Number((item as Record<string, unknown>).type) === 1) ?? data[0] ?? raw) as Record<string, unknown>;
-  const tags = Array.isArray(subject.tags) ? subject.tags.map((tag) => typeof tag === 'string' ? tag : (tag as Record<string, unknown>).name).filter(Boolean) : [];
-  const infobox = Array.isArray(subject.infobox) ? subject.infobox as Array<Record<string, unknown>> : [];
-  const authors = infobox.filter((item) => /作者|作画|原作/.test(String(item.key))).flatMap((item) => stringArray(item.value));
-  const date = firstString(subject.date, subject.air_date);
+  return data.map((item, index) => {
+    const subject = item as Record<string, unknown>;
+    const imageMap = subject.images && typeof subject.images === 'object' ? subject.images as Record<string, unknown> : {};
+    const tags = Array.isArray(subject.tags) ? subject.tags.map((tag) => typeof tag === 'string' ? tag : (tag as Record<string, unknown>).name).filter(Boolean).map(String) : [];
+    const infobox = Array.isArray(subject.infobox) ? subject.infobox as Array<Record<string, unknown>> : [];
+    const authors = infobox.filter((entry) => /作者|作画|原作/.test(String(entry.key))).flatMap((entry) => stringArray(entry.value));
+    const publisher = infobox.find((entry) => /出版社|发行|发售|厂牌|连载杂志/.test(String(entry.key)))?.value;
+    const volume = infobox.find((entry) => /册数|卷数|话数/.test(String(entry.key)))?.value;
+    const date = firstString(subject.date, subject.air_date);
+    return {
+      id: String(subject.id ?? subject.url ?? `bangumi-${index}`),
+      source: 'bangumi' as const,
+      title: firstString(subject.name_cn, subject.name),
+      author: authors[0] ?? null,
+      publisher: firstString(publisher),
+      description: firstString(subject.summary),
+      tags: tags.slice(0, 8),
+      seriesName: firstString(subject.name_cn, subject.name),
+      seriesIndex: numberOrNull(volume),
+      publishedYear: extractYear(date),
+      coverUrl: firstUrl(imageMap.large, imageMap.common, imageMap.medium, imageMap.grid, subject.image),
+      confidence,
+      raw: subject
+    };
+  }).filter((candidate) => candidate.title || candidate.description);
+}
+
+function bangumiSubjectSuggestions(context: OrganizeContext, payload: unknown, confidence: number) {
+  const subject = bangumiCandidates(payload, confidence)[0];
+  if (!subject) return [];
   return [
-    makeExternalSuggestion(context, 'title', firstString(subject.name_cn, subject.name), confidence, '外部数据源 · Bangumi：匹配漫画条目'),
-    makeExternalSuggestion(context, 'author', authors[0], Math.min(confidence, 0.78), '外部数据源 · Bangumi：补全作者/原作'),
-    makeExternalSuggestion(context, 'description', firstString(subject.summary), Math.min(confidence, 0.8), '外部数据源 · Bangumi：补全简介'),
-    makeExternalSuggestion(context, 'tags', tags.slice(0, 8), Math.min(confidence, 0.72), '外部数据源 · Bangumi：补全标签'),
-    makeExternalSuggestion(context, 'seriesName', firstString(subject.name_cn, subject.name), Math.min(confidence, 0.82), '外部数据源 · Bangumi：补全系列名'),
-    makeExternalSuggestion(context, 'publishedYear', extractYear(date), Math.min(confidence, 0.78), '外部数据源 · Bangumi：补全出版年')
+    makeExternalSuggestion(context, 'title', subject.title, confidence, '外部数据源 · Bangumi：匹配漫画条目'),
+    makeExternalSuggestion(context, 'author', subject.author, Math.min(confidence, 0.78), '外部数据源 · Bangumi：补全作者/原作'),
+    makeExternalSuggestion(context, 'description', subject.description, Math.min(confidence, 0.8), '外部数据源 · Bangumi：补全简介'),
+    makeExternalSuggestion(context, 'tags', subject.tags, Math.min(confidence, 0.72), '外部数据源 · Bangumi：补全标签'),
+    makeExternalSuggestion(context, 'seriesName', subject.seriesName, Math.min(confidence, 0.82), '外部数据源 · Bangumi：补全系列名'),
+    makeExternalSuggestion(context, 'publishedYear', subject.publishedYear, Math.min(confidence, 0.78), '外部数据源 · Bangumi：补全出版年')
   ].filter((item): item is PipelineSuggestion => Boolean(item));
 }
 
-async function runBangumiProvider(context: OrganizeContext) {
+async function runBangumiProvider(context: OrganizeContext, options: ProviderRunOptions = {}) {
   const settings = await systemSettings(['metadata.external.enabled', 'metadata.bangumi.enabled', 'metadata.bangumi.accessToken', 'metadata.bangumi.userAgent']);
-  if (!coerceBoolean(settings['metadata.external.enabled']) || !coerceBoolean(settings['metadata.bangumi.enabled'])) return { suggestions: [], enabled: false, cacheHit: false, message: 'Bangumi 数据源未启用' };
-  const userAgent = settings['metadata.bangumi.userAgent'];
+  if (!options.force && (!coerceBoolean(settings['metadata.external.enabled']) || !coerceBoolean(settings['metadata.bangumi.enabled']))) return { suggestions: [], enabled: false, cacheHit: false, message: 'Bangumi 数据源未启用' };
+  const userAgent = settings['metadata.bangumi.userAgent'] || DEFAULT_BANGUMI_USER_AGENT;
   if (!userAgent) return { suggestions: [], enabled: false, cacheHit: false, message: 'Bangumi User-Agent 未配置' };
   const title = contextSearchTitle(context);
   const headers: Record<string, string> = { Accept: 'application/json', 'Content-Type': 'application/json', 'User-Agent': userAgent };
@@ -454,6 +818,21 @@ async function runBangumiProvider(context: OrganizeContext) {
     })
   );
   return { suggestions: bangumiSubjectSuggestions(context, cache.value, 0.82), enabled: true, cacheHit: cache.cacheHit };
+}
+
+async function searchBangumiCandidates(_context: OrganizeContext, queryText: string) {
+  const settings = await systemSettings(['metadata.bangumi.accessToken', 'metadata.bangumi.userAgent']);
+  const userAgent = settings['metadata.bangumi.userAgent'] || DEFAULT_BANGUMI_USER_AGENT;
+  const headers: Record<string, string> = { Accept: 'application/json', 'Content-Type': 'application/json', 'User-Agent': userAgent };
+  if (settings['metadata.bangumi.accessToken']) headers.Authorization = `Bearer ${settings['metadata.bangumi.accessToken']}`;
+  const cache = await cachedJson('bangumi', `search:${normalizeKey(queryText)}`, EXTERNAL_TTL_MS, () =>
+    fetchJson('https://api.bgm.tv/v0/search/subjects', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ keyword: queryText, sort: 'match', filter: { type: [1] } })
+    })
+  );
+  return bangumiCandidates(cache.value, 0.82);
 }
 
 function localMetadataSummary(context: OrganizeContext) {
@@ -482,14 +861,47 @@ function aiSuggestions(context: OrganizeContext, payload: unknown) {
     const suggestion = item as Record<string, unknown>;
     const field = suggestion.field as SuggestionField;
     if (!['title', 'author', 'description', 'tags', 'seriesName', 'seriesIndex', 'publishedYear'].includes(field)) return null;
-    const confidence = Math.min(0.74, Math.max(0, Number(suggestion.confidence ?? 0.6)));
+    const confidence = normalizeAiSuggestionConfidence(suggestion.confidence);
     return makeSuggestion(context, field, suggestion.value, 'ai', confidence, `AI 识别：${String(suggestion.reason ?? '根据本地元数据摘要推断')}`);
   }).filter((item): item is PipelineSuggestion => Boolean(item));
 }
 
-async function runAiProvider(context: OrganizeContext) {
+function aiCandidates(payload: unknown): MetadataCandidate[] {
+  const raw = payload as Record<string, unknown>;
+  const message = Array.isArray(raw.choices) ? (raw.choices[0] as Record<string, unknown>)?.message as Record<string, unknown> | undefined : undefined;
+  const content = typeof message?.content === 'string' ? message.content : JSON.stringify(raw);
+  const parsed = parseJson(content.replace(/^```json\s*/i, '').replace(/```$/i, '').trim()) as Record<string, unknown> | null;
+  const candidates = Array.isArray(parsed?.candidates) ? parsed.candidates : Array.isArray(parsed?.suggestions) ? [{ suggestions: parsed.suggestions }] : [];
+  return candidates.map((item, index) => {
+    const candidate = item as Record<string, unknown>;
+    const suggestions = Array.isArray(candidate.suggestions) ? candidate.suggestions as Array<Record<string, unknown>> : [];
+    const byField = Object.fromEntries(suggestions.map((suggestion) => [String(suggestion.field), suggestion.value]));
+    const confidence = normalizeAiSuggestionConfidence(candidate.confidence ?? Math.max(...suggestions.map((suggestion) => Number(suggestion.confidence ?? 0.6)), 0.6));
+    return {
+      id: String(candidate.id ?? `ai-${index}`),
+      source: 'ai' as const,
+      title: firstString(candidate.title, byField.title),
+      author: firstString(candidate.author, byField.author),
+      publisher: firstString(candidate.publisher, byField.publisher),
+      description: firstString(candidate.description, byField.description),
+      tags: stringArray(candidate.tags ?? byField.tags),
+      seriesName: firstString(candidate.seriesName, byField.seriesName),
+      seriesIndex: numberOrNull(candidate.seriesIndex ?? byField.seriesIndex),
+      publishedYear: extractYear(candidate.publishedYear ?? byField.publishedYear),
+      coverUrl: firstUrl(candidate.coverUrl, byField.coverUrl),
+      confidence,
+      raw: candidate
+    };
+  }).filter((candidate) => candidate.title || candidate.author || candidate.description || (candidate.tags?.length ?? 0) > 0);
+}
+
+export function normalizeAiSuggestionConfidence(confidence: unknown) {
+  return Math.min(0.74, Math.max(0, Number(confidence ?? 0.6)));
+}
+
+async function runAiProvider(context: OrganizeContext, options: ProviderRunOptions = {}) {
   const settings = await systemSettings(['metadata.ai.enabled', 'metadata.ai.baseUrl', 'metadata.ai.apiKey', 'metadata.ai.model']);
-  if (!coerceBoolean(settings['metadata.ai.enabled'])) return { suggestions: [], enabled: false, cacheHit: false, message: 'AI 元数据识别未启用' };
+  if (!options.force && !coerceBoolean(settings['metadata.ai.enabled'])) return { suggestions: [], enabled: false, cacheHit: false, message: 'AI 元数据识别未启用' };
   const baseUrl = settings['metadata.ai.baseUrl']?.replace(/\/+$/, '');
   const model = settings['metadata.ai.model'];
   if (!baseUrl || !settings['metadata.ai.apiKey'] || !model) return { suggestions: [], enabled: false, cacheHit: false, message: 'AI 接口地址、模型或 API Key 未配置' };
@@ -510,6 +922,40 @@ async function runAiProvider(context: OrganizeContext) {
     })
   );
   return { suggestions: aiSuggestions(context, cache.value), enabled: true, cacheHit: cache.cacheHit };
+}
+
+async function searchAiCandidates(context: OrganizeContext, queryText: string) {
+  const settings = await systemSettings(['metadata.ai.baseUrl', 'metadata.ai.apiKey', 'metadata.ai.model']);
+  const baseUrl = settings['metadata.ai.baseUrl']?.replace(/\/+$/, '');
+  const model = settings['metadata.ai.model'];
+  if (!baseUrl || !settings['metadata.ai.apiKey'] || !model) throw new Error('AI 接口地址、模型或 API Key 未配置');
+  const summary = { ...localMetadataSummary(context), query: queryText };
+  const cache = await cachedJson('ai', `lookup:${normalizeKey(JSON.stringify(summary))}:${model}`, AI_TTL_MS, () =>
+    fetchJson(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${settings['metadata.ai.apiKey']}` },
+      body: JSON.stringify({
+        model,
+        temperature: 0.1,
+        response_format: { type: 'json_object' },
+        messages: [
+          { role: 'system', content: '你是图书元数据整理助手。只返回 JSON，格式为 {"candidates":[{"title":"","author":"","publisher":"","description":"","tags":[],"seriesName":"","seriesIndex":null,"publishedYear":null,"coverUrl":null,"confidence":0-1}]}。可以返回 1 到 3 个候选；coverUrl 只有在本地摘要或可靠上下文明确提供图片 URL 时才填写，不要编造不确定信息。' },
+          { role: 'user', content: JSON.stringify(summary) }
+        ]
+      })
+    })
+  );
+  return aiCandidates(cache.value);
+}
+
+export async function searchMetadataCandidates(options: { workId: string; source: MetadataLookupSource; query: string }) {
+  const context = await buildContext(options.workId);
+  if (!context) throw new Error('读物不存在');
+  const queryText = options.query.trim();
+  if (!queryText) throw new Error('请输入查询文本');
+  if (options.source === 'bangumi') return searchBangumiCandidates(context, queryText);
+  if (options.source === 'douban') return searchDoubanCandidates(context, queryText);
+  return searchAiCandidates(context, queryText);
 }
 
 async function addSuggestionsToJob(jobId: string, suggestions: PipelineSuggestion[]) {
@@ -534,7 +980,7 @@ async function addSuggestionsToJob(jobId: string, suggestions: PipelineSuggestio
   return create.length;
 }
 
-export async function refreshOrganizeMetadataProviders(jobId: string, providers: RefreshProvider[]) {
+export async function refreshOrganizeMetadataProviders(jobId: string, providers: RefreshProvider[], options: ProviderRunOptions = {}) {
   const job = await prisma.organizeJob.findUnique({ where: { id: jobId }, select: { id: true, workId: true } });
   if (!job) throw new Error('整理任务不存在');
   const context = await buildContext(job.workId);
@@ -543,8 +989,8 @@ export async function refreshOrganizeMetadataProviders(jobId: string, providers:
   for (const provider of [...new Set(providers)]) {
     try {
       const run = provider === 'external'
-        ? context.work.workType === 'COMIC' ? await runBangumiProvider(context) : await runDoubanProvider(context)
-        : await runAiProvider(context);
+        ? context.work.workType === 'COMIC' ? await runBangumiProvider(context, options) : await runDoubanProvider(context, options)
+        : await runAiProvider(context, options);
       const added = run.enabled ? await addSuggestionsToJob(job.id, run.suggestions) : 0;
       results.push({ provider, enabled: run.enabled, added, cacheHit: run.cacheHit, message: run.message });
     } catch (error) {
@@ -557,6 +1003,16 @@ export async function refreshOrganizeMetadataProviders(jobId: string, providers:
     await prisma.libraryWork.update({ where: { id: job.workId }, data: { organizeStatus: 'REVIEWING', organized: false } });
   }
   return { added, results };
+}
+
+export async function refreshAndApplyImportMetadata(jobId: string) {
+  const providers = await enabledMetadataRefreshProviders();
+  if (providers.length === 0) {
+    return { providers, refresh: null, applied: 0, enabled: false };
+  }
+  const refresh = await refreshOrganizeMetadataProviders(jobId, providers);
+  const apply = await applyMetadataSuggestions({ jobId, highConfidenceOnly: true });
+  return { providers, refresh, applied: apply.applied, enabled: true };
 }
 
 export function metadataQualityFor(suggestions: PipelineSuggestion[], duplicates: PipelineDuplicate[]) {
@@ -660,4 +1116,123 @@ export async function applyMetadataSuggestions(options: { jobId: string; suggest
     prisma.organizeJob.update({ where: { id: job.id }, data: { status: options.markOrganized ? 'APPLIED' : job.status } })
   ]);
   return { applied: selected.length, dismissed: false };
+}
+
+const suggestionFieldSet = new Set<SuggestionField>(['title', 'author', 'description', 'tags', 'seriesName', 'seriesIndex', 'publishedYear']);
+const metadataApplyFieldSet = new Set<MetadataApplyField>(['title', 'author', 'description', 'tags', 'seriesName', 'seriesIndex', 'publishedYear', 'publisher', 'coverUrl']);
+
+function isSuggestionField(field: string): field is SuggestionField {
+  return suggestionFieldSet.has(field as SuggestionField);
+}
+
+function isMetadataApplyField(field: string): field is MetadataApplyField {
+  return metadataApplyFieldSet.has(field as MetadataApplyField);
+}
+
+function candidatePatch(candidate: MetadataCandidate, fields: SuggestionField[]): Prisma.LibraryWorkUpdateInput {
+  const allowed = new Set(fields);
+  const data: Prisma.LibraryWorkUpdateInput = {};
+  if (allowed.has('title') && typeof candidate.title === 'string' && candidate.title.trim()) {
+    data.title = candidate.title.trim();
+    data.normalizedTitle = normalizeKey(candidate.title);
+  }
+  if (allowed.has('author') && typeof candidate.author === 'string') {
+    data.author = candidate.author.trim() || null;
+    data.normalizedAuthor = normalizeKey(candidate.author) || null;
+  }
+  if (allowed.has('description') && typeof candidate.description === 'string') data.description = candidate.description;
+  if (allowed.has('tags') && Array.isArray(candidate.tags)) data.tags = JSON.stringify([...new Set(candidate.tags.map(String).map((tag) => tag.trim()).filter(Boolean))]);
+  if (allowed.has('seriesName') && typeof candidate.seriesName === 'string') data.seriesName = candidate.seriesName.trim() || null;
+  if (allowed.has('seriesIndex') && typeof candidate.seriesIndex === 'number' && Number.isFinite(candidate.seriesIndex)) data.seriesIndex = candidate.seriesIndex;
+  if (allowed.has('publishedYear') && typeof candidate.publishedYear === 'number' && Number.isInteger(candidate.publishedYear)) data.publishedYear = candidate.publishedYear;
+  return data;
+}
+
+function coverExtension(contentType: string | null, url: string) {
+  const normalized = contentType?.split(';')[0]?.trim().toLowerCase();
+  if (normalized === 'image/jpeg') return '.jpg';
+  if (normalized === 'image/png') return '.png';
+  if (normalized === 'image/webp') return '.webp';
+  if (normalized === 'image/gif') return '.gif';
+  const ext = extname(new URL(url).pathname).toLowerCase();
+  return ['.jpg', '.jpeg', '.png', '.webp', '.gif'].includes(ext) ? (ext === '.jpeg' ? '.jpg' : ext) : '.jpg';
+}
+
+async function downloadCandidateCover(workId: string, coverUrl: string) {
+  const url = firstUrl(coverUrl);
+  if (!url) throw new Error('候选封面地址无效');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 12000);
+  try {
+    const response = await fetch(url, { headers: { Accept: 'image/*' }, signal: controller.signal });
+    if (!response.ok) throw new Error(`封面下载失败：HTTP ${response.status}`);
+    const contentType = response.headers.get('content-type');
+    if (contentType && !contentType.toLowerCase().startsWith('image/')) throw new Error('候选封面不是图片');
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length === 0) throw new Error('候选封面为空');
+    if (bytes.length > 8 * 1024 * 1024) throw new Error('候选封面超过 8MB');
+    const storageRoot = process.env.STORAGE_ROOT ?? join(process.cwd(), 'storage');
+    const coverRoot = join(storageRoot, 'covers', 'external');
+    await mkdir(coverRoot, { recursive: true });
+    const digest = createHash('sha256').update(`${workId}:${url}`).digest('hex').slice(0, 12);
+    const coverPath = join(coverRoot, `${workId}-${digest}${coverExtension(contentType, url)}`);
+    await writeFile(coverPath, bytes);
+    return coverPath;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function applyMetadataCandidate(options: { workId: string; source: MetadataLookupSource; candidate: MetadataCandidate; fields: MetadataApplyField[] }) {
+  const context = await buildContext(options.workId);
+  if (!context) throw new Error('读物不存在');
+  const selectedApplyFields = [...new Set(options.fields.map(String).filter(isMetadataApplyField))];
+  const selectedFields = selectedApplyFields.filter(isSuggestionField);
+  if (selectedApplyFields.length === 0) throw new Error('请选择要应用的字段');
+  const candidate = options.source === 'douban'
+    ? await resolveDoubanCrawlerCandidate({ ...options.candidate, source: options.source })
+    : { ...options.candidate, source: options.source };
+  const data = candidatePatch(candidate, selectedFields);
+  const editionData: Prisma.LibraryEditionUpdateInput = {};
+  if (selectedApplyFields.includes('publisher') && typeof candidate.publisher === 'string' && candidate.publisher.trim()) {
+    editionData.publisher = candidate.publisher.trim();
+  }
+  if (selectedApplyFields.includes('coverUrl') && typeof candidate.coverUrl === 'string' && candidate.coverUrl.trim()) {
+    data.coverPath = await downloadCandidateCover(options.workId, candidate.coverUrl);
+    data.coverStatus = 'READY';
+  }
+  if (Object.keys(data).length === 0 && Object.keys(editionData).length === 0) throw new Error('所选字段没有可应用的值');
+  const suggestions = candidateToSuggestions(context, candidate, selectedFields);
+  await prisma.$transaction(async (tx) => {
+    if (Object.keys(data).length) await tx.libraryWork.update({ where: { id: options.workId }, data: { ...data, organized: true, organizeStatus: 'APPLIED' } });
+    else await tx.libraryWork.update({ where: { id: options.workId }, data: { organized: true, organizeStatus: 'APPLIED' } });
+    const primaryEdition = context.work.editions.find((edition) => edition.id === context.work.primaryEditionId) ?? context.work.editions.find((edition) => edition.primary) ?? context.work.editions[0] ?? null;
+    if (primaryEdition && Object.keys(editionData).length) {
+      await tx.libraryEdition.update({ where: { id: primaryEdition.id }, data: editionData });
+    }
+    const job = await tx.organizeJob.findFirst({
+      where: { workId: options.workId, status: { in: ['PENDING', 'REVIEWING'] } },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true }
+    });
+    if (job && suggestions.length) {
+      await tx.metadataSuggestion.createMany({
+        data: suggestions.map((suggestion) => ({
+          jobId: job.id,
+          field: suggestion.field,
+          currentValue: stringifyValue(suggestion.currentValue),
+          suggestedValue: stringifyValue(suggestion.suggestedValue),
+          source: suggestion.source,
+          confidence: suggestion.confidence,
+          reason: suggestion.reason,
+          status: 'APPLIED'
+        }))
+      });
+      await tx.metadataSuggestion.updateMany({
+        where: { jobId: job.id, status: 'PENDING', field: { in: selectedFields } },
+        data: { status: 'DISMISSED' }
+      });
+    }
+  });
+  return { applied: selectedApplyFields.length };
 }

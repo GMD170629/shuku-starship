@@ -10,8 +10,10 @@ const allowedKeys = new Set([
   'timezone',
   'metadata.external.enabled',
   'metadata.douban.enabled',
+  'metadata.douban.mode',
   'metadata.douban.baseUrl',
   'metadata.douban.apiKey',
+  'metadata.douban.userAgent',
   'metadata.bangumi.enabled',
   'metadata.bangumi.accessToken',
   'metadata.bangumi.userAgent',
@@ -35,7 +37,19 @@ export async function GET() {
 export async function PUT(request: Request) {
   await requireUser();
   const body = await readJson<Record<string, string>>(request);
-  const entries = Object.entries(body).filter(([key, value]) => allowedKeys.has(key) && !(secretKeys.has(key) && String(value) === '********'));
+  const normalizedBody = { ...body };
+  if (String(normalizedBody['metadata.external.enabled']) === 'true') {
+    normalizedBody['metadata.douban.enabled'] = 'true';
+    normalizedBody['metadata.bangumi.enabled'] = 'true';
+  }
+  if (
+    String(normalizedBody['metadata.ai.baseUrl'] ?? '').trim()
+    && String(normalizedBody['metadata.ai.model'] ?? '').trim()
+    && String(normalizedBody['metadata.ai.apiKey'] ?? '').trim()
+  ) {
+    normalizedBody['metadata.ai.enabled'] = 'true';
+  }
+  const entries = Object.entries(normalizedBody).filter(([key, value]) => allowedKeys.has(key) && !(secretKeys.has(key) && String(value) === '********'));
   if (entries.length === 0) return fail('没有可保存的设置', 400);
   await prisma.$transaction(
     entries.map(([key, value]) =>

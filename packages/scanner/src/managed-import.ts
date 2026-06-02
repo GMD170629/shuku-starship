@@ -6,7 +6,7 @@ import yauzl from 'yauzl';
 import { prisma } from '@shuku/database';
 import { Prisma } from '@prisma/client';
 import type { BookOrigin } from '@prisma/client';
-import { createOrRefreshOrganizeJob } from './organize-pipeline.js';
+import { createOrRefreshOrganizeJob, refreshAndApplyImportMetadata } from './organize-pipeline.js';
 
 const STORAGE_ROOT = resolve(process.env.STORAGE_ROOT ?? join(process.cwd(), 'storage'));
 const LIBRARY_STORAGE_ROOT = process.env.LIBRARY_STORAGE_ROOT ?? join(STORAGE_ROOT, 'library');
@@ -1073,9 +1073,28 @@ export async function importManagedBook(options: ImportManagedBookOptions): Prom
       }
     });
     if (result.workId && !result.duplicate) {
-      await createOrRefreshOrganizeJob({ workId: result.workId, editionId: result.editionId, importTaskId }).catch((error) =>
-        logImport(importTaskId, 'warn', `organize job skipped: ${error instanceof Error ? error.message : String(error)}`)
-      );
+      const job = await createOrRefreshOrganizeJob({ workId: result.workId, editionId: result.editionId, importTaskId }).catch(async (error) => {
+        await logImport(importTaskId, 'warn', `organize job skipped: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      });
+      if (job) {
+        await refreshAndApplyImportMetadata(job.id)
+          .then((metadataResult) => {
+            if (!metadataResult.enabled) {
+              return logImport(importTaskId, 'info', 'metadata auto refresh skipped: no enabled providers');
+            }
+            const providerLabels = metadataResult.providers.join(',');
+            const added = metadataResult.refresh?.added ?? 0;
+            const disabled = metadataResult.refresh?.results.filter((item) => !item.enabled).map((item) => `${item.provider}:${item.message ?? 'disabled'}`) ?? [];
+            const errors = metadataResult.refresh?.results.filter((item) => item.error).map((item) => `${item.provider}:${item.error}`) ?? [];
+            return logImport(
+              importTaskId,
+              errors.length ? 'warn' : 'info',
+              `metadata auto refresh providers=${providerLabels} added=${added} applied=${metadataResult.applied}${disabled.length ? ` disabled=${disabled.join('|')}` : ''}${errors.length ? ` errors=${errors.join('|')}` : ''}`
+            );
+          })
+          .catch((error) => logImport(importTaskId, 'warn', `metadata auto refresh skipped: ${error instanceof Error ? error.message : String(error)}`));
+      }
     }
     await logImport(importTaskId, 'info', `import completed: ${result.bookId}`);
     return result;
