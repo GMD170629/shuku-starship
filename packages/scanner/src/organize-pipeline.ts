@@ -87,6 +87,11 @@ function cleanTitlePart(value: string) {
     .trim();
 }
 
+function usableParentTitle(parent: string) {
+  if (!parent || ['.', '/', 'books', 'library', 'comics', 'comic', 'manga', '漫画'].includes(parent.toLowerCase())) return null;
+  return parent;
+}
+
 function parseJson(value: string | null | undefined) {
   if (!value) return null;
   try {
@@ -180,6 +185,11 @@ export function parseMetadataFromFileName(filePath: string) {
   const withoutYear = base.replace(/\b(19\d{2}|20\d{2})\b/g, ' ').replace(/\s+/g, ' ').trim();
   const rawWithoutYear = rawBase.replace(/\b(19\d{2}|20\d{2})\b/g, ' ').replace(/\s+/g, ' ').trim();
   const year = Number(/\b(19\d{2}|20\d{2})\b/.exec(base)?.[1] ?? /\b(19\d{2}|20\d{2})\b/.exec(parent)?.[1]);
+  const pureVolumePatterns = [
+    /^(?:vol\.?|volume)\s*(\d+(?:\.\d+)?)$/i,
+    /^v\s*(\d+(?:\.\d+)?)$/i,
+    /^(?:第\s*)?(\d+(?:\.\d+)?)\s*(?:卷|冊|册|集)$/i
+  ];
   const volumePatterns = [
     /^(.+?)\s*[\(（［\[]\s*(\d+(?:\.\d+)?)\s*[\)）］\]]\s*$/i,
     /^(.+?)\s*(?:第\s*)?(\d+(?:\.\d+)?)\s*(?:卷|冊|册|集)\s*$/i,
@@ -187,6 +197,8 @@ export function parseMetadataFromFileName(filePath: string) {
     /^(.+?)\s+v(\d+(?:\.\d+)?)\s*$/i
   ];
   const volumeMatch = volumePatterns.map((pattern) => pattern.exec(withoutYear)).find(Boolean);
+  const pureVolumeMatch = pureVolumePatterns.map((pattern) => pattern.exec(withoutYear)).find(Boolean);
+  const pureVolumeParent = pureVolumeMatch ? usableParentTitle(parent) : null;
   const dashAuthorTitle = /^(.+?)\s+-\s+(.+)$/.exec(rawWithoutYear);
   const bracketAuthorTitle = /^(.+?)\s+[《<](.+?)[》>]$/.exec(rawWithoutYear);
   const author = dashAuthorTitle?.[2]
@@ -198,9 +210,9 @@ export function parseMetadataFromFileName(filePath: string) {
     ? cleanTitlePart(dashAuthorTitle[1])
     : bracketAuthorTitle?.[2]
       ? cleanTitlePart(bracketAuthorTitle[2])
-      : cleanTitlePart(volumeMatch?.[1] ?? withoutYear);
-  const seriesName = cleanTitlePart(volumeMatch?.[1] ?? (parent && normalizeKey(parent) !== normalizeKey('library') ? parent : ''));
-  const seriesIndex = Number(volumeMatch?.[2]);
+      : cleanTitlePart(pureVolumeParent ?? volumeMatch?.[1] ?? withoutYear);
+  const seriesName = cleanTitlePart(pureVolumeParent ?? volumeMatch?.[1] ?? usableParentTitle(parent) ?? '');
+  const seriesIndex = Number(pureVolumeMatch?.[1] ?? volumeMatch?.[2]);
   return {
     title,
     author,

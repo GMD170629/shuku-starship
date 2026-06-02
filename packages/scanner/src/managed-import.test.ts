@@ -68,8 +68,30 @@ describe('parseComicVolumeFromName', () => {
     assert.equal(parseComicVolumeFromName('作品 v05.zip')?.seriesIndex, 5);
   });
 
+  it('uses the parent folder as series for pure volume archive names', () => {
+    const root = '/monitor/[炎頭×YahaKo×葉月翼] [野生的最终BOSS出现了！ 黑翼的霸王] [未完] [bili]';
+    assert.deepEqual(parseComicVolumeFromName(`${root}/Vol.08.zip`, 'Vol.08.zip'), {
+      seriesName: '[炎頭×YahaKo×葉月翼] [野生的最终BOSS出现了！ 黑翼的霸王] [未完] [bili]',
+      seriesIndex: 8,
+      title: '[炎頭×YahaKo×葉月翼] [野生的最终BOSS出现了！ 黑翼的霸王] [未完] [bili] (8)'
+    });
+    assert.equal(parseComicVolumeFromName(`${root}/v07.zip`, 'v07.zip')?.seriesIndex, 7);
+    assert.equal(parseComicVolumeFromName(`${root}/第06卷.zip`, '第06卷.zip')?.seriesIndex, 6);
+  });
+
+  it('keeps sibling pure volume archives as separate volumes', () => {
+    const root = '/monitor/星舰漫画';
+    const volumes = ['Vol.06.zip', 'Vol.07.zip', 'Vol.08.zip'].map((name) => parseComicVolumeFromName(`${root}/${name}`, name));
+    assert.deepEqual(volumes.map((volume) => volume?.seriesName), ['星舰漫画', '星舰漫画', '星舰漫画']);
+    assert.deepEqual(volumes.map((volume) => volume?.seriesIndex), [6, 7, 8]);
+  });
+
   it('does not assign a series to archives without a volume marker', () => {
     assert.equal(parseComicVolumeFromName('/books/comics/单本漫画.zip'), null);
+  });
+
+  it('does not invent a series for pure volume archives without a usable parent', () => {
+    assert.equal(parseComicVolumeFromName('/books/comics/Vol.08.zip', 'Vol.08.zip'), null);
   });
 });
 

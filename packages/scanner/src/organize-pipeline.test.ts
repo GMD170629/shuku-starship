@@ -18,6 +18,21 @@ describe('parseMetadataFromFileName', () => {
     assert.equal(parseMetadataFromFileName('/books/comics/星舰 v05.zip').seriesIndex, 5);
   });
 
+  it('uses parent folder metadata for pure volume archive names', () => {
+    const parsed = parseMetadataFromFileName('/monitor/野生的最终BOSS出现了/Vol.08.zip');
+    assert.equal(parsed.title, '野生的最终BOSS出现了');
+    assert.equal(parsed.seriesName, '野生的最终BOSS出现了');
+    assert.equal(parsed.seriesIndex, 8);
+  });
+
+  it('keeps pure sibling volume numbers distinct', () => {
+    const root = '/monitor/星舰漫画';
+    assert.deepEqual(
+      ['Vol.06.zip', 'Vol.07.zip', 'Vol.08.zip'].map((name) => parseMetadataFromFileName(`${root}/${name}`).seriesIndex),
+      [6, 7, 8]
+    );
+  });
+
   it('parses title-author names', () => {
     const parsed = parseMetadataFromFileName('/books/ebook/黑暗坡食人树 - （日）岛田庄司.epub');
     assert.equal(parsed.title, '黑暗坡食人树');

@@ -4,7 +4,7 @@ import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, extname, join, resolve } from 'node:path';
 import type { LibraryEdition, LibraryFile, LibraryWork } from '@prisma/client';
 import { prisma } from '@shuku/database';
-import JSZip from 'jszip';
+import yauzl from 'yauzl';
 
 type WorkWithEditions = LibraryWork & {
   editions: Array<LibraryEdition & { files: LibraryFile[] }>;
@@ -139,12 +139,77 @@ async function pdfFirstPageCover(filePath: string) {
 }
 
 async function zipFirstImageCover(filePath: string) {
-  const zip = await JSZip.loadAsync(await readFile(filePath));
-  const firstImage = Object.values(zip.files)
-    .filter((file) => !file.dir && imageExts.has(extname(file.name).toLowerCase()))
-    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))[0];
-  if (!firstImage) throw new Error('压缩包内没有可用图片');
-  return firstImage.async('nodebuffer');
+  const firstImage = await new Promise<string>((resolveImage, reject) => {
+    yauzl.open(filePath, { lazyEntries: true, autoClose: false, validateEntrySizes: true }, (openError, zipFile) => {
+      if (openError || !zipFile) {
+        reject(openError ?? new Error('ZIP 打开失败'));
+        return;
+      }
+      const images: string[] = [];
+      const close = () => {
+        try {
+          zipFile.close();
+        } catch {
+          // yauzl may already have closed the descriptor.
+        }
+      };
+      zipFile.on('entry', (entry) => {
+        if (!/\/$/.test(entry.fileName) && imageExts.has(extname(entry.fileName).toLowerCase())) images.push(entry.fileName);
+        zipFile.readEntry();
+      });
+      zipFile.once('end', () => {
+        close();
+        images.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+        const image = images[0];
+        if (image) resolveImage(image);
+        else reject(new Error('压缩包内没有可用图片'));
+      });
+      zipFile.once('error', (error) => {
+        close();
+        reject(error);
+      });
+      zipFile.readEntry();
+    });
+  });
+
+  return new Promise<Buffer>((resolveBuffer, reject) => {
+    yauzl.open(filePath, { lazyEntries: true, autoClose: false, validateEntrySizes: true }, (openError, zipFile) => {
+      if (openError || !zipFile) {
+        reject(openError ?? new Error('ZIP 打开失败'));
+        return;
+      }
+      const close = () => {
+        try {
+          zipFile.close();
+        } catch {
+          // yauzl may already have closed the descriptor.
+        }
+      };
+      const fail = (error: Error) => {
+        close();
+        reject(error);
+      };
+      zipFile.on('entry', (entry) => {
+        if (entry.fileName !== firstImage) {
+          zipFile.readEntry();
+          return;
+        }
+        zipFile.openReadStream(entry, (streamError, stream) => {
+          if (streamError || !stream) return fail(streamError ?? new Error('ZIP 图片读取失败'));
+          const chunks: Buffer[] = [];
+          stream.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+          stream.once('end', () => {
+            close();
+            resolveBuffer(Buffer.concat(chunks));
+          });
+          stream.once('error', fail);
+        });
+      });
+      zipFile.once('end', () => fail(new Error('ZIP 图片不存在')));
+      zipFile.once('error', fail);
+      zipFile.readEntry();
+    });
+  });
 }
 
 async function imageFileCover(filePath: string) {

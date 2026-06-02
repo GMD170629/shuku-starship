@@ -93,15 +93,6 @@ type ParsedComicArchive = {
   rawMetadata: Record<string, unknown>;
 };
 
-type ParsedComicArchiveMetadata = {
-  title: string;
-  author: string;
-  description?: string | null;
-  format: 'cbz' | 'zip';
-  comicInfo?: ParsedComicInfo | null;
-  rawMetadata: Record<string, unknown>;
-};
-
 export type ParsedComicVolume = {
   seriesName: string;
   seriesIndex: number;
@@ -135,9 +126,29 @@ function cleanComicTitlePart(value: string) {
     .trim();
 }
 
+function comicParentTitle(filePath: string) {
+  const parent = cleanComicTitlePart(basename(dirname(filePath)));
+  if (!parent || ['.', '/', 'books', 'library', 'comics', 'comic', 'manga', '漫画'].includes(parent.toLowerCase())) return null;
+  return parent;
+}
+
 export function parseComicVolumeFromName(filePath: string, originalName?: string): ParsedComicVolume {
   const source = originalName || basename(filePath);
   const baseTitle = basename(source, extname(source));
+  const parent = comicParentTitle(filePath);
+  const pureVolumePatterns = [
+    /^(?:vol\.?|volume)\s*(\d+(?:\.\d+)?)$/i,
+    /^v\s*(\d+(?:\.\d+)?)$/i,
+    /^(?:第\s*)?(\d+(?:\.\d+)?)\s*(?:卷|冊|册|集)$/i
+  ];
+  for (const pattern of pureVolumePatterns) {
+    const match = pattern.exec(baseTitle.trim());
+    const seriesIndex = Number(match?.[1]);
+    if (parent && Number.isFinite(seriesIndex)) {
+      return { seriesName: parent, seriesIndex, title: `${parent} (${seriesIndex})` };
+    }
+  }
+
   const candidates = [
     /^(.+?)\s*[\(（［\[]\s*(\d+(?:\.\d+)?)\s*[\)）］\]]\s*$/i,
     /^(.+?)\s*(?:第\s*)?(\d+(?:\.\d+)?)\s*(?:卷|冊|册|集)\s*$/i,
@@ -537,54 +548,6 @@ async function listArchiveEntries(filePath: string) {
   });
 }
 
-async function findComicInfoEntry(filePath: string) {
-  const zipFile = await openZip(filePath);
-  return new Promise<{ name: string; uncompressedSize: number } | null>((resolveEntry, reject) => {
-    let scanned = 0;
-    zipFile.on('entry', (entry: yauzl.Entry) => {
-      scanned += 1;
-      if (scanned > MAX_ENTRIES) {
-        closeZip(zipFile);
-        reject(new Error(`压缩包文件数量超过限制（${MAX_ENTRIES}）`));
-        return;
-      }
-      const safeName = safeEntryName(entry.fileName);
-      if (safeName && !/\/$/.test(safeName) && safeName.toLowerCase().endsWith('comicinfo.xml')) {
-        closeZip(zipFile);
-        if (entry.uncompressedSize <= XML_MAX_BYTES) resolveEntry({ name: safeName, uncompressedSize: entry.uncompressedSize });
-        else resolveEntry(null);
-        return;
-      }
-      zipFile.readEntry();
-    });
-    zipFile.once('end', () => {
-      closeZip(zipFile);
-      resolveEntry(null);
-    });
-    zipFile.once('error', reject);
-    zipFile.readEntry();
-  });
-}
-
-async function parseComicArchiveMetadata(filePath: string, originalName?: string): Promise<ParsedComicArchiveMetadata> {
-  const ext = extname(filePath).toLowerCase();
-  const format = ext === '.cbz' ? 'cbz' : 'zip';
-  const fileStat = await stat(filePath);
-  if (!fileStat.isFile()) throw new Error('漫画压缩包不存在或不可读');
-  if (fileStat.size > MAX_ARCHIVE_SIZE_BYTES) throw new Error(`漫画压缩包超过限制（${MAX_ARCHIVE_SIZE_BYTES} bytes）`);
-  await openZip(filePath).then((zip) => zip.close());
-  const comicInfoEntry = await findComicInfoEntry(filePath);
-  const comicInfo = comicInfoEntry ? parseComicInfoXml((await readZipEntry(filePath, comicInfoEntry.name)).toString('utf8')) : null;
-  return {
-    title: comicInfo?.title || titleFromFile(filePath, originalName),
-    author: comicInfo?.writer || comicInfo?.penciller || '未知作者',
-    description: comicInfo?.summary ?? null,
-    format,
-    comicInfo,
-    rawMetadata: comicInfo ? { hasComicInfo: true, comicInfo: comicInfo.raw } : { hasComicInfo: false }
-  };
-}
-
 async function parseComicArchive(filePath: string, originalName?: string): Promise<ParsedComicArchive> {
   const ext = extname(filePath).toLowerCase();
   const format = ext === '.cbz' ? 'cbz' : 'zip';
@@ -667,7 +630,7 @@ function sourceGroupKey(options: ImportManagedBookOptions, fallbackTitle: string
   return `manual:${normalizeLibraryKey(fallbackTitle)}`;
 }
 
-function comicVolumeFromParsed(parsed: Pick<ParsedComicArchiveMetadata, 'comicInfo'>, filePath: string, originalName?: string) {
+function comicVolumeFromParsed(parsed: Pick<ParsedComicArchive, 'comicInfo'>, filePath: string, originalName?: string) {
   if (parsed.comicInfo?.series && Number.isFinite(parsed.comicInfo.volume)) {
     return {
       seriesName: parsed.comicInfo.series,
@@ -678,7 +641,7 @@ function comicVolumeFromParsed(parsed: Pick<ParsedComicArchiveMetadata, 'comicIn
   return parseComicVolumeFromName(filePath, originalName);
 }
 
-function comicWorkTitle(parsed: Pick<ParsedComicArchiveMetadata, 'title' | 'comicInfo'>, volume: ParsedComicVolume, options: ImportManagedBookOptions) {
+function comicWorkTitle(parsed: Pick<ParsedComicArchive, 'title' | 'comicInfo'>, volume: ParsedComicVolume, options: ImportManagedBookOptions) {
   if (volume?.seriesName) return volume.seriesName;
   if (parsed.comicInfo?.series) return parsed.comicInfo.series;
   const parent = sourceParentPath(options);
@@ -916,7 +879,7 @@ async function findComicDuplicateVolume(workId: string, volumeIndex: number | nu
 }
 
 async function importReadableComic(options: ImportManagedBookOptions & { importTaskId: string; fileSize: number; ext: string }): Promise<ImportManagedBookResult> {
-  const parsed = await parseComicArchiveMetadata(options.sourceFilePath, options.originalName);
+  const parsed = await parseComicArchive(options.sourceFilePath, options.originalName);
   const volumeInfo = comicVolumeFromParsed(parsed, options.sourceFilePath, options.originalName);
   const title = comicWorkTitle(parsed, volumeInfo, options);
   const author = parsed.author;
@@ -983,7 +946,7 @@ async function importReadableComic(options: ImportManagedBookOptions & { importT
         title: volumeTitle,
         volumeIndex,
         sortOrder,
-        pageCount: 0,
+        pageCount: parsed.pageCount,
         coverPath: null
       }
     });
@@ -991,7 +954,7 @@ async function importReadableComic(options: ImportManagedBookOptions & { importT
     await copyFile(options.sourceFilePath, managedFilePath);
     await prisma.importTask.update({ where: { id: options.importTaskId }, data: { managedFilePath, message: '正在建立漫画记录' } });
     const mtimeMs = BigInt(Math.trunc((await stat(managedFilePath)).mtimeMs));
-    await prisma.libraryFile.create({
+    const file = await prisma.libraryFile.create({
       data: {
         editionId: edition.id,
         volumeId: volume.id,
@@ -1007,27 +970,55 @@ async function importReadableComic(options: ImportManagedBookOptions & { importT
         mtimeMs
       }
     });
+    const coverExt = extname(parsed.coverEntryPath).toLowerCase() || '.jpg';
+    coverPath = resolve(BOOK_ASSET_ROOT, work.id, edition.id, volume.id, `cover${coverExt}`);
+    await mkdir(dirname(coverPath), { recursive: true });
+    await writeFile(coverPath, await readZipEntry(managedFilePath, parsed.coverEntryPath));
+    const editionPageCount = edition.volumes.reduce((total, item) => total + (item.pageCount ?? 0), 0) + parsed.pageCount;
     await prisma.$transaction([
+      prisma.libraryReadingUnit.createMany({
+        data: parsed.pages.map((page) => ({
+          editionId: edition.id,
+          volumeId: volume.id,
+          fileId: file.id,
+          unitType: 'page',
+          title: page.title,
+          href: page.entryPath,
+          mediaType: page.mediaType,
+          sortOrder: page.index,
+          size: page.size ? BigInt(page.size) : null,
+          metadataJson: JSON.stringify({
+            zipEntryName: page.entryPath,
+            originalName: basename(page.entryPath),
+            pageInVolume: page.index,
+            pageInSection: page.index,
+            volumeIndex,
+            sourceFileName: options.originalName ?? basename(options.sourceFilePath)
+          })
+        })),
+        skipDuplicates: true
+      }),
       prisma.libraryMetadata.create({
         data: {
           editionId: edition.id,
           source: parsed.comicInfo ? 'comic_info' : 'system',
           rawJson: JSON.stringify({ ...parsed.rawMetadata, volumeIndex, sourceFileName: options.originalName ?? basename(options.sourceFilePath) })
         }
-      })
+      }),
+      prisma.libraryVolume.update({ where: { id: volume.id }, data: { coverPath, pageCount: parsed.pageCount } })
     ]);
     const sizeTotals = await prisma.libraryFile.aggregate({ where: { editionId: edition.id }, _sum: { sizeBytes: true } });
     await prisma.libraryEdition.update({
       where: { id: edition.id },
       data: {
         sizeBytes: sizeTotals._sum.sizeBytes ?? BigInt(options.fileSize),
-        pageCount: 0,
-        coverPath: edition.coverPath ?? null,
-        coverStatus: edition.coverStatus,
+        pageCount: editionPageCount,
+        coverPath: edition.coverPath ?? coverPath,
+        coverStatus: 'READY',
         importStatus: 'COMPLETED'
       }
     });
-    await finalizeWorkPrimary(work.id, edition.id, null);
+    await finalizeWorkPrimary(work.id, edition.id, coverPath);
     return {
       bookId: work.id,
       workId: work.id,
@@ -1036,8 +1027,8 @@ async function importReadableComic(options: ImportManagedBookOptions & { importT
       title: work.title,
       type: 'comic',
       format: parsed.format,
-      totalUnits: 0,
-      coverUrl: null,
+      totalUnits: parsed.pageCount,
+      coverUrl: coverPath ? storageUrl(coverPath) : null,
       importStatus: 'completed',
       duplicate: false,
       merged: !created || !createdEdition,
