@@ -90,6 +90,15 @@ export const readerThemeSurfaces: Record<ReaderTheme, { background: string; text
   black: { background: '#000000', textClass: 'text-slate-100', statusBarStyle: 'black-translucent' }
 };
 
+function ensureMeta(name: string) {
+  const existing = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`);
+  if (existing) return { meta: existing, created: false };
+  const meta = document.createElement('meta');
+  meta.setAttribute('name', name);
+  document.head.appendChild(meta);
+  return { meta, created: true };
+}
+
 function clampPercent(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
@@ -136,10 +145,12 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
     const previousHtmlBackground = document.documentElement.style.backgroundColor;
     const previousBodyBackground = document.body.style.backgroundColor;
     const previousColorScheme = document.documentElement.style.colorScheme;
-    const themeColorMetas = Array.from(document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]'));
-    const statusBarMeta = document.querySelector<HTMLMetaElement>('meta[name="apple-mobile-web-app-status-bar-style"]');
+    const foundThemeColorMetas = Array.from(document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]'));
+    const createdThemeColor = foundThemeColorMetas.length === 0 ? ensureMeta('theme-color') : null;
+    const themeColorMetas = createdThemeColor ? [createdThemeColor.meta] : foundThemeColorMetas;
+    const { meta: statusBarMeta, created: createdStatusBarMeta } = ensureMeta('apple-mobile-web-app-status-bar-style');
     const previousThemeColors = themeColorMetas.map((meta) => meta.content);
-    const previousStatusBarStyle = statusBarMeta?.content;
+    const previousStatusBarStyle = statusBarMeta.content;
 
     document.documentElement.style.backgroundColor = themeSurface.background;
     document.body.style.backgroundColor = themeSurface.background;
@@ -153,9 +164,14 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
       document.documentElement.style.colorScheme = previousColorScheme;
       themeColorMetas.forEach((meta, index) => {
         const previousThemeColor = previousThemeColors[index];
-        if (previousThemeColor) meta.setAttribute('content', previousThemeColor);
+        if (createdThemeColor?.meta === meta) {
+          meta.remove();
+          return;
+        }
+        meta.setAttribute('content', previousThemeColor);
       });
-      if (previousStatusBarStyle && statusBarMeta) statusBarMeta.setAttribute('content', previousStatusBarStyle);
+      if (createdStatusBarMeta) statusBarMeta.remove();
+      else statusBarMeta.setAttribute('content', previousStatusBarStyle);
     };
   }, [dark, themeSurface.background, themeSurface.statusBarStyle]);
 
@@ -363,7 +379,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
       <div
         className={cn(
           'absolute inset-x-0 top-0 z-20 border-b px-3 py-2 backdrop-blur-xl transition duration-200 md:px-5',
-          dark ? 'border-white/10 bg-slate-950/82' : 'border-slate-200 bg-white/82',
+          dark ? 'border-white/10 bg-slate-950/80' : 'border-slate-200 bg-white/80',
           controlsVisible ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0'
         )}
         style={{ paddingTop: 'max(0.5rem, env(safe-area-inset-top))' }}
@@ -397,7 +413,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
       <div
         className={cn(
           'absolute inset-x-0 bottom-0 z-20 border-t px-3 py-3 backdrop-blur-xl transition duration-200 md:px-5 md:py-4',
-          dark ? 'border-white/10 bg-slate-950/82' : 'border-slate-200 bg-white/82',
+          dark ? 'border-white/10 bg-slate-950/80' : 'border-slate-200 bg-white/80',
           controlsVisible ? 'translate-y-0 opacity-100' : 'translate-y-full opacity-0'
         )}
         style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}
@@ -433,7 +449,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
         <aside
           className={cn(
             'absolute inset-x-0 bottom-0 z-30 max-h-[82dvh] w-full overflow-hidden rounded-t-3xl border-t p-4 shadow-2xl backdrop-blur-xl md:inset-y-0 md:left-auto md:right-0 md:max-h-none md:max-w-sm md:rounded-none md:border-l md:border-t-0 md:p-5',
-            dark ? 'border-white/10 bg-slate-950/94' : 'border-slate-200 bg-white/94'
+            dark ? 'border-white/10 bg-slate-950/95' : 'border-slate-200 bg-white/95'
           )}
           style={{ paddingTop: 'max(1rem, env(safe-area-inset-top))', paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}
           data-reader-control="true"
