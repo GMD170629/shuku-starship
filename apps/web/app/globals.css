@@ -6,6 +6,7 @@
 
 body {
   @apply bg-[#F6F7F9] text-slate-950 antialiased;
+  margin: 0;
 }
 
 * {

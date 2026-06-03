@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { cn } from '../ui/cn';
 
 export type CoverBook = {
@@ -17,18 +17,21 @@ export function Cover({
   book,
   className = '',
   small = false,
-  size
+  size,
+  style
 }: {
   book: CoverBook;
   className?: string;
   small?: boolean;
   size?: 'small' | 'medium' | 'large';
+  style?: CSSProperties;
 }) {
   const requestedSize = size ?? (small ? 'small' : 'medium');
   const coverUrl = useMemo(() => {
     if (book.coverUrl) return book.coverUrl.replace(/size=(small|medium|large)/, `size=${requestedSize}`);
     return book.id ? `/api/works/${book.id}/cover?size=${requestedSize}` : '';
   }, [book.coverUrl, book.id, requestedSize]);
+  const fallbackBackground = useMemo(() => fallbackCoverBackground(String(book.id ?? book.title)), [book.id, book.title]);
   const [imageFailed, setImageFailed] = useState(false);
 
   useEffect(() => {
@@ -37,7 +40,7 @@ export function Cover({
 
   if (coverUrl && !imageFailed) {
     return (
-      <div data-book-cover="true" className={cn('relative overflow-hidden rounded-2xl bg-slate-100 shadow-sm', className)}>
+      <div data-book-cover="true" className={cn('relative overflow-hidden rounded-2xl bg-slate-100 shadow-sm', className)} style={style}>
         <img
           src={coverUrl}
           alt={book.title}
@@ -50,7 +53,7 @@ export function Cover({
   }
 
   return (
-    <div data-book-cover="true" className={cn('relative overflow-hidden rounded-2xl bg-gradient-to-br shadow-sm', book.gradient, className)}>
+    <div data-book-cover="true" className={cn('relative overflow-hidden rounded-2xl shadow-sm', className)} style={{ backgroundImage: fallbackBackground, ...style }}>
       <div className="absolute inset-0 bg-[radial-gradient(circle_at_30%_20%,rgba(255,255,255,.34),transparent_30%),linear-gradient(135deg,rgba(255,255,255,.18),transparent_38%)]" />
       <div className="absolute -bottom-8 -right-8 h-28 w-28 rounded-full bg-white/15" />
       <div className="absolute left-3 top-3 rounded-full bg-white/20 px-2 py-1 text-[10px] font-medium text-white backdrop-blur">
@@ -62,4 +65,18 @@ export function Cover({
       </div>
     </div>
   );
+}
+
+function fallbackCoverBackground(seed: string) {
+  const backgrounds = [
+    'linear-gradient(135deg,#111827 0%,#1D4ED8 58%,#22D3EE 100%)',
+    'linear-gradient(135deg,#14532D 0%,#0F766E 58%,#A3E635 100%)',
+    'linear-gradient(135deg,#881337 0%,#86198F 58%,#FBBF24 100%)',
+    'linear-gradient(135deg,#18181B 0%,#475569 58%,#D6D3D1 100%)'
+  ];
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) | 0;
+  }
+  return backgrounds[Math.abs(hash) % backgrounds.length];
 }
