@@ -337,8 +337,6 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
       className={cn('fixed inset-0 z-50 h-[100dvh] overflow-hidden transition-colors', themeSurface.textClass)}
       style={{
         backgroundColor: themeSurface.background,
-        paddingTop: 'env(safe-area-inset-top)',
-        paddingBottom: 'env(safe-area-inset-bottom)',
         paddingLeft: 'env(safe-area-inset-left)',
         paddingRight: 'env(safe-area-inset-right)'
       }}
