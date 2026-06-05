@@ -3,7 +3,7 @@ import { requireUser } from '../../../../lib/auth';
 import { fail, ok, readJson } from '../../../../lib/http';
 import { toWorkView } from '../../../../lib/books';
 import { prisma } from '../../../../lib/prisma';
-import { normalizeTags, parseReadingStatus } from '../../../../lib/book-metadata';
+import { normalizeTags, parsePublicationStatus, parseReadingStatus, parseTrackingStatus } from '../../../../lib/book-metadata';
 
 function safeJson(value: string) {
   try {
@@ -15,6 +15,21 @@ function safeJson(value: string) {
 
 function serializeUnit(unit: { size?: bigint | null; metadataJson?: string } & Record<string, unknown>) {
   return { ...unit, size: unit.size ? Number(unit.size) : null, metadataJson: unit.metadataJson ? safeJson(unit.metadataJson) : {} };
+}
+
+function parseNullableFloat(value: unknown) {
+  if (value === null || value === '') return { ok: true as const, value: null };
+  const numberValue = Number(value);
+  if (!Number.isFinite(numberValue)) return { ok: false as const };
+  return { ok: true as const, value: numberValue };
+}
+
+function parseNullableDate(value: unknown) {
+  if (value === null || value === '') return { ok: true as const, value: null };
+  if (typeof value !== 'string' && !(value instanceof Date)) return { ok: false as const };
+  const dateValue = new Date(value);
+  if (Number.isNaN(dateValue.getTime())) return { ok: false as const };
+  return { ok: true as const, value: dateValue };
 }
 
 async function findWork(id: string, userId: string) {
@@ -76,6 +91,12 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     description?: string;
     tags?: string[];
     status?: string;
+    publicationStatus?: string;
+    trackingStatus?: string;
+    localLatestVolume?: number | string | null;
+    localLatestChapter?: number | string | null;
+    localLatestTitle?: string | null;
+    localLatestAt?: string | null;
     ignored?: boolean;
     organized?: boolean;
     primaryEditionId?: string;
@@ -100,6 +121,34 @@ export async function PATCH(request: Request, { params }: { params: { id: string
     const status = parseReadingStatus(body.status);
     if (!status) return fail('阅读状态不正确', 400);
     data.status = status;
+  }
+  if (typeof body.publicationStatus === 'string') {
+    const publicationStatus = parsePublicationStatus(body.publicationStatus);
+    if (!publicationStatus) return fail('出版状态不正确', 400);
+    data.publicationStatus = publicationStatus;
+  }
+  if (typeof body.trackingStatus === 'string') {
+    const trackingStatus = parseTrackingStatus(body.trackingStatus);
+    if (!trackingStatus) return fail('追更状态不正确', 400);
+    data.trackingStatus = trackingStatus;
+  }
+  if (body.localLatestVolume !== undefined) {
+    const localLatestVolume = parseNullableFloat(body.localLatestVolume);
+    if (!localLatestVolume.ok) return fail('本地最新卷号不正确', 400);
+    data.localLatestVolume = localLatestVolume.value;
+  }
+  if (body.localLatestChapter !== undefined) {
+    const localLatestChapter = parseNullableFloat(body.localLatestChapter);
+    if (!localLatestChapter.ok) return fail('本地最新章/话不正确', 400);
+    data.localLatestChapter = localLatestChapter.value;
+  }
+  if (body.localLatestTitle !== undefined) {
+    data.localLatestTitle = typeof body.localLatestTitle === 'string' ? body.localLatestTitle.trim() || null : null;
+  }
+  if (body.localLatestAt !== undefined) {
+    const localLatestAt = parseNullableDate(body.localLatestAt);
+    if (!localLatestAt.ok) return fail('本地最新更新时间不正确', 400);
+    data.localLatestAt = localLatestAt.value;
   }
   if (Array.isArray(body.tags)) data.tags = JSON.stringify(normalizeTags(body.tags));
   if (typeof body.ignored === 'boolean') data.hidden = body.ignored;

@@ -18,6 +18,21 @@ enum ReadingStatus {
   FINISHED
 }
 
+enum PublicationStatus {
+  UNKNOWN
+  ONGOING
+  COMPLETED
+  HIATUS
+  CANCELLED
+}
+
+enum TrackingStatus {
+  NOT_TRACKING
+  TRACKING
+  PAUSED
+  IGNORED
+}
+
 enum FileHashStatus {
   FULL
   PARTIAL_PENDING
@@ -63,16 +78,16 @@ enum DuplicateCandidateStatus {
 }
 
 model User {
-  id           String            @id @default(cuid())
-  email        String            @unique
-  name         String
-  passwordHash String
-  role         String            @default("admin")
-  sessions     Session[]
+  id                String                   @id @default(cuid())
+  email             String                   @unique
+  name              String
+  passwordHash      String
+  role              String                   @default("admin")
+  sessions          Session[]
   libraryProgresses LibraryReadingProgress[]
   readerPreferences ReaderPreference[]
-  createdAt    DateTime          @default(now())
-  updatedAt    DateTime          @updatedAt
+  createdAt         DateTime                 @default(now())
+  updatedAt         DateTime                 @updatedAt
 }
 
 model Session {
@@ -86,55 +101,142 @@ model Session {
 }
 
 model MonitorFolder {
-  id          String     @id @default(cuid())
-  name        String
-  rootPath    String     @unique
-  enabled     Boolean    @default(true)
-  ignorePatterns String?  @db.Text
-  ignoreHidden Boolean    @default(true)
-  minFileSizeBytes Int     @default(10240)
-  description String?
-  works       LibraryWork[]
-  editions    LibraryEdition[]
-  importTasks ImportTask[]
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @updatedAt
+  id               String           @id @default(cuid())
+  name             String
+  rootPath         String           @unique
+  enabled          Boolean          @default(true)
+  ignorePatterns   String?          @db.Text
+  ignoreHidden     Boolean          @default(true)
+  minFileSizeBytes Int              @default(10240)
+  description      String?
+  works            LibraryWork[]
+  editions         LibraryEdition[]
+  importTasks      ImportTask[]
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+}
+
+model Source {
+  id             String               @id @default(cuid())
+  name           String
+  kind           String
+  providerType   String
+  enabled        Boolean              @default(true)
+  priority       Int                  @default(100)
+  config         Json?
+  credentialsKey String?
+  capabilities   Json?
+  rateLimit      Json?
+  lastTestAt     DateTime?
+  lastTestStatus String?
+  lastError      String?
+  searchRecords  SourceSearchRecord[]
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  @@index([enabled])
+  @@index([kind])
+  @@index([providerType])
+  @@index([priority])
+}
+
+model SourceSearchRecord {
+  id                String    @id @default(cuid())
+  sourceId          String
+  source            Source    @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+  providerType      String
+  externalId        String
+  title             String
+  subtitle          String?
+  author            String?
+  description       String?   @db.Text
+  coverUrl          String?
+  externalUrl       String?
+  format            String?
+  size              String?
+  language          String?
+  publishedAt       DateTime?
+  downloadAvailable Boolean   @default(false)
+  downloadMeta      Json?
+  raw               Json?
+  status            String    @default("new")
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@unique([sourceId, externalId])
+  @@index([sourceId])
+  @@index([providerType])
+  @@index([status])
+  @@index([title])
+  @@index([createdAt])
+}
+
+model DownloadTask {
+  id             String   @id @default(cuid())
+  sourceId       String?
+  searchRecordId String?
+  bookId         String?
+  type           String
+  status         String
+  displayName    String
+  remoteRef      Json?
+  savePath       String?
+  filePath       String?
+  errorMessage   String?  @db.Text
+  progress       Float?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([sourceId])
+  @@index([searchRecordId])
+  @@index([bookId])
+  @@index([type])
+  @@index([status, createdAt])
 }
 
 model LibraryWork {
-  id               String         @id @default(cuid())
-  monitorFolderId  String?
-  monitorFolder    MonitorFolder? @relation(fields: [monitorFolderId], references: [id], onDelete: SetNull)
-  origin           BookOrigin     @default(MANUAL)
-  title            String
-  normalizedTitle  String
-  author           String?
-  normalizedAuthor String?
-  description      String?        @db.Text
-  workType         ReadingFormat
-  status           ReadingStatus  @default(WANT)
-  tags             String         @db.Text
-  seriesName       String?
-  seriesIndex      Float?
-  publishedYear    Int?
-  metadataQuality  Int            @default(0)
-  organizeStatus   OrganizeJobStatus @default(REVIEWING)
-  coverPath        String?
-  coverStatus      CoverStatus    @default(PENDING)
-  hidden           Boolean        @default(false)
-  organized        Boolean        @default(false)
-  primaryEditionId String?
-  mergeKey         String?
-  editions         LibraryEdition[]
-  progresses       LibraryReadingProgress[]
-  importTasks      ImportTask[]
-  shelves          ShelfWork[]
-  organizeJobs     OrganizeJob[]
-  duplicateTargets DuplicateCandidate[] @relation("DuplicateTargetWork")
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  id                 String                   @id @default(cuid())
+  monitorFolderId    String?
+  monitorFolder      MonitorFolder?           @relation(fields: [monitorFolderId], references: [id], onDelete: SetNull)
+  origin             BookOrigin               @default(MANUAL)
+  title              String
+  normalizedTitle    String
+  author             String?
+  normalizedAuthor   String?
+  description        String?                  @db.Text
+  workType           ReadingFormat
+  status             ReadingStatus            @default(WANT)
+  publicationStatus  PublicationStatus        @default(UNKNOWN)
+  trackingStatus     TrackingStatus           @default(NOT_TRACKING)
+  localLatestVolume  Float?
+  localLatestChapter Float?
+  localLatestTitle   String?
+  localLatestAt      DateTime?
+  tags               String                   @db.Text
+  seriesName         String?
+  seriesIndex        Float?
+  publishedYear      Int?
+  metadataQuality    Int                      @default(0)
+  organizeStatus     OrganizeJobStatus        @default(REVIEWING)
+  coverPath          String?
+  coverStatus        CoverStatus              @default(PENDING)
+  hidden             Boolean                  @default(false)
+  organized          Boolean                  @default(false)
+  primaryEditionId   String?
+  mergeKey           String?
+  editions           LibraryEdition[]
+  progresses         LibraryReadingProgress[]
+  importTasks        ImportTask[]
+  shelves            ShelfWork[]
+  organizeJobs       OrganizeJob[]
+  duplicateTargets   DuplicateCandidate[]     @relation("DuplicateTargetWork")
+  createdAt          DateTime                 @default(now())
+  updatedAt          DateTime                 @updatedAt
 
+  @@unique([mergeKey])
   @@index([workType])
+  @@index([publicationStatus])
+  @@index([trackingStatus])
   @@index([title])
   @@index([normalizedTitle])
   @@index([normalizedAuthor])
@@ -144,44 +246,43 @@ model LibraryWork {
   @@index([hidden])
   @@index([organized])
   @@index([monitorFolderId])
-  @@unique([mergeKey])
 }
 
 model LibraryEdition {
-  id               String           @id @default(cuid())
-  workId           String
-  work             LibraryWork      @relation(fields: [workId], references: [id], onDelete: Cascade)
-  monitorFolderId  String?
-  monitorFolder    MonitorFolder?   @relation(fields: [monitorFolderId], references: [id], onDelete: SetNull)
-  origin           BookOrigin       @default(MANUAL)
-  format           ReadingFormat
-  versionName      String
-  versionKey       String
-  sourceGroupKey   String?
-  description      String?          @db.Text
-  language         String?
-  publisher        String?
-  publishedAt      String?
-  identifier       String?
-  isbn             String?
-  importStatus     BookImportStatus @default(PENDING)
-  importError      String?          @db.Text
-  sizeBytes        BigInt           @default(0)
-  pageCount        Int?
-  chapterCount     Int?
-  coverPath        String?
-  coverStatus      CoverStatus      @default(PENDING)
-  primary          Boolean          @default(false)
-  hidden           Boolean          @default(false)
-  volumes          LibraryVolume[]
-  files            LibraryFile[]
-  readingUnits     LibraryReadingUnit[]
-  metadataItems    LibraryMetadata[]
-  progresses       LibraryReadingProgress[]
-  importTasks      ImportTask[]
-  organizeJobs     OrganizeJob[]
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
+  id              String                   @id @default(cuid())
+  workId          String
+  work            LibraryWork              @relation(fields: [workId], references: [id], onDelete: Cascade)
+  monitorFolderId String?
+  monitorFolder   MonitorFolder?           @relation(fields: [monitorFolderId], references: [id], onDelete: SetNull)
+  origin          BookOrigin               @default(MANUAL)
+  format          ReadingFormat
+  versionName     String
+  versionKey      String
+  sourceGroupKey  String?
+  description     String?                  @db.Text
+  language        String?
+  publisher       String?
+  publishedAt     String?
+  identifier      String?
+  isbn            String?
+  importStatus    BookImportStatus         @default(PENDING)
+  importError     String?                  @db.Text
+  sizeBytes       BigInt                   @default(0)
+  pageCount       Int?
+  chapterCount    Int?
+  coverPath       String?
+  coverStatus     CoverStatus              @default(PENDING)
+  primary         Boolean                  @default(false)
+  hidden          Boolean                  @default(false)
+  volumes         LibraryVolume[]
+  files           LibraryFile[]
+  readingUnits    LibraryReadingUnit[]
+  metadataItems   LibraryMetadata[]
+  progresses      LibraryReadingProgress[]
+  importTasks     ImportTask[]
+  organizeJobs    OrganizeJob[]
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
 
   @@unique([workId, versionKey])
   @@index([workId, primary])
@@ -193,45 +294,45 @@ model LibraryEdition {
 }
 
 model LibraryVolume {
-  id            String          @id @default(cuid())
-  editionId     String
-  edition       LibraryEdition  @relation(fields: [editionId], references: [id], onDelete: Cascade)
-  title         String
-  volumeIndex   Float?
-  sortOrder     Int            @default(0)
-  pageCount     Int?
-  chapterCount  Int?
-  coverPath     String?
-  files         LibraryFile[]
-  readingUnits  LibraryReadingUnit[]
-  progresses    LibraryReadingProgress[]
-  importTasks   ImportTask[]
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  id           String                   @id @default(cuid())
+  editionId    String
+  edition      LibraryEdition           @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  title        String
+  volumeIndex  Float?
+  sortOrder    Int                      @default(0)
+  pageCount    Int?
+  chapterCount Int?
+  coverPath    String?
+  files        LibraryFile[]
+  readingUnits LibraryReadingUnit[]
+  progresses   LibraryReadingProgress[]
+  importTasks  ImportTask[]
+  createdAt    DateTime                 @default(now())
+  updatedAt    DateTime                 @updatedAt
 
   @@index([editionId, sortOrder])
   @@index([editionId, volumeIndex])
 }
 
 model LibraryFile {
-  id           String         @id @default(cuid())
+  id           String               @id @default(cuid())
   editionId    String
-  edition      LibraryEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  edition      LibraryEdition       @relation(fields: [editionId], references: [id], onDelete: Cascade)
   volumeId     String?
-  volume       LibraryVolume? @relation(fields: [volumeId], references: [id], onDelete: SetNull)
-  path         String         @unique
-  filePathHash String?        @unique
+  volume       LibraryVolume?       @relation(fields: [volumeId], references: [id], onDelete: SetNull)
+  path         String               @unique
+  filePathHash String?              @unique
   fingerprint  String?
-  fullHash     String?        @unique
-  hashStatus   FileHashStatus @default(FAILED)
-  mtimeMs      BigInt         @default(0)
+  fullHash     String?              @unique
+  hashStatus   FileHashStatus       @default(FAILED)
+  mtimeMs      BigInt               @default(0)
   kind         ReadingFormat
   mimeType     String
-  sizeBytes    BigInt         @default(0)
-  sortOrder    Int            @default(0)
+  sizeBytes    BigInt               @default(0)
+  sortOrder    Int                  @default(0)
   readingUnits LibraryReadingUnit[]
-  createdAt    DateTime       @default(now())
-  updatedAt    DateTime       @updatedAt
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
 
   @@index([editionId, sortOrder])
   @@index([volumeId, sortOrder])
@@ -241,32 +342,32 @@ model LibraryFile {
 }
 
 model ImportTask {
-  id            String         @id @default(cuid())
+  id              String           @id @default(cuid())
   monitorFolderId String?
-  monitorFolder   MonitorFolder? @relation(fields: [monitorFolderId], references: [id], onDelete: SetNull)
-  workId        String?
-  work          LibraryWork?   @relation(fields: [workId], references: [id], onDelete: SetNull)
-  editionId     String?
-  edition       LibraryEdition? @relation(fields: [editionId], references: [id], onDelete: SetNull)
-  volumeId      String?
-  volume        LibraryVolume? @relation(fields: [volumeId], references: [id], onDelete: SetNull)
-  origin        BookOrigin
-  status        BookImportStatus @default(PENDING)
-  originalName  String?
-  sourcePath    String
+  monitorFolder   MonitorFolder?   @relation(fields: [monitorFolderId], references: [id], onDelete: SetNull)
+  workId          String?
+  work            LibraryWork?     @relation(fields: [workId], references: [id], onDelete: SetNull)
+  editionId       String?
+  edition         LibraryEdition?  @relation(fields: [editionId], references: [id], onDelete: SetNull)
+  volumeId        String?
+  volume          LibraryVolume?   @relation(fields: [volumeId], references: [id], onDelete: SetNull)
+  origin          BookOrigin
+  status          BookImportStatus @default(PENDING)
+  originalName    String?
+  sourcePath      String
   managedFilePath String?
-  contentHash   String?
-  progress      Int            @default(0)
-  duplicate     Boolean        @default(false)
-  duration      Int            @default(0)
-  errorSummary  String?        @db.Text
-  message       String?
-  startedAt     DateTime?
-  finishedAt    DateTime?
-  logs          ImportLog[]
-  organizeJobs  OrganizeJob[]
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  contentHash     String?
+  progress        Int              @default(0)
+  duplicate       Boolean          @default(false)
+  duration        Int              @default(0)
+  errorSummary    String?          @db.Text
+  message         String?
+  startedAt       DateTime?
+  finishedAt      DateTime?
+  logs            ImportLog[]
+  organizeJobs    OrganizeJob[]
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
 
   @@index([monitorFolderId, status])
   @@index([status, createdAt])
@@ -277,21 +378,21 @@ model ImportTask {
 }
 
 model OrganizeJob {
-  id            String            @id @default(cuid())
-  workId        String
-  work          LibraryWork       @relation(fields: [workId], references: [id], onDelete: Cascade)
-  editionId     String?
-  edition       LibraryEdition?   @relation(fields: [editionId], references: [id], onDelete: SetNull)
-  importTaskId  String?
-  importTask    ImportTask?       @relation(fields: [importTaskId], references: [id], onDelete: SetNull)
-  status        OrganizeJobStatus @default(REVIEWING)
-  issueCodes    String            @db.Text
-  summary       String?           @db.Text
-  errorSummary  String?           @db.Text
-  suggestions   MetadataSuggestion[]
-  duplicates    DuplicateCandidate[]
-  createdAt     DateTime          @default(now())
-  updatedAt     DateTime          @updatedAt
+  id           String               @id @default(cuid())
+  workId       String
+  work         LibraryWork          @relation(fields: [workId], references: [id], onDelete: Cascade)
+  editionId    String?
+  edition      LibraryEdition?      @relation(fields: [editionId], references: [id], onDelete: SetNull)
+  importTaskId String?
+  importTask   ImportTask?          @relation(fields: [importTaskId], references: [id], onDelete: SetNull)
+  status       OrganizeJobStatus    @default(REVIEWING)
+  issueCodes   String               @db.Text
+  summary      String?              @db.Text
+  errorSummary String?              @db.Text
+  suggestions  MetadataSuggestion[]
+  duplicates   DuplicateCandidate[]
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
 
   @@index([workId, status])
   @@index([editionId])
@@ -319,17 +420,17 @@ model MetadataSuggestion {
 }
 
 model DuplicateCandidate {
-  id             String                   @id @default(cuid())
-  jobId          String
-  job            OrganizeJob              @relation(fields: [jobId], references: [id], onDelete: Cascade)
-  targetWorkId   String
-  targetWork     LibraryWork              @relation("DuplicateTargetWork", fields: [targetWorkId], references: [id], onDelete: Cascade)
-  reasons        String                   @db.Text
-  confidence     Float                    @default(0)
+  id              String                   @id @default(cuid())
+  jobId           String
+  job             OrganizeJob              @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  targetWorkId    String
+  targetWork      LibraryWork              @relation("DuplicateTargetWork", fields: [targetWorkId], references: [id], onDelete: Cascade)
+  reasons         String                   @db.Text
+  confidence      Float                    @default(0)
   suggestedAction String
-  status         DuplicateCandidateStatus @default(PENDING)
-  createdAt      DateTime                 @default(now())
-  updatedAt      DateTime                 @updatedAt
+  status          DuplicateCandidateStatus @default(PENDING)
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
 
   @@index([jobId, status])
   @@index([targetWorkId])
@@ -337,12 +438,12 @@ model DuplicateCandidate {
 }
 
 model ImportLog {
-  id         String   @id @default(cuid())
+  id           String     @id @default(cuid())
   importTaskId String
   importTask   ImportTask @relation(fields: [importTaskId], references: [id], onDelete: Cascade)
-  level      String   @default("info")
-  message    String   @db.Text
-  createdAt  DateTime @default(now())
+  level        String     @default("info")
+  message      String     @db.Text
+  createdAt    DateTime   @default(now())
 
   @@index([importTaskId, createdAt])
 }
@@ -423,11 +524,11 @@ model LibraryReadingUnit {
   createdAt    DateTime       @default(now())
   updatedAt    DateTime       @updatedAt
 
+  @@unique([volumeId, unitType, sortOrder])
   @@index([editionId, sortOrder])
   @@index([editionId, unitType])
   @@index([volumeId, sortOrder])
   @@index([fileId, sortOrder])
-  @@unique([volumeId, unitType, sortOrder])
 }
 
 model LibraryMetadata {
@@ -443,22 +544,22 @@ model LibraryMetadata {
 }
 
 model LibraryReadingProgress {
-  id         String          @id @default(cuid())
+  id         String         @id @default(cuid())
   userId     String
-  user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
   workId     String
-  work       LibraryWork     @relation(fields: [workId], references: [id], onDelete: Cascade)
+  work       LibraryWork    @relation(fields: [workId], references: [id], onDelete: Cascade)
   editionId  String
-  edition    LibraryEdition  @relation(fields: [editionId], references: [id], onDelete: Cascade)
+  edition    LibraryEdition @relation(fields: [editionId], references: [id], onDelete: Cascade)
   volumeId   String?
-  volume     LibraryVolume?  @relation(fields: [volumeId], references: [id], onDelete: SetNull)
+  volume     LibraryVolume? @relation(fields: [volumeId], references: [id], onDelete: SetNull)
   readerType String
-  position   String          @default("0")
+  position   String         @default("0")
   page       Int?
-  percent    Float           @default(0)
-  extra      String          @db.Text
-  createdAt  DateTime        @default(now())
-  updatedAt  DateTime        @updatedAt
+  percent    Float          @default(0)
+  extra      String         @db.Text
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
 
   @@unique([userId, editionId])
   @@index([workId])

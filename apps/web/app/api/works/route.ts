@@ -1,9 +1,9 @@
-import type { Prisma, ReadingStatus } from '@prisma/client';
+import type { Prisma } from '@prisma/client';
 import { requireUser } from '../../../lib/auth';
 import { ok } from '../../../lib/http';
 import { toWorkView } from '../../../lib/books';
 import { prisma } from '../../../lib/prisma';
-import { parseReadingFormat } from '../../../lib/book-metadata';
+import { parsePublicationStatus, parseReadingFormat, parseReadingStatus, parseTrackingStatus } from '../../../lib/book-metadata';
 
 export async function GET(request: Request) {
   const user = await requireUser();
@@ -16,6 +16,8 @@ export async function GET(request: Request) {
   const sort = url.searchParams.get('sort') ?? 'updated';
   const visibility = url.searchParams.get('visibility') ?? 'active';
   const status = url.searchParams.get('status')?.trim();
+  const publicationStatus = url.searchParams.get('publicationStatus')?.trim();
+  const trackingStatus = url.searchParams.get('trackingStatus')?.trim();
   const tag = url.searchParams.get('tag')?.trim();
   const author = url.searchParams.get('author')?.trim();
   const series = url.searchParams.get('series')?.trim();
@@ -56,8 +58,16 @@ export async function GET(request: Request) {
     }
   }
   if (status && status !== '全部') {
-    const normalizedStatus = status.toUpperCase();
-    if (['WANT', 'READING', 'FINISHED'].includes(normalizedStatus)) where.status = normalizedStatus as ReadingStatus;
+    const parsedStatus = parseReadingStatus(status);
+    if (parsedStatus) where.status = parsedStatus;
+  }
+  if (publicationStatus && publicationStatus !== '全部') {
+    const parsedPublicationStatus = parsePublicationStatus(publicationStatus);
+    if (parsedPublicationStatus) where.publicationStatus = parsedPublicationStatus;
+  }
+  if (trackingStatus && trackingStatus !== '全部') {
+    const parsedTrackingStatus = parseTrackingStatus(trackingStatus);
+    if (parsedTrackingStatus) where.trackingStatus = parsedTrackingStatus;
   }
   if (tag) where.tags = { contains: tag };
   if (author) where.author = { contains: author };

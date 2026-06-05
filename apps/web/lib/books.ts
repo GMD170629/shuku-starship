@@ -4,10 +4,12 @@ import type {
   LibraryReadingProgress,
   LibraryVolume,
   LibraryWork,
+  PublicationStatus,
   ReadingFormat,
-  ReadingStatus
+  ReadingStatus,
+  TrackingStatus
 } from '@prisma/client';
-import { formatLabels, statusLabels } from './book-metadata';
+import { formatLabels, publicationStatusLabels, statusLabels, trackingStatusLabels } from './book-metadata';
 
 export type WorkView = {
   id: string;
@@ -24,6 +26,14 @@ export type WorkView = {
   progress: number;
   statusValue: ReadingStatus;
   status: string;
+  publicationStatusValue: PublicationStatus;
+  publicationStatus: string;
+  trackingStatusValue: TrackingStatus;
+  trackingStatus: string;
+  localLatestVolume: number | null;
+  localLatestChapter: number | null;
+  localLatestTitle: string | null;
+  localLatestAt: string | null;
   ignored: boolean;
   organized: boolean;
   organizeStatus: string;
@@ -216,6 +226,14 @@ export function toWorkView(work: WorkWithLibrary): WorkView {
     progress: percent,
     statusValue: work.status,
     status: statusLabels[work.status],
+    publicationStatusValue: work.publicationStatus,
+    publicationStatus: publicationStatusLabels[work.publicationStatus],
+    trackingStatusValue: work.trackingStatus,
+    trackingStatus: trackingStatusLabels[work.trackingStatus],
+    localLatestVolume: work.localLatestVolume,
+    localLatestChapter: work.localLatestChapter,
+    localLatestTitle: work.localLatestTitle,
+    localLatestAt: work.localLatestAt?.toISOString() ?? null,
     ignored: work.hidden,
     organized: work.organized,
     organizeStatus: work.organizeStatus,

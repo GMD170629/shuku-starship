@@ -32,6 +32,43 @@ const statusOptions = [
   { value: 'FINISHED', label: '已读' }
 ];
 
+const publicationStatusOptions = [
+  { value: 'UNKNOWN', label: '未知' },
+  { value: 'ONGOING', label: '连载中' },
+  { value: 'COMPLETED', label: '已完结' },
+  { value: 'HIATUS', label: '休刊中' },
+  { value: 'CANCELLED', label: '已腰斩' }
+];
+
+const trackingStatusOptions = [
+  { value: 'NOT_TRACKING', label: '未追更' },
+  { value: 'TRACKING', label: '追更中' },
+  { value: 'PAUSED', label: '暂停追更' },
+  { value: 'IGNORED', label: '忽略更新' }
+];
+
+function toDateTimeLocal(value: string | null) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
+function formatDateTime(value: string | null) {
+  if (!value) return '未记录';
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? '未记录' : date.toLocaleString();
+}
+
+function localLatestLabel(book: WorkView) {
+  const parts = [
+    book.localLatestVolume !== null ? `第 ${book.localLatestVolume} 卷` : '',
+    book.localLatestChapter !== null ? `第 ${book.localLatestChapter} 章/话` : '',
+    book.localLatestTitle ?? ''
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : '未记录';
+}
+
 type ReadingUnitView = { id: string; unitType: string; title: string; href: string; mediaType?: string | null; sortOrder: number; size?: string | number | null };
 type DetailMetadata = { language?: string | null; publisher?: string | null; publishedAt?: string | null; isbn?: string | null; items?: Array<{ source: string; metadataJson: unknown }> };
 type ComicSectionView = { id: string; title: string; index: number; fileId: string; pageCount: number; coverUrl: string };
@@ -57,7 +94,13 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
     publishedYear: '',
     format: 'EPUB',
     tags: '',
-    status: 'WANT'
+    status: 'WANT',
+    publicationStatus: 'UNKNOWN',
+    trackingStatus: 'NOT_TRACKING',
+    localLatestVolume: '',
+    localLatestChapter: '',
+    localLatestTitle: '',
+    localLatestAt: ''
   });
 
   const loadBook = useCallback(() => {
@@ -80,7 +123,13 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
             publishedYear: nextBook.publishedYear === null ? '' : String(nextBook.publishedYear),
             format: nextBook.formatValue,
             tags: nextBook.tags.join(', '),
-            status: nextBook.statusValue
+            status: nextBook.statusValue,
+            publicationStatus: nextBook.publicationStatusValue,
+            trackingStatus: nextBook.trackingStatusValue,
+            localLatestVolume: nextBook.localLatestVolume === null ? '' : String(nextBook.localLatestVolume),
+            localLatestChapter: nextBook.localLatestChapter === null ? '' : String(nextBook.localLatestChapter),
+            localLatestTitle: nextBook.localLatestTitle ?? '',
+            localLatestAt: toDateTimeLocal(nextBook.localLatestAt)
           });
         }
       })
@@ -113,6 +162,12 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
           publishedYear: form.publishedYear,
           format: form.format,
           status: form.status,
+          publicationStatus: form.publicationStatus,
+          trackingStatus: form.trackingStatus,
+          localLatestVolume: form.localLatestVolume,
+          localLatestChapter: form.localLatestChapter,
+          localLatestTitle: form.localLatestTitle,
+          localLatestAt: form.localLatestAt,
           tags: form.tags.split(/[,，\n]/).map((tag) => tag.trim()).filter(Boolean),
           organized: true
         })
@@ -302,6 +357,30 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
           </aside>
         </div>
       </div>
+      <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="text-lg font-semibold">追更信息</h2>
+          <Button variant="secondary" icon={Edit3} onClick={() => setEditing(true)}>编辑追更信息</Button>
+        </div>
+        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
+          <div className="rounded-2xl bg-slate-50 p-4">
+            <div className="text-xs text-slate-400">出版状态</div>
+            <div className="mt-1 font-medium text-slate-900">{book.publicationStatus}</div>
+          </div>
+          <div className="rounded-2xl bg-slate-50 p-4">
+            <div className="text-xs text-slate-400">追更状态</div>
+            <div className="mt-1 font-medium text-slate-900">{book.trackingStatus}</div>
+          </div>
+          <div className="rounded-2xl bg-slate-50 p-4">
+            <div className="text-xs text-slate-400">本地最新卷/章/话</div>
+            <div className="mt-1 break-words font-medium text-slate-900">{localLatestLabel(book)}</div>
+          </div>
+          <div className="rounded-2xl bg-slate-50 p-4">
+            <div className="text-xs text-slate-400">本地最新更新时间</div>
+            <div className="mt-1 font-medium text-slate-900">{formatDateTime(book.localLatestAt)}</div>
+          </div>
+        </div>
+      </div>
       {editing ? (
         <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">
           <h2 className="text-lg font-semibold">编辑读物信息</h2>
@@ -321,6 +400,30 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
             <label className="text-sm text-slate-600">
               阅读状态
               <Select value={form.status} options={statusOptions} onChange={(status) => setForm({ ...form, status })} ariaLabel="阅读状态" className="mt-2 w-full" />
+            </label>
+            <label className="text-sm text-slate-600">
+              出版状态
+              <Select value={form.publicationStatus} options={publicationStatusOptions} onChange={(publicationStatus) => setForm({ ...form, publicationStatus })} ariaLabel="出版状态" className="mt-2 w-full" />
+            </label>
+            <label className="text-sm text-slate-600">
+              追更状态
+              <Select value={form.trackingStatus} options={trackingStatusOptions} onChange={(trackingStatus) => setForm({ ...form, trackingStatus })} ariaLabel="追更状态" className="mt-2 w-full" />
+            </label>
+            <label className="text-sm text-slate-600">
+              本地最新卷
+              <input value={form.localLatestVolume} onChange={(event) => setForm({ ...form, localLatestVolume: event.target.value })} type="number" step="0.01" className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none focus:border-blue-300" />
+            </label>
+            <label className="text-sm text-slate-600">
+              本地最新章/话
+              <input value={form.localLatestChapter} onChange={(event) => setForm({ ...form, localLatestChapter: event.target.value })} type="number" step="0.01" className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none focus:border-blue-300" />
+            </label>
+            <label className="text-sm text-slate-600">
+              本地最新标题
+              <input value={form.localLatestTitle} onChange={(event) => setForm({ ...form, localLatestTitle: event.target.value })} placeholder="例如 第 128 话 启航" className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none focus:border-blue-300" />
+            </label>
+            <label className="text-sm text-slate-600">
+              本地最新更新时间
+              <input value={form.localLatestAt} onChange={(event) => setForm({ ...form, localLatestAt: event.target.value })} type="datetime-local" className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none focus:border-blue-300" />
             </label>
             <label className="text-sm text-slate-600 md:col-span-2">
               标签

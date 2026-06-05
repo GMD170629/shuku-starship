@@ -50,11 +50,28 @@ const statusOptions = [
   { value: 'FINISHED', label: '已读' }
 ];
 
+const publicationStatusOptions = [
+  { value: 'UNKNOWN', label: '未知' },
+  { value: 'ONGOING', label: '连载中' },
+  { value: 'COMPLETED', label: '已完结' },
+  { value: 'HIATUS', label: '休刊中' },
+  { value: 'CANCELLED', label: '已腰斩' }
+];
+
+const trackingStatusOptions = [
+  { value: 'NOT_TRACKING', label: '未追更' },
+  { value: 'TRACKING', label: '追更中' },
+  { value: 'PAUSED', label: '暂停追更' },
+  { value: 'IGNORED', label: '忽略更新' }
+];
+
 export function LibraryPage() {
   const router = useRouter();
   const [view, setView] = useState<'grid' | 'list'>('grid');
   const [filter, setFilter] = useState('全部');
   const [statusFilter, setStatusFilter] = useState('全部');
+  const [publicationStatusFilter, setPublicationStatusFilter] = useState('全部');
+  const [trackingStatusFilter, setTrackingStatusFilter] = useState('全部');
   const [tagFilter, setTagFilter] = useState('');
   const [missingCoverOnly, setMissingCoverOnly] = useState(false);
   const [newImportOnly, setNewImportOnly] = useState(false);
@@ -81,6 +98,8 @@ export function LibraryPage() {
     if (search.trim()) params.set('search', search.trim());
     if (filter !== '全部') params.set('type', filter);
     if (statusFilter !== '全部') params.set('status', statusFilter);
+    if (publicationStatusFilter !== '全部') params.set('publicationStatus', publicationStatusFilter);
+    if (trackingStatusFilter !== '全部') params.set('trackingStatus', trackingStatusFilter);
     if (tagFilter.trim()) params.set('tag', tagFilter.trim());
     if (missingCoverOnly) params.set('missingCover', 'true');
     if (newImportOnly) params.set('newImport', 'true');
@@ -88,11 +107,11 @@ export function LibraryPage() {
     params.set('sort', sort);
     params.set('page', String(page));
     return params.toString();
-  }, [filter, missingCoverOnly, newImportOnly, page, search, sort, statusFilter, tagFilter, visibility]);
+  }, [filter, missingCoverOnly, newImportOnly, page, publicationStatusFilter, search, sort, statusFilter, tagFilter, trackingStatusFilter, visibility]);
 
   useEffect(() => {
     setPage(1);
-  }, [filter, missingCoverOnly, newImportOnly, search, sort, statusFilter, tagFilter, visibility]);
+  }, [filter, missingCoverOnly, newImportOnly, publicationStatusFilter, search, sort, statusFilter, tagFilter, trackingStatusFilter, visibility]);
 
   useEffect(() => {
     const savedView = window.localStorage.getItem('shuku.library.view');
@@ -137,7 +156,17 @@ export function LibraryPage() {
 
   const visibleBookIds = useMemo(() => books.map((book) => book.id), [books]);
   const allVisibleSelected = visibleBookIds.length > 0 && visibleBookIds.every((id) => selected.includes(id));
-  const activeFilterCount = [search.trim(), filter !== '全部', visibility !== 'active', statusFilter !== '全部', tagFilter.trim(), missingCoverOnly, newImportOnly].filter(Boolean).length;
+  const activeFilterCount = [
+    search.trim(),
+    filter !== '全部',
+    visibility !== 'active',
+    statusFilter !== '全部',
+    publicationStatusFilter !== '全部',
+    trackingStatusFilter !== '全部',
+    tagFilter.trim(),
+    missingCoverOnly,
+    newImportOnly
+  ].filter(Boolean).length;
 
   function setBookSelected(bookId: string, checked: boolean) {
     setSelected((current) => (checked ? [...new Set([...current, bookId])] : current.filter((id) => id !== bookId)));
@@ -298,6 +327,8 @@ export function LibraryPage() {
               <Button variant="secondary" icon={Filter} className="h-10 px-3 py-0">高级筛选</Button>
               <Select value={visibility} options={visibilityOptions} onChange={setVisibility} ariaLabel="可见性筛选" size="sm" />
               <Select value={statusFilter} options={[{ value: '全部', label: '全部状态' }, ...statusOptions]} onChange={setStatusFilter} ariaLabel="阅读状态筛选" size="sm" />
+              <Select value={publicationStatusFilter} options={[{ value: '全部', label: '全部出版' }, ...publicationStatusOptions]} onChange={setPublicationStatusFilter} ariaLabel="出版状态筛选" size="sm" />
+              <Select value={trackingStatusFilter} options={[{ value: '全部', label: '全部追更' }, ...trackingStatusOptions]} onChange={setTrackingStatusFilter} ariaLabel="追更状态筛选" size="sm" />
               <input value={tagFilter} onChange={(event) => setTagFilter(event.target.value)} placeholder="标签筛选" className="h-10 rounded-2xl border border-slate-200 px-3 text-sm outline-none focus:border-blue-300" />
             </div>
             <div className="mt-3 flex flex-wrap gap-2">

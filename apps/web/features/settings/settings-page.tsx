@@ -1,6 +1,7 @@
 'use client';
 
 import { AlertTriangle, CheckCircle2, ChevronRight, Database, Download, FolderOpen, KeyRound, RefreshCw, RotateCcw, Save, Smartphone, Trash2 } from 'lucide-react';
+import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
@@ -78,7 +79,7 @@ const themeOptions = [
 ];
 
 export function SettingsPage() {
-  const groups = ['基础设置', '监控文件夹', '监控规则', '备份与恢复', '元数据', '用户与权限', '多端同步', '安全与 API'];
+  const groups = ['基础设置', '监控文件夹', '监控规则', '备份与恢复', '元数据', '源管理', '用户与权限', '多端同步', '安全与 API'];
   const [active, setActive] = useState('监控文件夹');
   const [folders, setFolders] = useState<MonitorFolder[]>([]);
   const [backups, setBackups] = useState<BackupItem[]>([]);
@@ -512,6 +513,14 @@ export function SettingsPage() {
               </section>
               {message ? <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div> : null}
               {error ? <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
+            </div>
+          ) : active === '源管理' ? (
+            <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-5">
+              <div className="font-semibold">通用来源配置</div>
+              <div className="mt-1 text-sm leading-6 text-slate-500">集中管理手动源、PT RSS、Telegram、漫画 API、通用 RSS 和 HTTP 源。当前只提供基础模型、配置保存、脱敏展示和连接测试占位。</div>
+              <Link href="/settings/sources" className="mt-4 inline-flex min-h-11 items-center justify-center rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700">
+                打开源管理
+              </Link>
             </div>
           ) : (
             <div className="mt-6 grid grid-cols-1 gap-5 md:grid-cols-2">

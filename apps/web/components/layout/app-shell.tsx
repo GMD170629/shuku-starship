@@ -4,6 +4,7 @@ import {
   BarChart3,
   BookMarked,
   CheckCircle2,
+  Download,
   FolderOpen,
   Home,
   Library,
@@ -18,7 +19,9 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import type { WorkView } from '../../lib/books';
+import { Cover } from '../book/cover';
 import { PwaClient, clearPrivatePwaStorage } from '../system/pwa-client';
 import { Badge } from '../ui/badge';
 import { cn } from '../ui/cn';
@@ -29,6 +32,7 @@ const navItems = [
   { href: '/library', icon: Library, label: '我的书库' },
   { href: '/shelves', icon: BookMarked, label: '书架' },
   { href: '/organize/pending', icon: FolderOpen, label: '待整理' },
+  { href: '/downloads', icon: Download, label: '下载队列' },
   { href: '/', icon: BarChart3, label: '阅读统计' },
   { href: '/import-tasks', icon: RefreshCw, label: '导入任务' },
   { href: '/settings', icon: Settings, label: '系统设置' }
@@ -41,6 +45,12 @@ const mobileNavItems = [
   { href: '/organize/pending', icon: FolderOpen, label: '整理' },
   { href: '/settings', icon: Settings, label: '设置' }
 ];
+
+type BooksPayload = {
+  ok: boolean;
+  data?: { books: WorkView[]; total: number };
+  error?: { message: string };
+};
 
 function isActive(pathname: string, href: string) {
   const cleanHref = href.split('?')[0];
@@ -62,7 +72,13 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [importTask, setImportTask] = useState<{ progress: number } | null>(null);
   const [user, setUser] = useState<{ email: string; name: string; role: string } | null>(null);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [topSearch, setTopSearch] = useState('');
+  const [topSearchFocused, setTopSearchFocused] = useState(false);
+  const [topSearchBooks, setTopSearchBooks] = useState<WorkView[]>([]);
+  const [topSearchTotal, setTopSearchTotal] = useState(0);
+  const [topSearchLoading, setTopSearchLoading] = useState(false);
   const accountRef = useRef<HTMLDivElement>(null);
+  const topSearchRef = useRef<HTMLFormElement>(null);
   const isReader = pathname.startsWith('/reader/');
   const isLogin = pathname === '/login';
   const isMobileReader = pathname === '/mobile';
@@ -109,6 +125,55 @@ export function AppShell({ children }: { children: ReactNode }) {
     return () => window.removeEventListener('mousedown', closeOnOutsideClick);
   }, [accountOpen]);
 
+  useEffect(() => {
+    if (!topSearchFocused) return;
+    function closeOnOutsideClick(event: MouseEvent) {
+      if (!topSearchRef.current?.contains(event.target as Node)) {
+        setTopSearchFocused(false);
+      }
+    }
+    window.addEventListener('mousedown', closeOnOutsideClick);
+    return () => window.removeEventListener('mousedown', closeOnOutsideClick);
+  }, [topSearchFocused]);
+
+  useEffect(() => {
+    setTopSearchFocused(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    const keyword = topSearch.trim();
+    if (!keyword) {
+      setTopSearchBooks([]);
+      setTopSearchTotal(0);
+      setTopSearchLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      setTopSearchLoading(true);
+      fetch(`/api/works?pageSize=5&visibility=active&sort=recent_read&search=${encodeURIComponent(keyword)}`, { signal: controller.signal })
+        .then((response) => response.json() as Promise<BooksPayload>)
+        .then((payload) => {
+          if (!payload.ok) throw new Error(payload.error?.message ?? '搜索书库失败');
+          setTopSearchBooks(payload.data?.books ?? []);
+          setTopSearchTotal(payload.data?.total ?? 0);
+        })
+        .catch((reason) => {
+          if (!(reason instanceof DOMException && reason.name === 'AbortError')) {
+            setTopSearchBooks([]);
+            setTopSearchTotal(0);
+          }
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setTopSearchLoading(false);
+        });
+    }, 180);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [topSearch]);
+
   async function logout() {
     await fetch('/api/auth/logout', { method: 'POST' }).catch(() => null);
     await clearPrivatePwaStorage();
@@ -116,6 +181,23 @@ export function AppShell({ children }: { children: ReactNode }) {
     setUser(null);
     router.replace('/login');
     router.refresh();
+  }
+
+  function searchExternalSources(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    goToExternalSourceSearch();
+  }
+
+  function goToExternalSourceSearch() {
+    const keyword = topSearch.trim();
+    if (!keyword) return;
+    setTopSearchFocused(false);
+    router.push(`/sources/search?keyword=${encodeURIComponent(keyword)}&auto=1`);
+  }
+
+  function openBook(book: WorkView) {
+    setTopSearchFocused(false);
+    router.push(`/works/${book.id}`);
   }
 
   const storage = summary?.storageUsedBytes ?? 0;
@@ -176,10 +258,58 @@ export function AppShell({ children }: { children: ReactNode }) {
       </aside>
       <main className="pb-20 lg:pl-72 lg:pb-0">
         <header className="sticky top-0 z-10 flex h-auto min-h-20 flex-col gap-3 border-b border-slate-200 bg-[#F6F7F9]/80 px-4 py-4 backdrop-blur-xl md:flex-row md:items-center md:justify-between lg:px-8">
-          <div className="flex h-12 w-full items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 shadow-sm md:w-[520px]">
-            <Search size={18} className="text-slate-400" />
-            <input className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400" placeholder="搜索书名、作者、标签、文件路径..." />
-          </div>
+          <form ref={topSearchRef} onSubmit={searchExternalSources} className="relative flex h-12 w-full items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 shadow-sm md:w-[560px]">
+            <Search size={18} className="shrink-0 text-slate-400" />
+            <input
+              value={topSearch}
+              onFocus={() => setTopSearchFocused(true)}
+              onChange={(event) => {
+                setTopSearch(event.target.value);
+                setTopSearchFocused(true);
+              }}
+              className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400"
+              placeholder="搜索书库，或去外部源搜索..."
+              aria-label="搜索书库或外部源"
+              autoComplete="off"
+              data-testid="top-search-input"
+            />
+            {topSearchFocused && topSearch.trim() ? (
+              <div data-testid="top-search-dropdown" className="absolute left-0 right-0 top-[calc(100%+8px)] z-30 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl shadow-slate-200/70">
+                <div className="max-h-[360px] overflow-y-auto py-2">
+                  {topSearchLoading ? (
+                    <div className="px-4 py-4 text-sm text-slate-500">正在搜索书库...</div>
+                  ) : null}
+                  {!topSearchLoading && topSearchBooks.map((book) => (
+                    <button
+                      key={book.id}
+                      type="button"
+                      data-testid="top-search-book-result"
+                      onClick={() => openBook(book)}
+                      className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:bg-slate-50 focus:bg-slate-50 focus:outline-none"
+                    >
+                      <Cover book={book} size="small" className="h-14 w-10 shrink-0 rounded-lg shadow-none" small />
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium text-slate-900">{book.title}</span>
+                        <span className="mt-0.5 block truncate text-xs text-slate-500">{book.author} · {book.format} · {book.status}</span>
+                      </span>
+                    </button>
+                  ))}
+                  {!topSearchLoading && topSearchBooks.length === 0 ? (
+                    <div className="px-4 py-4 text-sm text-slate-500">书库中没有匹配读物</div>
+                  ) : null}
+                </div>
+                <button
+                  type="button"
+                  data-testid="top-search-external-source"
+                  onClick={goToExternalSourceSearch}
+                  className="flex w-full items-center justify-between gap-3 border-t border-slate-100 bg-blue-50 px-4 py-3 text-left text-sm font-medium text-blue-700 transition hover:bg-blue-100 focus:bg-blue-100 focus:outline-none"
+                >
+                  <span className="min-w-0 truncate">去外部源搜索“{topSearch.trim()}”</span>
+                  <span className="shrink-0 text-xs text-blue-500">{topSearchTotal > 5 ? `书库共 ${topSearchTotal} 条` : '/sources/search'}</span>
+                </button>
+              </div>
+            ) : null}
+          </form>
           <div className="flex items-center gap-3">
             <Badge tone="green">
               <CheckCircle2 size={13} className="mr-1" />
