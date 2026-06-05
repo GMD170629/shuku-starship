@@ -179,11 +179,17 @@ async function executeBlackhole(task: DownloadTask) {
   return targetPath;
 }
 
+async function executeTelegramDownload(task: DownloadTask) {
+  const remoteRef = remoteRefObject(task.remoteRef);
+  if (stringValue(remoteRef.downloadUrl)) return executeHttpDownload(task);
+  throw new Error('Z-Library Telegram Bot 下载需要 gateway 返回 downloadUrl，或先在 Telegram 中手动下载后导入。');
+}
+
 async function runTask(task: DownloadTask) {
   if (task.type === 'http') return executeHttpDownload(task);
   if (task.type === 'blackhole') return executeBlackhole(task);
   if (task.type === 'torrent') throw new Error('torrent 下载暂未支持：当前版本不会启动 BT 客户端');
-  if (task.type === 'telegram') throw new Error('telegram 下载暂未支持');
+  if (task.type === 'telegram') return executeTelegramDownload(task);
   throw new Error(`下载类型 ${task.type} 暂未支持`);
 }
 

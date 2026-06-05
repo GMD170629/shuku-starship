@@ -2,6 +2,7 @@ import type { SourceProvider } from './source-provider';
 import { httpSourceProvider } from './providers/http-source-provider';
 import { manualSourceProvider } from './providers/manual-source-provider';
 import { ptRssProvider } from './providers/pt-rss-provider';
+import { telegramZLibraryProvider } from './providers/telegram-zlibrary-provider';
 
 const providers = new Map<string, SourceProvider>();
 
@@ -16,5 +17,6 @@ export function getSourceProvider(providerType: string): SourceProvider {
 }
 
 registerSourceProvider(manualSourceProvider);
+registerSourceProvider(telegramZLibraryProvider);
 registerSourceProvider(ptRssProvider);
 registerSourceProvider(httpSourceProvider);

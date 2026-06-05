@@ -57,6 +57,7 @@ function jsonObject(value: unknown): Record<string, unknown> {
 
 export function inferDownloadTaskType(providerType: string, downloadMeta?: unknown): DownloadTaskType {
   const meta = jsonObject(downloadMeta);
+  if (typeof meta.downloadUrl === 'string' && meta.downloadUrl.trim()) return 'http';
   if (providerType === 'telegram') return 'telegram';
   if (providerType === 'pt_rss' || providerType === 'torrent') {
     return meta.type === 'blackhole' || meta.kind === 'blackhole' || typeof meta.blackholePath === 'string' ? 'blackhole' : 'torrent';
@@ -123,13 +124,15 @@ export function sanitizeRemoteRef(value: unknown): Prisma.InputJsonValue | typeo
 }
 
 export function createRemoteRefFromSearchRecord(record: SourceSearchRecord) {
+  const downloadMeta = jsonObject(record.downloadMeta);
   return sanitizeRemoteRef({
     providerType: record.providerType,
     externalId: record.externalId,
     externalUrl: record.externalUrl,
     format: record.format,
     size: record.size,
-    downloadMeta: record.downloadMeta
+    downloadMeta: record.downloadMeta,
+    ...downloadMeta
   });
 }
 

@@ -8,7 +8,7 @@ export type SourceKind = (typeof sourceKinds)[number];
 
 export const sourceProviderLabels: Record<SourceProviderType, string> = {
   manual: '手动源',
-  telegram: 'Telegram Bot 源',
+  telegram: 'Z-Library Telegram Bot',
   pt_rss: 'PT RSS 源',
   comic_api: '漫画 API 源',
   rss: '通用 RSS 源',
