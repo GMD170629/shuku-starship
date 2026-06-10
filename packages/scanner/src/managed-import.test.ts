@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
 import JSZip from 'jszip';
-import { formatImportByteLimit, importFileSizeLimitBytesForExt, parseComicVolumeFromName, parseEpubMetadata } from './managed-import';
+import { formatImportByteLimit, importFileSizeLimitBytesForExt, parseComicVolumeFromName, parseEpubMetadata, stageManagedImportFile } from './managed-import';
 
 async function writeEpubFixture(files: Record<string, string>) {
   const dir = await mkdtemp(join(tmpdir(), 'shuku-epub-'));
@@ -18,6 +18,10 @@ async function writeEpubFixture(files: Record<string, string>) {
   for (const [path, content] of Object.entries(files)) zip.file(path, content);
   await writeFile(filePath, await zip.generateAsync({ type: 'nodebuffer' }));
   return { dir, filePath };
+}
+
+async function pathExists(path: string) {
+  return stat(path).then(() => true).catch(() => false);
 }
 
 function opf(manifest: string, spine: string) {
@@ -120,6 +124,51 @@ describe('import file size limits', () => {
   it('formats byte limits for user-facing errors', () => {
     assert.equal(formatImportByteLimit(512 * 1024 * 1024), '512MB');
     assert.equal(formatImportByteLimit(1536), '1.5KB');
+  });
+});
+
+describe('stageManagedImportFile', () => {
+  it('copies watched files into managed storage without removing the source', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'shuku-stage-copy-'));
+    const source = join(dir, 'source.epub');
+    const managed = join(dir, 'managed.epub');
+    await writeFile(source, 'copy me');
+    try {
+      await stageManagedImportFile(source, managed, 'COPY');
+      assert.equal(await pathExists(source), true);
+      assert.equal(await readFile(managed, 'utf8'), 'copy me');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('moves watched files into managed storage and removes the source', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'shuku-stage-move-'));
+    const source = join(dir, 'source.epub');
+    const managed = join(dir, 'managed.epub');
+    await writeFile(source, 'move me');
+    try {
+      await stageManagedImportFile(source, managed, 'MOVE');
+      assert.equal(await pathExists(source), false);
+      assert.equal(await readFile(managed, 'utf8'), 'move me');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rolls moved files back to the watched folder when later import work fails', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'shuku-stage-rollback-'));
+    const source = join(dir, 'source.epub');
+    const managed = join(dir, 'managed.epub');
+    await writeFile(source, 'restore me');
+    try {
+      const staged = await stageManagedImportFile(source, managed, 'MOVE');
+      await staged.rollback();
+      assert.equal(await pathExists(managed), false);
+      assert.equal(await readFile(source, 'utf8'), 'restore me');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

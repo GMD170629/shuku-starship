@@ -18,12 +18,13 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
-import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
 import type { WorkView } from '../../lib/books';
 import { Cover } from '../book/cover';
 import { PwaClient, clearPrivatePwaStorage } from '../system/pwa-client';
 import { Badge } from '../ui/badge';
 import { cn } from '../ui/cn';
+import { useToast } from '../ui/feedback';
 import { Progress } from '../ui/progress';
 
 const navItems = [
@@ -75,8 +76,10 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [topSearchBooks, setTopSearchBooks] = useState<WorkView[]>([]);
   const [topSearchTotal, setTopSearchTotal] = useState(0);
   const [topSearchLoading, setTopSearchLoading] = useState(false);
+  const [topSearchActiveIndex, setTopSearchActiveIndex] = useState(0);
   const accountRef = useRef<HTMLDivElement>(null);
   const topSearchRef = useRef<HTMLFormElement>(null);
+  const toast = useToast();
   const isReader = pathname.startsWith('/reader/');
   const isLogin = pathname === '/login';
   const isMobileReader = pathname === '/mobile';
@@ -144,6 +147,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       setTopSearchBooks([]);
       setTopSearchTotal(0);
       setTopSearchLoading(false);
+      setTopSearchActiveIndex(0);
       return;
     }
     const controller = new AbortController();
@@ -155,11 +159,13 @@ export function AppShell({ children }: { children: ReactNode }) {
           if (!payload.ok) throw new Error(payload.error?.message ?? '搜索书库失败');
           setTopSearchBooks(payload.data?.books ?? []);
           setTopSearchTotal(payload.data?.total ?? 0);
+          setTopSearchActiveIndex(0);
         })
         .catch((reason) => {
           if (!(reason instanceof DOMException && reason.name === 'AbortError')) {
             setTopSearchBooks([]);
             setTopSearchTotal(0);
+            toast.error('搜索书库失败', reason instanceof Error ? reason.message : '请稍后重试');
           }
         })
         .finally(() => {
@@ -170,7 +176,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [topSearch]);
+  }, [toast, topSearch]);
 
   async function logout() {
     await fetch('/api/auth/logout', { method: 'POST' }).catch(() => null);
@@ -196,6 +202,29 @@ export function AppShell({ children }: { children: ReactNode }) {
   function openBook(book: WorkView) {
     setTopSearchFocused(false);
     router.push(`/works/${book.id}`);
+  }
+
+  function handleTopSearchKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    const keyword = topSearch.trim();
+    if (!keyword) return;
+    const optionCount = topSearchBooks.length + 1;
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      setTopSearchFocused(true);
+      setTopSearchActiveIndex((current) => (current + (event.key === 'ArrowDown' ? 1 : -1) + optionCount) % optionCount);
+      return;
+    }
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      setTopSearchFocused(false);
+      return;
+    }
+    if (event.key === 'Enter' && topSearchFocused) {
+      event.preventDefault();
+      const selectedBook = topSearchBooks[topSearchActiveIndex];
+      if (selectedBook) openBook(selectedBook);
+      else goToExternalSourceSearch();
+    }
   }
 
   const storage = summary?.storageUsedBytes ?? 0;
@@ -265,6 +294,7 @@ export function AppShell({ children }: { children: ReactNode }) {
                 setTopSearch(event.target.value);
                 setTopSearchFocused(true);
               }}
+              onKeyDown={handleTopSearchKeyDown}
               className="min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-slate-400"
               placeholder="搜索书库，或去外部源搜索..."
               aria-label="搜索书库或外部源"
@@ -277,13 +307,18 @@ export function AppShell({ children }: { children: ReactNode }) {
                   {topSearchLoading ? (
                     <div className="px-4 py-4 text-sm text-slate-500">正在搜索书库...</div>
                   ) : null}
-                  {!topSearchLoading && topSearchBooks.map((book) => (
+                  {!topSearchLoading && topSearchBooks.map((book, index) => (
                     <button
                       key={book.id}
                       type="button"
                       data-testid="top-search-book-result"
+                      aria-current={topSearchActiveIndex === index ? 'true' : undefined}
+                      onMouseEnter={() => setTopSearchActiveIndex(index)}
                       onClick={() => openBook(book)}
-                      className="flex w-full items-center gap-3 px-3 py-2.5 text-left transition hover:bg-slate-50 focus:bg-slate-50 focus:outline-none"
+                      className={cn(
+                        'flex w-full items-center gap-3 px-3 py-2.5 text-left transition focus:outline-none',
+                        topSearchActiveIndex === index ? 'bg-blue-50' : 'hover:bg-slate-50 focus:bg-slate-50'
+                      )}
                     >
                       <Cover book={book} size="small" className="h-14 w-10 shrink-0 rounded-lg shadow-none" small />
                       <span className="min-w-0 flex-1">
@@ -299,8 +334,13 @@ export function AppShell({ children }: { children: ReactNode }) {
                 <button
                   type="button"
                   data-testid="top-search-external-source"
+                  aria-current={topSearchActiveIndex === topSearchBooks.length ? 'true' : undefined}
+                  onMouseEnter={() => setTopSearchActiveIndex(topSearchBooks.length)}
                   onClick={goToExternalSourceSearch}
-                  className="flex w-full items-center justify-between gap-3 border-t border-slate-100 bg-blue-50 px-4 py-3 text-left text-sm font-medium text-blue-700 transition hover:bg-blue-100 focus:bg-blue-100 focus:outline-none"
+                  className={cn(
+                    'flex w-full items-center justify-between gap-3 border-t border-slate-100 px-4 py-3 text-left text-sm font-medium text-blue-700 transition focus:outline-none',
+                    topSearchActiveIndex === topSearchBooks.length ? 'bg-blue-100' : 'bg-blue-50 hover:bg-blue-100 focus:bg-blue-100'
+                  )}
                 >
                   <span className="min-w-0 truncate">去外部源搜索“{topSearch.trim()}”</span>
                   <span className="shrink-0 text-xs text-blue-500">{topSearchTotal > 5 ? `书库共 ${topSearchTotal} 条` : '/sources/search'}</span>

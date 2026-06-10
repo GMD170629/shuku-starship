@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { FormEvent, useEffect, useMemo, useState } from 'react';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
+import { useConfirm, useToast } from '../../components/ui/feedback';
 import { PageTitle } from '../../components/ui/page-title';
 import { Select } from '../../components/ui/select';
 
@@ -238,6 +239,8 @@ export function SourcesPage() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
+  const confirm = useConfirm();
+  const toast = useToast();
   const editingSource = sources.find((source) => source.id === selectedId) ?? null;
 
   async function loadSources() {
@@ -315,11 +318,15 @@ export function SourcesPage() {
       });
       const payload = (await response.json()) as SourcePayload;
       if (!payload.ok || !payload.data?.source) throw new Error(payload.error?.message ?? '保存源失败');
-      setMessage(selectedId ? '源已更新' : '源已创建');
+      const successMessage = selectedId ? '源已更新' : '源已创建';
+      setMessage(successMessage);
+      toast.success(successMessage);
       setSelectedId(payload.data.source.id);
       await loadSources();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '保存源失败');
+      const nextError = reason instanceof Error ? reason.message : '保存源失败';
+      setError(nextError);
+      toast.error('保存源失败', nextError);
     } finally {
       setBusy('');
     }
@@ -338,9 +345,12 @@ export function SourcesPage() {
       const payload = (await response.json()) as SourcePayload;
       if (!payload.ok) throw new Error(payload.error?.message ?? '更新源失败');
       setMessage('源已更新');
+      toast.success('源已更新');
       await loadSources();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '更新源失败');
+      const nextError = reason instanceof Error ? reason.message : '更新源失败';
+      setError(nextError);
+      toast.error('更新源失败', nextError);
     } finally {
       setBusy('');
     }
@@ -354,18 +364,28 @@ export function SourcesPage() {
       const response = await fetch(`/api/sources/${source.id}/test`, { method: 'POST' });
       const payload = (await response.json()) as SourcePayload;
       if (!payload.ok) throw new Error(payload.error?.message ?? '测试失败');
-      setMessage(payload.data?.result?.message ?? '测试完成');
+      const successMessage = payload.data?.result?.message ?? '测试完成';
+      setMessage(successMessage);
+      toast.success(successMessage);
       setRssPreview(payload.data?.result?.details?.preview ?? []);
       await loadSources();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '测试失败');
+      const nextError = reason instanceof Error ? reason.message : '测试失败';
+      setError(nextError);
+      toast.error('测试失败', nextError);
     } finally {
       setBusy('');
     }
   }
 
   async function deleteSource(source: SourceView) {
-    if (!window.confirm(`删除源「${source.name}」？如果未来已有绑定，系统会改为禁用。`)) return;
+    const confirmed = await confirm({
+      title: '删除源',
+      description: `删除源「${source.name}」？如果未来已有绑定，系统会改为禁用。`,
+      confirmLabel: '删除',
+      tone: 'danger'
+    });
+    if (!confirmed) return;
     setBusy(`delete:${source.id}`);
     setError('');
     setMessage('');
@@ -373,11 +393,15 @@ export function SourcesPage() {
       const response = await fetch(`/api/sources/${source.id}`, { method: 'DELETE' });
       const payload = (await response.json()) as { ok: boolean; data?: { deleted?: boolean; disabled?: boolean }; error?: { message: string } };
       if (!payload.ok) throw new Error(payload.error?.message ?? '删除源失败');
-      setMessage(payload.data?.disabled ? '源已有绑定，已改为禁用' : '源已删除');
+      const successMessage = payload.data?.disabled ? '源已有绑定，已改为禁用' : '源已删除';
+      setMessage(successMessage);
+      toast.success(successMessage);
       if (selectedId === source.id) resetForm();
       await loadSources();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '删除源失败');
+      const nextError = reason instanceof Error ? reason.message : '删除源失败';
+      setError(nextError);
+      toast.error('删除源失败', nextError);
     } finally {
       setBusy('');
     }
@@ -419,9 +443,9 @@ export function SourcesPage() {
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Button variant="secondary" icon={Edit3} onClick={() => editSource(source)}>编辑</Button>
-                    <Button disabled={busy === source.id} variant="secondary" icon={source.enabled ? CheckCircle2 : Database} onClick={() => updateSource(source, { enabled: !source.enabled })}>{source.enabled ? '禁用' : '启用'}</Button>
-                    <Button disabled={busy === `test:${source.id}`} variant="secondary" icon={FlaskConical} onClick={() => void testSource(source)}>测试</Button>
-                    <Button disabled={busy === `delete:${source.id}`} variant="danger" icon={Trash2} onClick={() => void deleteSource(source)}>删除</Button>
+                    <Button loading={busy === source.id} loadingText="更新中" variant="secondary" icon={source.enabled ? CheckCircle2 : Database} onClick={() => updateSource(source, { enabled: !source.enabled })}>{source.enabled ? '禁用' : '启用'}</Button>
+                    <Button loading={busy === `test:${source.id}`} loadingText="测试中" variant="secondary" icon={FlaskConical} onClick={() => void testSource(source)}>测试</Button>
+                    <Button loading={busy === `delete:${source.id}`} loadingText="删除中" variant="danger" icon={Trash2} onClick={() => void deleteSource(source)}>删除</Button>
                   </div>
                 </div>
               </div>
@@ -515,7 +539,7 @@ export function SourcesPage() {
                   </div>
                 ) : null}
                 {editingSource?.providerType === 'pt_rss' ? (
-                  <Button type="button" disabled={busy === `test:${editingSource.id}`} variant="secondary" icon={FlaskConical} onClick={() => void testSource(editingSource)}>测试 RSS</Button>
+                  <Button type="button" loading={busy === `test:${editingSource.id}`} loadingText="测试中" variant="secondary" icon={FlaskConical} onClick={() => void testSource(editingSource)}>测试 RSS</Button>
                 ) : null}
               </div>
             ) : providerType === 'telegram' ? (
@@ -574,7 +598,7 @@ export function SourcesPage() {
           </div>
           <div className="mt-5 flex justify-end gap-3">
             <Button type="button" variant="secondary" onClick={() => resetForm()}>新建</Button>
-            <Button disabled={busy === 'save'} icon={Save}>保存源</Button>
+            <Button loading={busy === 'save'} loadingText="保存中" icon={Save}>保存源</Button>
           </div>
         </form>
       </div>

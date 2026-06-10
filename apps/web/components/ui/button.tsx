@@ -1,5 +1,6 @@
 'use client';
 
+import { Loader2 } from 'lucide-react';
 import type { ButtonHTMLAttributes, ReactNode } from 'react';
 import type { LucideIcon } from 'lucide-react';
 import { cn } from './cn';
@@ -16,21 +17,25 @@ const variants: Record<ButtonVariant, string> = {
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
   children?: ReactNode;
   icon?: LucideIcon;
+  loading?: boolean;
+  loadingText?: string;
   variant?: ButtonVariant;
 };
 
-export function Button({ children, icon: Icon, variant = 'primary', className = '', ...props }: ButtonProps) {
+export function Button({ children, icon: Icon, loading = false, loadingText, variant = 'primary', className = '', disabled, ...props }: ButtonProps) {
   return (
     <button
       className={cn(
-        'inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-medium transition active:scale-[0.98]',
+        'inline-flex min-h-11 items-center justify-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-medium transition active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60',
         variants[variant],
         className
       )}
+      aria-busy={loading || undefined}
+      disabled={disabled || loading}
       {...props}
     >
-      {Icon ? <Icon size={16} /> : null}
-      {children}
+      {loading ? <Loader2 size={16} className="animate-spin" /> : Icon ? <Icon size={16} /> : null}
+      {loading && loadingText ? loadingText : children}
     </button>
   );
 }

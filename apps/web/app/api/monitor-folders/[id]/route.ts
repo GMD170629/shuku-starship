@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { PathSecurityError, PathSecurityService } from '@shuku/scanner/path-security-service';
 import { requireUser } from '../../../../lib/auth';
 import { fail, ok, readJson } from '../../../../lib/http';
@@ -13,12 +14,21 @@ function parseMinFileSizeBytes(value: unknown) {
   return Math.trunc(parsed);
 }
 
+function parseImportMode(value: unknown) {
+  return value === 'COPY' || value === 'MOVE' ? value : null;
+}
+
 export async function PUT(request: Request, { params }: { params: { id: string } }) {
   await requireUser();
-  const body = await readJson<{ name?: string; rootPath?: string; enabled?: boolean; ignorePatterns?: string; ignoreHidden?: boolean; minFileSizeBytes?: number; description?: string }>(request);
+  const body = await readJson<{ name?: string; rootPath?: string; enabled?: boolean; importMode?: string; ignorePatterns?: string; ignoreHidden?: boolean; minFileSizeBytes?: number; description?: string }>(request);
   const data: Record<string, unknown> = {};
   if (typeof body.name === 'string') data.name = body.name.trim();
   if (typeof body.enabled === 'boolean') data.enabled = body.enabled;
+  if (body.importMode !== undefined) {
+    const importMode = parseImportMode(body.importMode);
+    if (importMode === null) return fail('添加模式必须是 COPY 或 MOVE', 400);
+    data.importMode = importMode;
+  }
   if (typeof body.ignorePatterns === 'string') data.ignorePatterns = body.ignorePatterns;
   if (typeof body.ignoreHidden === 'boolean') data.ignoreHidden = body.ignoreHidden;
   if (body.minFileSizeBytes !== undefined) {
@@ -36,8 +46,15 @@ export async function PUT(request: Request, { params }: { params: { id: string }
       throw error;
     }
   }
-  const folder = await prisma.monitorFolder.update({ where: { id: params.id }, data });
-  return ok({ folder });
+  try {
+    const folder = await prisma.monitorFolder.update({ where: { id: params.id }, data });
+    return ok({ folder });
+  } catch (error) {
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+      return fail('该监控文件夹路径已存在，请在已有配置中修改。', 409);
+    }
+    throw error;
+  }
 }
 
 export async function DELETE(_request: Request, { params }: { params: { id: string } }) {

@@ -6,6 +6,7 @@ import { useSearchParams } from 'next/navigation';
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
+import { useToast } from '../../components/ui/feedback';
 import { PageTitle } from '../../components/ui/page-title';
 import { Select } from '../../components/ui/select';
 
@@ -66,6 +67,7 @@ export function SourceSearchPage() {
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState('');
   const lastAutoSearchRef = useRef('');
+  const toast = useToast();
 
   const selectedSource = useMemo(() => sources.find((source) => source.id === sourceId) ?? null, [sourceId, sources]);
   const sourceOptions = useMemo(() => sources.map((source) => ({
@@ -78,10 +80,12 @@ export function SourceSearchPage() {
     const trimmedKeyword = nextKeyword.trim();
     if (!sourceId) {
       setError('请选择一个已启用的源');
+      toast.error('请选择一个已启用的源');
       return;
     }
     if (!trimmedKeyword) {
       setError('请输入搜索关键词');
+      toast.error('请输入搜索关键词');
       return;
     }
     setLoading(true);
@@ -100,13 +104,17 @@ export function SourceSearchPage() {
       const nextResults = payload.data?.results ?? [];
       setResults(nextResults);
       setRecords(payload.data?.records ?? []);
-      setMessage(saveResults ? `找到 ${nextResults.length} 条结果，已写入历史记录` : `找到 ${nextResults.length} 条结果`);
+      const successMessage = saveResults ? `找到 ${nextResults.length} 条结果，已写入历史记录` : `找到 ${nextResults.length} 条结果`;
+      setMessage(successMessage);
+      toast.success(successMessage);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '搜索失败');
+      const nextError = reason instanceof Error ? reason.message : '搜索失败';
+      setError(nextError);
+      toast.error('搜索失败', nextError);
     } finally {
       setLoading(false);
     }
-  }, [kind, keyword, saveResults, sourceId]);
+  }, [kind, keyword, saveResults, sourceId, toast]);
 
   useEffect(() => {
     fetch('/api/sources')
@@ -151,9 +159,13 @@ export function SourceSearchPage() {
       const payload = (await response.json()) as { ok: boolean; data?: { record: SourceSearchRecordView }; error?: { message: string } };
       if (!payload.ok || !payload.data?.record) throw new Error(payload.error?.message ?? '操作失败');
       setRecords((current) => [...current.filter((record) => record.externalId !== result.externalId), payload.data!.record]);
-      setMessage(status === 'saved' ? '搜索结果已保存' : '搜索结果已忽略');
+      const successMessage = status === 'saved' ? '搜索结果已保存' : '搜索结果已忽略';
+      setMessage(successMessage);
+      toast.success(successMessage);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '操作失败');
+      const nextError = reason instanceof Error ? reason.message : '操作失败';
+      setError(nextError);
+      toast.error('操作失败', nextError);
     } finally {
       setBusy('');
     }
@@ -181,9 +193,13 @@ export function SourceSearchPage() {
       const payload = (await response.json()) as CreateDownloadPayload;
       if (!payload.ok || !payload.data?.record) throw new Error(payload.error?.message ?? '创建下载任务失败');
       setRecords((current) => [...current.filter((item) => item.externalId !== result.externalId), payload.data!.record]);
-      setMessage(payload.data.alreadyQueued ? '已在下载队列中' : '已加入下载队列');
+      const successMessage = payload.data.alreadyQueued ? '已在下载队列中' : '已加入下载队列';
+      setMessage(successMessage);
+      toast.success(successMessage);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '创建下载任务失败');
+      const nextError = reason instanceof Error ? reason.message : '创建下载任务失败';
+      setError(nextError);
+      toast.error('创建下载任务失败', nextError);
     } finally {
       setBusy('');
     }
@@ -210,7 +226,7 @@ export function SourceSearchPage() {
             关键词
             <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="输入书名、漫画名、章节关键词..." className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none focus:border-blue-300" />
           </label>
-          <Button disabled={loading || !sourceId} icon={Search}>{loading ? '搜索中' : '搜索'}</Button>
+          <Button disabled={!sourceId} loading={loading} loadingText="搜索中" icon={Search}>搜索</Button>
         </div>
         <label className="mt-3 inline-flex items-center gap-2 text-sm text-slate-600">
           <input type="checkbox" checked={saveResults} onChange={(event) => setSaveResults(event.target.checked)} className="h-4 w-4 accent-blue-600" />
@@ -255,9 +271,9 @@ export function SourceSearchPage() {
                 {result.description ? <p className="mt-3 text-sm leading-6 text-slate-600">{result.description}</p> : null}
               </div>
               <div className="flex shrink-0 flex-wrap gap-2">
-                <Button disabled={busy === `saved:${result.externalId}`} variant="secondary" onClick={() => void markResult(result, 'saved')}>保存</Button>
-                <Button disabled={busy === `ignored:${result.externalId}`} variant="secondary" onClick={() => void markResult(result, 'ignored')}>忽略</Button>
-                {result.downloadAvailable ? <Button disabled={queued || busy === `download:${result.externalId}`} variant="secondary" icon={Download} onClick={() => void createDownloadTask(result)}>{queued ? '已加入队列' : '加入下载队列'}</Button> : null}
+                <Button loading={busy === `saved:${result.externalId}`} loadingText="保存中" variant="secondary" onClick={() => void markResult(result, 'saved')}>保存</Button>
+                <Button loading={busy === `ignored:${result.externalId}`} loadingText="处理中" variant="secondary" onClick={() => void markResult(result, 'ignored')}>忽略</Button>
+                {result.downloadAvailable ? <Button disabled={queued} loading={busy === `download:${result.externalId}`} loadingText="加入中" variant="secondary" icon={Download} onClick={() => void createDownloadTask(result)}>{queued ? '已加入队列' : '加入下载队列'}</Button> : null}
                 {result.externalUrl ? (
                   <a href={result.externalUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center gap-2 rounded-2xl border border-slate-200 px-4 text-sm font-medium text-slate-700 hover:bg-slate-50">
                     <ExternalLink size={15} />

@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
+import { useConfirm, useToast } from '../../components/ui/feedback';
 import { PageTitle } from '../../components/ui/page-title';
 import { Select } from '../../components/ui/select';
 
@@ -75,6 +76,8 @@ export function SourceResultsPage() {
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  const confirm = useConfirm();
+  const toast = useToast();
 
   const sourceOptions = useMemo(() => [{ value: 'all', label: '全部源' }, ...sources.map((source) => ({ value: source.id, label: `${source.name} · ${source.providerTypeLabel}` }))], [sources]);
 
@@ -109,17 +112,27 @@ export function SourceResultsPage() {
       const response = await fetch(`/api/source-search-records/${record.id}/${action}`, { method: 'POST' });
       const payload = (await response.json()) as RecordsPayload;
       if (!payload.ok) throw new Error(payload.error?.message ?? '操作失败');
-      setMessage(action === 'save' ? '结果已保存' : '结果已忽略');
+      const successMessage = action === 'save' ? '结果已保存' : '结果已忽略';
+      setMessage(successMessage);
+      toast.success(successMessage);
       setReloadKey((key) => key + 1);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '操作失败');
+      const nextError = reason instanceof Error ? reason.message : '操作失败';
+      setError(nextError);
+      toast.error('操作失败', nextError);
     } finally {
       setBusy('');
     }
   }
 
   async function deleteRecord(record: SourceSearchRecordView) {
-    if (!window.confirm(`删除搜索结果「${record.title}」？`)) return;
+    const confirmed = await confirm({
+      title: '删除搜索结果',
+      description: `删除搜索结果「${record.title}」？`,
+      confirmLabel: '删除',
+      tone: 'danger'
+    });
+    if (!confirmed) return;
     setBusy(`delete:${record.id}`);
     setError('');
     setMessage('');
@@ -128,9 +141,12 @@ export function SourceResultsPage() {
       const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
       if (!payload.ok) throw new Error(payload.error?.message ?? '删除失败');
       setMessage('搜索结果已删除');
+      toast.success('搜索结果已删除');
       setReloadKey((key) => key + 1);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '删除失败');
+      const nextError = reason instanceof Error ? reason.message : '删除失败';
+      setError(nextError);
+      toast.error('删除失败', nextError);
     } finally {
       setBusy('');
     }
@@ -145,10 +161,14 @@ export function SourceResultsPage() {
       const response = await fetch(`/api/source-search-records/${record.id}/create-download-task`, { method: 'POST' });
       const payload = (await response.json()) as CreateDownloadPayload;
       if (!payload.ok) throw new Error(payload.error?.message ?? '创建下载任务失败');
-      setMessage(payload.data?.alreadyQueued ? '已在下载队列中' : '已加入下载队列');
+      const successMessage = payload.data?.alreadyQueued ? '已在下载队列中' : '已加入下载队列';
+      setMessage(successMessage);
+      toast.success(successMessage);
       setReloadKey((key) => key + 1);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '创建下载任务失败');
+      const nextError = reason instanceof Error ? reason.message : '创建下载任务失败';
+      setError(nextError);
+      toast.error('创建下载任务失败', nextError);
     } finally {
       setBusy('');
     }
@@ -193,12 +213,12 @@ export function SourceResultsPage() {
                 {record.description ? <p className="mt-3 text-sm leading-6 text-slate-600">{record.description}</p> : null}
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button disabled={busy === `save:${record.id}`} variant="secondary" onClick={() => void postAction(record, 'save')}>保存</Button>
-                <Button disabled={busy === `ignore:${record.id}`} variant="secondary" onClick={() => void postAction(record, 'ignore')}>忽略</Button>
-                {record.downloadAvailable && record.status !== 'download_created' ? <Button disabled={busy === `download:${record.id}`} variant="secondary" icon={Download} onClick={() => void createDownloadTask(record)}>加入下载队列</Button> : null}
+                <Button loading={busy === `save:${record.id}`} loadingText="保存中" variant="secondary" onClick={() => void postAction(record, 'save')}>保存</Button>
+                <Button loading={busy === `ignore:${record.id}`} loadingText="处理中" variant="secondary" onClick={() => void postAction(record, 'ignore')}>忽略</Button>
+                {record.downloadAvailable && record.status !== 'download_created' ? <Button loading={busy === `download:${record.id}`} loadingText="加入中" variant="secondary" icon={Download} onClick={() => void createDownloadTask(record)}>加入下载队列</Button> : null}
                 {record.status === 'download_created' ? <Link href="/downloads" className="inline-flex min-h-11 items-center gap-2 rounded-2xl border border-slate-200 px-4 text-sm font-medium text-slate-700 hover:bg-slate-50"><Download size={15} />查看下载任务</Link> : null}
                 {record.externalUrl ? <a href={record.externalUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center gap-2 rounded-2xl border border-slate-200 px-4 text-sm font-medium text-slate-700 hover:bg-slate-50"><ExternalLink size={15} />外部链接</a> : null}
-                <Button disabled={busy === `delete:${record.id}`} variant="danger" icon={Trash2} onClick={() => void deleteRecord(record)}>删除</Button>
+                <Button loading={busy === `delete:${record.id}`} loadingText="删除中" variant="danger" icon={Trash2} onClick={() => void deleteRecord(record)}>删除</Button>
               </div>
             </div>
           </article>

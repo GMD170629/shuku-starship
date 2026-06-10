@@ -57,6 +57,11 @@ enum BookOrigin {
   WATCH
 }
 
+enum MonitorImportMode {
+  COPY
+  MOVE
+}
+
 enum OrganizeJobStatus {
   PENDING
   REVIEWING
@@ -101,13 +106,14 @@ model Session {
 }
 
 model MonitorFolder {
-  id               String           @id @default(cuid())
+  id               String            @id @default(cuid())
   name             String
-  rootPath         String           @unique
-  enabled          Boolean          @default(true)
-  ignorePatterns   String?          @db.Text
-  ignoreHidden     Boolean          @default(true)
-  minFileSizeBytes Int              @default(10240)
+  rootPath         String            @unique
+  enabled          Boolean           @default(true)
+  importMode       MonitorImportMode @default(COPY)
+  ignorePatterns   String?           @db.Text
+  ignoreHidden     Boolean           @default(true)
+  minFileSizeBytes Int               @default(10240)
   description      String?
   works            LibraryWork[]
   editions         LibraryEdition[]

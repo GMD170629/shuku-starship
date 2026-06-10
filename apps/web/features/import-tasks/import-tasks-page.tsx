@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Badge } from '../../components/ui/badge';
 import type { BadgeTone } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
+import { useConfirm, useToast } from '../../components/ui/feedback';
 import { PageTitle } from '../../components/ui/page-title';
 import { Progress } from '../../components/ui/progress';
 
@@ -46,6 +47,8 @@ export function ImportTasksPage() {
   const [busy, setBusy] = useState<'clear' | 'rescan' | ''>('');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const confirm = useConfirm();
+  const toast = useToast();
   const activeTask = useMemo(() => tasks.find((task) => task.status === 'PARSING' || task.status === 'PENDING') ?? null, [tasks]);
 
   async function loadTasks() {
@@ -61,7 +64,9 @@ export function ImportTasksPage() {
       setSummary(payload.data?.summary ?? { added: 0, updated: 0, skipped: 0, failed: 0 });
       setError('');
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '读取导入任务失败');
+      const nextError = reason instanceof Error ? reason.message : '读取导入任务失败';
+      setError(nextError);
+      toast.error('读取导入任务失败', nextError);
     } finally {
       setLoading(false);
     }
@@ -76,17 +81,26 @@ export function ImportTasksPage() {
       if (!response.ok) throw new Error(payload?.error?.message ?? `请求重新识别失败：HTTP ${response.status}`);
       if (!payload?.ok) throw new Error(payload?.error?.message ?? '请求重新识别失败');
       setMessage('已请求重新识别监控文件夹');
+      toast.success('已请求重新识别监控文件夹');
       setError('');
       await loadTasks();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '请求重新识别失败');
+      const nextError = reason instanceof Error ? reason.message : '请求重新识别失败';
+      setError(nextError);
+      toast.error('请求重新识别失败', nextError);
     } finally {
       setBusy('');
     }
   }
 
   async function clearFinishedTasks() {
-    if (!window.confirm('确认清空已完成和失败的导入记录吗？书库读物和源文件不会被删除。')) return;
+    const confirmed = await confirm({
+      title: '清空导入记录',
+      description: '确认清空已完成和失败的导入记录吗？书库读物和源文件不会被删除。',
+      confirmLabel: '清空记录',
+      tone: 'danger'
+    });
+    if (!confirmed) return;
     setBusy('clear');
     try {
       const response = await fetch('/api/import-tasks', { method: 'DELETE' });
@@ -94,11 +108,15 @@ export function ImportTasksPage() {
       const payload = text ? JSON.parse(text) as { ok: boolean; data?: { deleted: number }; error?: { message: string } } : null;
       if (!response.ok) throw new Error(payload?.error?.message ?? `清空记录失败：HTTP ${response.status}`);
       if (!payload?.ok) throw new Error(payload?.error?.message ?? '清空记录失败');
-      setMessage(`已清空 ${payload.data?.deleted ?? 0} 条已结束导入记录`);
+      const successMessage = `已清空 ${payload.data?.deleted ?? 0} 条已结束导入记录`;
+      setMessage(successMessage);
+      toast.success(successMessage);
       setError('');
       await loadTasks();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '清空记录失败');
+      const nextError = reason instanceof Error ? reason.message : '清空记录失败';
+      setError(nextError);
+      toast.error('清空记录失败', nextError);
     } finally {
       setBusy('');
     }
@@ -117,12 +135,12 @@ export function ImportTasksPage() {
         desc="查看手动上传和监控文件夹自动导入状态。"
         action={(
           <div className="flex flex-wrap items-center gap-2">
-            <Button variant="secondary" icon={RefreshCw} onClick={() => void loadTasks()}>刷新</Button>
-            <Button disabled={busy === 'rescan'} variant="secondary" icon={Search} onClick={() => void requestRescan()}>
-              {busy === 'rescan' ? '请求中' : '强制重新识别'}
+            <Button variant="secondary" icon={RefreshCw} loading={loading} loadingText="刷新中" onClick={() => void loadTasks()}>刷新</Button>
+            <Button loading={busy === 'rescan'} loadingText="请求中" variant="secondary" icon={Search} onClick={() => void requestRescan()}>
+              强制重新识别
             </Button>
-            <Button disabled={busy === 'clear'} variant="danger" icon={Trash2} onClick={() => void clearFinishedTasks()}>
-              {busy === 'clear' ? '清空中' : '清空记录'}
+            <Button loading={busy === 'clear'} loadingText="清空中" variant="danger" icon={Trash2} onClick={() => void clearFinishedTasks()}>
+              清空记录
             </Button>
           </div>
         )}

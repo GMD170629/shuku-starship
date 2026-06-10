@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { copyFile, mkdir, stat, unlink, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, rename, stat, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, normalize, posix, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
 import yauzl from 'yauzl';
@@ -56,6 +56,7 @@ export type ImportManagedBookOptions = {
   origin: BookOrigin;
   monitorFolderId?: string | null;
   importTaskId?: string | null;
+  importMode?: 'COPY' | 'MOVE';
 };
 
 export type ImportManagedBookResult = {
@@ -630,6 +631,64 @@ async function managedPathFor(importTaskId: string, ext: string) {
   return join(directory, `${importTaskId}-${randomUUID()}${ext}`);
 }
 
+type StagedManagedFile = {
+  managedFilePath: string;
+  rollback: () => Promise<void>;
+};
+
+function isCrossDeviceRenameError(error: unknown) {
+  return Boolean(error && typeof error === 'object' && 'code' in error && (error as NodeJS.ErrnoException).code === 'EXDEV');
+}
+
+async function moveFileWithCopyFallback(sourceFilePath: string, managedFilePath: string) {
+  try {
+    await rename(sourceFilePath, managedFilePath);
+    return 'rename';
+  } catch (error) {
+    if (!isCrossDeviceRenameError(error)) throw error;
+    await copyFile(sourceFilePath, managedFilePath);
+    try {
+      await unlink(sourceFilePath);
+    } catch (unlinkError) {
+      await unlink(managedFilePath).catch(() => undefined);
+      throw unlinkError;
+    }
+    return 'copy-unlink';
+  }
+}
+
+async function moveFileBackWithCopyFallback(managedFilePath: string, sourceFilePath: string) {
+  try {
+    await rename(managedFilePath, sourceFilePath);
+  } catch (error) {
+    if (!isCrossDeviceRenameError(error)) throw error;
+    await copyFile(managedFilePath, sourceFilePath);
+    await unlink(managedFilePath);
+  }
+}
+
+export async function stageManagedImportFile(sourceFilePath: string, managedFilePath: string, importMode: 'COPY' | 'MOVE' = 'COPY'): Promise<StagedManagedFile> {
+  if (importMode === 'MOVE') {
+    await moveFileWithCopyFallback(sourceFilePath, managedFilePath);
+    return {
+      managedFilePath,
+      rollback: async () => {
+        const sourceExists = await stat(sourceFilePath).then(() => true).catch(() => false);
+        const managedExists = await stat(managedFilePath).then(() => true).catch(() => false);
+        if (!sourceExists && managedExists) await moveFileBackWithCopyFallback(managedFilePath, sourceFilePath);
+      }
+    };
+  }
+
+  await copyFile(sourceFilePath, managedFilePath);
+  return {
+    managedFilePath,
+    rollback: async () => {
+      await unlink(managedFilePath).catch(() => undefined);
+    }
+  };
+}
+
 function fileHashForPath(path: string) {
   return createHash('sha256').update(path).digest('hex');
 }
@@ -812,38 +871,41 @@ async function importReadableEpub(options: ImportManagedBookOptions & { importTa
       mergeReason: 'duplicate-epub-metadata'
     };
   }
-  const managedFilePath = await managedPathFor(options.importTaskId, options.ext);
-  await copyFile(options.sourceFilePath, managedFilePath);
-  await prisma.importTask.update({ where: { id: options.importTaskId }, data: { managedFilePath, message: '正在建立 EPUB 记录' } });
-  const versionName = await nextEditionName(work.id, 'EPUB');
-  const edition = await prisma.libraryEdition.create({
-    data: {
-      workId: work.id,
-      monitorFolderId: options.monitorFolderId ?? null,
-      origin: options.origin,
-      format: 'EPUB',
-      versionName,
-      versionKey: 'epub:primary',
-      description: metadata.description,
-      language: metadata.language,
-      publisher: metadata.publisher,
-      publishedAt: metadata.publishedAt,
-      identifier: metadata.identifier,
-      isbn: metadata.isbn,
-      sizeBytes: BigInt(options.fileSize),
-      chapterCount: metadata.chapterCount,
-      importStatus: 'PARSING',
-      primary: !work.primaryEditionId
-    }
-  });
+  let stagedFile: StagedManagedFile | null = null;
+  let editionId: string | null = null;
   let coverPath: string | null = null;
   try {
+    const managedFilePath = await managedPathFor(options.importTaskId, options.ext);
+    stagedFile = await stageManagedImportFile(options.sourceFilePath, managedFilePath, options.importMode);
+    await prisma.importTask.update({ where: { id: options.importTaskId }, data: { managedFilePath, message: '正在建立 EPUB 记录' } });
+    const versionName = await nextEditionName(work.id, 'EPUB');
+    const edition = await prisma.libraryEdition.create({
+      data: {
+        workId: work.id,
+        monitorFolderId: options.monitorFolderId ?? null,
+        origin: options.origin,
+        format: 'EPUB',
+        versionName,
+        versionKey: 'epub:primary',
+        description: metadata.description,
+        language: metadata.language,
+        publisher: metadata.publisher,
+        publishedAt: metadata.publishedAt,
+        identifier: metadata.identifier,
+        isbn: metadata.isbn,
+        sizeBytes: BigInt(options.fileSize),
+        chapterCount: metadata.chapterCount,
+        importStatus: 'PARSING',
+        primary: !work.primaryEditionId
+      }
+    });
+    editionId = edition.id;
     if (metadata.coverPath) {
       const rel = normalize(join(dirname(metadata.opfPath), metadata.coverPath)).replace(/^\/+/, '');
       const coverExt = extname(metadata.coverPath) || '.jpg';
       coverPath = resolve(BOOK_ASSET_ROOT, work.id, edition.id, `cover${coverExt}`);
       await mkdir(dirname(coverPath), { recursive: true });
-      await writeFile(coverPath, await readZipEntry(managedFilePath, rel));
+      await writeFile(coverPath, await readZipEntry(stagedFile.managedFilePath, rel));
     }
     const volume = await prisma.libraryVolume.create({
       data: {
@@ -854,13 +916,13 @@ async function importReadableEpub(options: ImportManagedBookOptions & { importTa
         coverPath
       }
     });
-    const managedMtimeMs = BigInt(Math.trunc((await stat(managedFilePath)).mtimeMs));
+    const managedMtimeMs = BigInt(Math.trunc((await stat(stagedFile.managedFilePath)).mtimeMs));
     const file = await prisma.libraryFile.create({
       data: {
         editionId: edition.id,
         volumeId: volume.id,
-        path: managedFilePath,
-        filePathHash: fileHashForPath(managedFilePath),
+        path: stagedFile.managedFilePath,
+        filePathHash: fileHashForPath(stagedFile.managedFilePath),
         fingerprint: null,
         fullHash: null,
         hashStatus: 'PARTIAL_PENDING',
@@ -906,7 +968,8 @@ async function importReadableEpub(options: ImportManagedBookOptions & { importTa
     };
   } catch (error) {
     if (coverPath) await unlink(coverPath).catch(() => undefined);
-    await prisma.libraryEdition.update({ where: { id: edition.id }, data: { importStatus: 'FAILED', importError: error instanceof Error ? error.message : String(error) } }).catch(() => undefined);
+    await stagedFile?.rollback().catch(() => undefined);
+    if (editionId) await prisma.libraryEdition.update({ where: { id: editionId }, data: { importStatus: 'FAILED', importError: error instanceof Error ? error.message : String(error) } }).catch(() => undefined);
     throw error;
   }
 }
@@ -1003,6 +1066,7 @@ async function importReadableComic(options: ImportManagedBookOptions & { importT
   }
 
   let coverPath: string | null = null;
+  let stagedFile: StagedManagedFile | null = null;
   try {
     const sortOrder = volumeIndex !== null ? Math.trunc(volumeIndex * 1000) : edition.volumes.length;
     const volume = await prisma.libraryVolume.create({
@@ -1016,15 +1080,15 @@ async function importReadableComic(options: ImportManagedBookOptions & { importT
       }
     });
     const managedFilePath = await managedPathFor(options.importTaskId, options.ext);
-    await copyFile(options.sourceFilePath, managedFilePath);
+    stagedFile = await stageManagedImportFile(options.sourceFilePath, managedFilePath, options.importMode);
     await prisma.importTask.update({ where: { id: options.importTaskId }, data: { managedFilePath, message: '正在建立漫画记录' } });
-    const mtimeMs = BigInt(Math.trunc((await stat(managedFilePath)).mtimeMs));
+    const mtimeMs = BigInt(Math.trunc((await stat(stagedFile.managedFilePath)).mtimeMs));
     const file = await prisma.libraryFile.create({
       data: {
         editionId: edition.id,
         volumeId: volume.id,
-        path: managedFilePath,
-        filePathHash: fileHashForPath(managedFilePath),
+        path: stagedFile.managedFilePath,
+        filePathHash: fileHashForPath(stagedFile.managedFilePath),
         fingerprint: null,
         fullHash: null,
         hashStatus: 'PARTIAL_PENDING',
@@ -1038,7 +1102,7 @@ async function importReadableComic(options: ImportManagedBookOptions & { importT
     const coverExt = extname(parsed.coverEntryPath).toLowerCase() || '.jpg';
     coverPath = resolve(BOOK_ASSET_ROOT, work.id, edition.id, volume.id, `cover${coverExt}`);
     await mkdir(dirname(coverPath), { recursive: true });
-    await writeFile(coverPath, await readZipEntry(managedFilePath, parsed.coverEntryPath));
+    await writeFile(coverPath, await readZipEntry(stagedFile.managedFilePath, parsed.coverEntryPath));
     const editionPageCount = edition.volumes.reduce((total, item) => total + (item.pageCount ?? 0), 0) + parsed.pageCount;
     await prisma.$transaction([
       prisma.libraryReadingUnit.createMany({
@@ -1102,6 +1166,7 @@ async function importReadableComic(options: ImportManagedBookOptions & { importT
     };
   } catch (error) {
     if (coverPath) await unlink(coverPath).catch(() => undefined);
+    await stagedFile?.rollback().catch(() => undefined);
     await prisma.libraryEdition.update({ where: { id: edition.id }, data: { importStatus: 'FAILED', importError: error instanceof Error ? error.message : String(error) } }).catch(() => undefined);
     throw error;
   }

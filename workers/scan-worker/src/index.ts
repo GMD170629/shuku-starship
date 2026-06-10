@@ -15,12 +15,14 @@ const rescanHandledAtKey = 'monitor.rescanHandledAt';
 type WatchState = {
   watcher: FSWatcher;
   rootPath: string;
+  configSignature: string;
   timers: Map<string, NodeJS.Timeout>;
 };
 
 type MonitorFolderConfig = {
   id: string;
   rootPath: string;
+  importMode: 'COPY' | 'MOVE';
   ignoreHidden: boolean;
   ignorePatterns?: string | null;
   minFileSizeBytes: number;
@@ -73,6 +75,16 @@ function shouldIgnoreFile(filePath: string, folder: { ignoreHidden: boolean; ign
   return shouldIgnorePath(filePath, folder) || !isSupportedImportFile(filePath);
 }
 
+function configSignature(folder: MonitorFolderConfig) {
+  return JSON.stringify({
+    rootPath: folder.rootPath,
+    importMode: folder.importMode,
+    ignoreHidden: folder.ignoreHidden,
+    ignorePatterns: folder.ignorePatterns ?? '',
+    minFileSizeBytes: folder.minFileSizeBytes
+  });
+}
+
 async function waitForStableFile(filePath: string, minFileSizeBytes: number) {
   const before = await stat(filePath).catch(() => null);
   if (!before?.isFile() || before.size < minFileSizeBytes) return false;
@@ -81,7 +93,7 @@ async function waitForStableFile(filePath: string, minFileSizeBytes: number) {
   return Boolean(after?.isFile() && after.size === before.size && after.mtimeMs === before.mtimeMs);
 }
 
-async function importWatchedFile(filePath: string, folder: { id: string; minFileSizeBytes: number }) {
+async function importWatchedFile(filePath: string, folder: { id: string; importMode: 'COPY' | 'MOVE'; minFileSizeBytes: number }) {
   if (!(await waitForStableFile(filePath, folder.minFileSizeBytes))) return;
   const existingCompletedTask = await prisma.importTask.findFirst({
     where: {
@@ -101,14 +113,15 @@ async function importWatchedFile(filePath: string, folder: { id: string; minFile
       sourceFilePath: filePath,
       originalName: basename(filePath),
       origin: 'WATCH',
-      monitorFolderId: folder.id
+      monitorFolderId: folder.id,
+      importMode: folder.importMode
     });
   } catch (error) {
     console.error('[import-worker] watched import failed', filePath, error);
   }
 }
 
-function enqueueWatchedImport(filePath: string, folder: { id: string; minFileSizeBytes: number }) {
+function enqueueWatchedImport(filePath: string, folder: { id: string; importMode: 'COPY' | 'MOVE'; minFileSizeBytes: number }) {
   if (queuedOrImportingPaths.has(filePath)) return importQueue;
   queuedOrImportingPaths.add(filePath);
   const next = importQueue
@@ -119,7 +132,7 @@ function enqueueWatchedImport(filePath: string, folder: { id: string; minFileSiz
   return next;
 }
 
-function scheduleImport(filePath: string, folder: { id: string; ignoreHidden: boolean; ignorePatterns?: string | null; minFileSizeBytes: number }, state: WatchState) {
+function scheduleImport(filePath: string, folder: { id: string; importMode: 'COPY' | 'MOVE'; ignoreHidden: boolean; ignorePatterns?: string | null; minFileSizeBytes: number }, state: WatchState) {
   if (shouldIgnoreFile(filePath, folder)) return;
   const existing = state.timers.get(filePath);
   if (existing) clearTimeout(existing);
@@ -161,7 +174,8 @@ async function refreshWatchers() {
   const folders = await prisma.monitorFolder.findMany({ where: { enabled: true }, orderBy: { createdAt: 'desc' } });
   const active = new Set(folders.map((folder) => folder.id));
   for (const [id, state] of watchers) {
-    if (!active.has(id)) {
+    const folder = folders.find((item) => item.id === id);
+    if (!active.has(id) || (folder && state.configSignature !== configSignature(folder))) {
       for (const timer of state.timers.values()) clearTimeout(timer);
       await state.watcher.close();
       watchers.delete(id);
@@ -180,6 +194,7 @@ async function refreshWatchers() {
     }
     const state: WatchState = {
       rootPath: realPath,
+      configSignature: configSignature(folder),
       watcher: chokidar.watch(realPath, {
         ignoreInitial: false,
         awaitWriteFinish: { stabilityThreshold: stableDelayMs, pollInterval: 500 },

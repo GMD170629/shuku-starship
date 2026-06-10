@@ -7,6 +7,7 @@ import { BookCard } from '../../components/book/book-card';
 import { BookTable } from '../../components/book/book-table';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
+import { useConfirm, useToast } from '../../components/ui/feedback';
 import { PageTitle } from '../../components/ui/page-title';
 import { Select } from '../../components/ui/select';
 import type { WorkView } from '../../lib/books';
@@ -76,7 +77,7 @@ export function LibraryPage() {
   const [missingCoverOnly, setMissingCoverOnly] = useState(false);
   const [newImportOnly, setNewImportOnly] = useState(false);
   const [visibility, setVisibility] = useState<'active' | 'ignored' | 'all'>('active');
-  const [sort, setSort] = useState('updated');
+  const [sort, setSort] = useState('recent_read');
   const [search, setSearch] = useState('');
   const [books, setBooks] = useState<WorkView[]>([]);
   const [page, setPage] = useState(1);
@@ -92,6 +93,8 @@ export function LibraryPage() {
   const [reloadKey, setReloadKey] = useState(0);
   const [uploading, setUploading] = useState(false);
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const confirm = useConfirm();
+  const toast = useToast();
 
   const query = useMemo(() => {
     const params = new URLSearchParams();
@@ -200,18 +203,29 @@ export function LibraryPage() {
       const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
       if (!payload.ok) throw new Error(payload.error?.message ?? '批量操作失败');
       setMessage(successMessage);
+      toast.success(successMessage);
       if ('addTags' in body || 'removeTags' in body) setTagInput('');
       setReloadKey((key) => key + 1);
       setSelected([]);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '批量操作失败');
+      const nextError = reason instanceof Error ? reason.message : '批量操作失败';
+      setError(nextError);
+      toast.error('批量操作失败', nextError);
     } finally {
       setBusy(false);
     }
   }
 
-  function confirmBulk(body: Record<string, unknown>, successMessage: string, prompt?: string) {
-    if (prompt && !window.confirm(prompt)) return;
+  async function confirmBulk(body: Record<string, unknown>, successMessage: string, prompt?: string) {
+    if (prompt) {
+      const confirmed = await confirm({
+        title: successMessage.includes('删除') ? '确认删除记录' : '确认批量操作',
+        description: prompt,
+        confirmLabel: successMessage.includes('删除') ? '删除记录' : '确认',
+        tone: successMessage.includes('删除') || successMessage.includes('隐藏') ? 'danger' : 'default'
+      });
+      if (!confirmed) return;
+    }
     void performBulk(body, successMessage);
   }
 
@@ -227,17 +241,27 @@ export function LibraryPage() {
       const text = await response.text();
       const payload = text ? JSON.parse(text) as ImportResponse : { ok: false, error: { message: response.ok ? '导入失败' : `上传失败（HTTP ${response.status}）` } };
       if (!payload.ok) throw new Error(payload.error?.message ?? '导入失败');
-      setMessage(payload.data?.duplicate ? `《${payload.data.title}》已存在` : `《${payload.data?.title ?? file.name}》已导入`);
+      const successMessage = payload.data?.duplicate ? `《${payload.data.title}》已存在` : `《${payload.data?.title ?? file.name}》已导入`;
+      setMessage(successMessage);
+      toast.success(successMessage);
       setReloadKey((key) => key + 1);
     } catch (reason) {
-      setError(reason instanceof SyntaxError ? '上传失败：服务器返回了无法解析的响应，请检查反向代理上传体积限制。' : reason instanceof Error ? reason.message : '导入失败');
+      const nextError = reason instanceof SyntaxError ? '上传失败：服务器返回了无法解析的响应，请检查反向代理上传体积限制。' : reason instanceof Error ? reason.message : '导入失败';
+      setError(nextError);
+      toast.error('导入失败', nextError);
     } finally {
       setUploading(false);
     }
   }
 
   async function deleteBook(book: WorkView) {
-    if (!window.confirm(`确认删除《${book.title}》的数据库记录吗？源文件不会被删除。`)) return;
+    const confirmed = await confirm({
+      title: '确认删除记录',
+      description: `确认删除《${book.title}》的数据库记录吗？源文件不会被删除。`,
+      confirmLabel: '删除记录',
+      tone: 'danger'
+    });
+    if (!confirmed) return;
     setBusy(true);
     setError('');
     setMessage('');
@@ -246,13 +270,28 @@ export function LibraryPage() {
       const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
       if (!payload.ok) throw new Error(payload.error?.message ?? '删除失败');
       setMessage('已删除数据库记录，源文件未删除');
+      toast.success('已删除数据库记录', '源文件未删除');
       setSelected((current) => current.filter((id) => id !== book.id));
       setReloadKey((key) => key + 1);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '删除失败');
+      const nextError = reason instanceof Error ? reason.message : '删除失败';
+      setError(nextError);
+      toast.error('删除失败', nextError);
     } finally {
       setBusy(false);
     }
+  }
+
+  function clearFilters() {
+    setSearch('');
+    setFilter('全部');
+    setStatusFilter('全部');
+    setPublicationStatusFilter('全部');
+    setTrackingStatusFilter('全部');
+    setTagFilter('');
+    setMissingCoverOnly(false);
+    setNewImportOnly(false);
+    setVisibility('active');
   }
 
   return (
@@ -324,7 +363,7 @@ export function LibraryPage() {
                 <Search size={16} className="text-slate-400" />
                 <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索标题、作者、标签、格式..." className="w-full bg-transparent text-sm outline-none" />
               </div>
-              <Button variant="secondary" icon={Filter} className="h-10 px-3 py-0">高级筛选</Button>
+              <Button type="button" disabled={activeFilterCount === 0} variant="secondary" icon={Filter} className="h-10 px-3 py-0" onClick={clearFilters}>清除筛选</Button>
               <Select value={visibility} options={visibilityOptions} onChange={setVisibility} ariaLabel="可见性筛选" size="sm" />
               <Select value={statusFilter} options={[{ value: '全部', label: '全部状态' }, ...statusOptions]} onChange={setStatusFilter} ariaLabel="阅读状态筛选" size="sm" />
               <Select value={publicationStatusFilter} options={[{ value: '全部', label: '全部出版' }, ...publicationStatusOptions]} onChange={setPublicationStatusFilter} ariaLabel="出版状态筛选" size="sm" />
@@ -373,18 +412,18 @@ export function LibraryPage() {
               <CheckCircle2 size={16} />
               已选择 {selected.length} 项
               <Select value={bulkFormat} options={bulkFormatOptions} onChange={setBulkFormat} ariaLabel="批量修改类型" tone="blue" size="sm" />
-              <Button disabled={busy} variant="secondary" className="bg-white" icon={Filter} onClick={() => performBulk({ format: bulkFormat }, '已批量修改类型')}>修改类型</Button>
+              <Button loading={busy} loadingText="处理中" variant="secondary" className="bg-white" icon={Filter} onClick={() => performBulk({ format: bulkFormat }, '已批量修改类型')}>修改类型</Button>
               <Select value={bulkStatus} options={statusOptions} onChange={setBulkStatus} ariaLabel="批量修改阅读状态" tone="blue" size="sm" />
-              <Button disabled={busy} variant="secondary" className="bg-white" icon={CheckCircle2} onClick={() => performBulk({ status: bulkStatus }, '已批量修改阅读状态')}>修改状态</Button>
+              <Button loading={busy} loadingText="处理中" variant="secondary" className="bg-white" icon={CheckCircle2} onClick={() => performBulk({ status: bulkStatus }, '已批量修改阅读状态')}>修改状态</Button>
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <input value={tagInput} onChange={(event) => setTagInput(event.target.value)} placeholder="标签，用逗号分隔" className="h-10 min-w-[220px] flex-1 rounded-xl border border-blue-100 bg-white px-3 text-sm text-slate-700 outline-none" />
-              <Button disabled={busy || parseTagInput().length === 0} variant="secondary" className="bg-white" icon={Tags} onClick={() => performBulk({ addTags: parseTagInput() }, '已批量添加标签')}>添加标签</Button>
-              <Button disabled={busy || parseTagInput().length === 0} variant="secondary" className="bg-white" icon={Tags} onClick={() => performBulk({ removeTags: parseTagInput() }, '已批量移除标签')}>移除标签</Button>
-              <Button disabled={busy} variant="secondary" className="bg-white" icon={RefreshCw} onClick={() => performBulk({ regenerateCover: true }, '已批量重新生成封面')}>重新生成封面</Button>
-              <Button disabled={busy} variant="danger" icon={Trash2} onClick={() => confirmBulk({ ignored: true }, '已批量隐藏读物', `确认隐藏选中的 ${selected.length} 本读物吗？不会删除源文件。`)}>隐藏</Button>
-              <Button disabled={busy} variant="danger" icon={Trash2} onClick={() => confirmBulk({ deleteRecords: true }, '已删除数据库记录，源文件未删除', `确认删除选中的 ${selected.length} 条数据库记录吗？NAS 源文件不会被删除。`)}>删除记录</Button>
-              {visibility !== 'active' ? <Button disabled={busy} variant="secondary" className="bg-white" icon={EyeOff} onClick={() => performBulk({ ignored: false }, '已恢复显示')}>恢复显示</Button> : null}
+              <Button disabled={parseTagInput().length === 0} loading={busy} loadingText="处理中" variant="secondary" className="bg-white" icon={Tags} onClick={() => performBulk({ addTags: parseTagInput() }, '已批量添加标签')}>添加标签</Button>
+              <Button disabled={parseTagInput().length === 0} loading={busy} loadingText="处理中" variant="secondary" className="bg-white" icon={Tags} onClick={() => performBulk({ removeTags: parseTagInput() }, '已批量移除标签')}>移除标签</Button>
+              <Button loading={busy} loadingText="处理中" variant="secondary" className="bg-white" icon={RefreshCw} onClick={() => performBulk({ regenerateCover: true }, '已批量重新生成封面')}>重新生成封面</Button>
+              <Button loading={busy} loadingText="处理中" variant="danger" icon={Trash2} onClick={() => void confirmBulk({ ignored: true }, '已批量隐藏读物', `确认隐藏选中的 ${selected.length} 本读物吗？不会删除源文件。`)}>隐藏</Button>
+              <Button loading={busy} loadingText="处理中" variant="danger" icon={Trash2} onClick={() => void confirmBulk({ deleteRecords: true }, '已删除数据库记录，源文件未删除', `确认删除选中的 ${selected.length} 条数据库记录吗？NAS 源文件不会被删除。`)}>删除记录</Button>
+              {visibility !== 'active' ? <Button loading={busy} loadingText="处理中" variant="secondary" className="bg-white" icon={EyeOff} onClick={() => performBulk({ ignored: false }, '已恢复显示')}>恢复显示</Button> : null}
             </div>
           </div>
         ) : null}

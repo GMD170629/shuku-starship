@@ -4,6 +4,7 @@ import { AlertTriangle, Ban, CheckCircle2, Download, FileCheck2, RefreshCw, Rota
 import { useEffect, useMemo, useState } from 'react';
 import { Badge, type BadgeTone } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
+import { useToast } from '../../components/ui/feedback';
 import { PageTitle } from '../../components/ui/page-title';
 import { Progress } from '../../components/ui/progress';
 
@@ -73,6 +74,7 @@ export function DownloadsPage() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
+  const toast = useToast();
 
   const taskGroups = useMemo(() => groups.map((group) => ({
     ...group,
@@ -113,9 +115,12 @@ export function DownloadsPage() {
       const payload = (await response.json()) as DownloadTasksPayload;
       if (!payload.ok) throw new Error(payload.error?.message ?? '更新下载任务失败');
       setMessage('下载任务已更新');
+      toast.success('下载任务已更新');
       await loadTasks();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '更新下载任务失败');
+      const nextError = reason instanceof Error ? reason.message : '更新下载任务失败';
+      setError(nextError);
+      toast.error('更新下载任务失败', nextError);
     } finally {
       setBusy('');
     }
@@ -129,10 +134,14 @@ export function DownloadsPage() {
       const response = await fetch(`/api/download-tasks/${task.id}/${action}`, { method: 'POST' });
       const payload = (await response.json()) as DownloadTasksPayload;
       if (!payload.ok) throw new Error(payload.error?.message ?? '操作失败');
-      setMessage(action === 'cancel' ? '下载任务已取消' : '下载任务已重新排队');
+      const successMessage = action === 'cancel' ? '下载任务已取消' : '下载任务已重新排队';
+      setMessage(successMessage);
+      toast.success(successMessage);
       await loadTasks();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '操作失败');
+      const nextError = reason instanceof Error ? reason.message : '操作失败';
+      setError(nextError);
+      toast.error('操作失败', nextError);
     } finally {
       setBusy('');
     }
@@ -146,10 +155,14 @@ export function DownloadsPage() {
       const response = await fetch(`/api/download-tasks/${task.id}/start`, { method: 'POST' });
       const payload = (await response.json()) as DownloadTasksPayload;
       if (!payload.ok) throw new Error(payload.error?.message ?? '开始下载失败');
-      setMessage(payload.data?.task?.status === 'downloaded' ? '下载完成' : '下载任务已开始');
+      const successMessage = payload.data?.task?.status === 'downloaded' ? '下载完成' : '下载任务已开始';
+      setMessage(successMessage);
+      toast.success(successMessage);
       await loadTasks();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '开始下载失败');
+      const nextError = reason instanceof Error ? reason.message : '开始下载失败';
+      setError(nextError);
+      toast.error('开始下载失败', nextError);
       await loadTasks();
     } finally {
       setBusy('');
@@ -165,9 +178,12 @@ export function DownloadsPage() {
       const payload = (await response.json()) as DownloadTasksPayload;
       if (!payload.ok) throw new Error(payload.error?.message ?? '导入书库失败');
       setMessage('已导入书库');
+      toast.success('已导入书库');
       await loadTasks();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '导入书库失败');
+      const nextError = reason instanceof Error ? reason.message : '导入书库失败';
+      setError(nextError);
+      toast.error('导入书库失败', nextError);
       await loadTasks();
     } finally {
       setBusy('');
@@ -185,7 +201,7 @@ export function DownloadsPage() {
       <PageTitle
         title="下载队列"
         desc="外部下载只进入 downloads/inbox；这里负责排队、状态标记和后续导入衔接。"
-        action={<Button variant="secondary" icon={RefreshCw} onClick={() => void loadTasks()}>刷新</Button>}
+        action={<Button variant="secondary" icon={RefreshCw} loading={loading} loadingText="刷新中" onClick={() => void loadTasks()}>刷新</Button>}
       />
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
         {taskGroups.map((group) => (
@@ -244,13 +260,13 @@ export function DownloadsPage() {
                     ) : null}
                   </div>
                   <div className="flex shrink-0 flex-wrap gap-2">
-                    {['queued', 'failed'].includes(task.status) ? <Button disabled={busy === `start:${task.id}`} variant="secondary" icon={Download} onClick={() => void startDownload(task)}>开始下载</Button> : null}
-                    {task.status === 'downloaded' ? <Button disabled={busy === `import:${task.id}`} variant="secondary" icon={UploadCloud} onClick={() => void importDownloadedFile(task)}>导入书库</Button> : null}
-                    <Button disabled={busy === `cancel:${task.id}` || task.status === 'completed' || task.status === 'cancelled'} variant="secondary" icon={Ban} onClick={() => void postTaskAction(task, 'cancel')}>取消</Button>
-                    <Button disabled={busy === `retry:${task.id}` || !['failed', 'cancelled'].includes(task.status)} variant="secondary" icon={RotateCcw} onClick={() => void postTaskAction(task, 'retry')}>重试</Button>
-                    <Button disabled={busy === `downloaded:${task.id}` || ['downloaded', 'importing', 'completed'].includes(task.status)} variant="secondary" icon={FileCheck2} onClick={() => void updateTask(task, { status: 'downloaded' })}>标记已下载</Button>
-                    <Button disabled={busy === `completed:${task.id}` || task.status !== 'importing'} variant="secondary" icon={CheckCircle2} onClick={() => void updateTask(task, { status: 'completed' })}>标记导入完成</Button>
-                    <Button disabled={busy === `failed:${task.id}`} variant="danger" icon={AlertTriangle} onClick={() => markFailed(task)}>标记失败</Button>
+                    {['queued', 'failed'].includes(task.status) ? <Button loading={busy === `start:${task.id}`} loadingText="开始中" variant="secondary" icon={Download} onClick={() => void startDownload(task)}>开始下载</Button> : null}
+                    {task.status === 'downloaded' ? <Button loading={busy === `import:${task.id}`} loadingText="导入中" variant="secondary" icon={UploadCloud} onClick={() => void importDownloadedFile(task)}>导入书库</Button> : null}
+                    <Button loading={busy === `cancel:${task.id}`} disabled={task.status === 'completed' || task.status === 'cancelled'} variant="secondary" icon={Ban} onClick={() => void postTaskAction(task, 'cancel')}>取消</Button>
+                    <Button loading={busy === `retry:${task.id}`} disabled={!['failed', 'cancelled'].includes(task.status)} variant="secondary" icon={RotateCcw} onClick={() => void postTaskAction(task, 'retry')}>重试</Button>
+                    <Button loading={busy === `downloaded:${task.id}`} disabled={['downloaded', 'importing', 'completed'].includes(task.status)} variant="secondary" icon={FileCheck2} onClick={() => void updateTask(task, { status: 'downloaded' })}>标记已下载</Button>
+                    <Button loading={busy === `completed:${task.id}`} disabled={task.status !== 'importing'} variant="secondary" icon={CheckCircle2} onClick={() => void updateTask(task, { status: 'completed' })}>标记导入完成</Button>
+                    <Button loading={busy === `failed:${task.id}`} variant="danger" icon={AlertTriangle} onClick={() => markFailed(task)}>标记失败</Button>
                   </div>
                 </div>
                 {task.status === 'downloading' || task.status === 'downloaded' || task.status === 'importing' ? <Progress value={task.progress ?? 0} className="mt-4" /> : null}

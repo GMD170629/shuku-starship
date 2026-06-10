@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
+import { useConfirm, useToast } from '../../components/ui/feedback';
 import { PageTitle } from '../../components/ui/page-title';
 import { Select } from '../../components/ui/select';
 
@@ -13,6 +14,7 @@ type MonitorFolder = {
   name: string;
   rootPath: string;
   enabled: boolean;
+  importMode: 'COPY' | 'MOVE';
   ignorePatterns?: string | null;
   ignoreHidden: boolean;
   minFileSizeBytes: number;
@@ -78,6 +80,11 @@ const themeOptions = [
   { value: 'dark', label: '深色' }
 ];
 
+const importModeOptions = [
+  { value: 'COPY', label: '复制到项目文件夹' },
+  { value: 'MOVE', label: '移动到项目文件夹' }
+];
+
 export function SettingsPage() {
   const groups = ['基础设置', '监控文件夹', '监控规则', '备份与恢复', '元数据', '源管理', '用户与权限', '多端同步', '安全与 API'];
   const [active, setActive] = useState('监控文件夹');
@@ -106,12 +113,18 @@ export function SettingsPage() {
   });
   const [name, setName] = useState('我的监控文件夹');
   const [rootPath, setRootPath] = useState('/books');
+  const [importMode, setImportMode] = useState<'COPY' | 'MOVE'>('COPY');
   const [ignorePatterns, setIgnorePatterns] = useState('');
   const [ignoreHidden, setIgnoreHidden] = useState(true);
   const [minFileSizeKb, setMinFileSizeKb] = useState('0');
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [backupBusy, setBackupBusy] = useState('');
+  const [settingsBusy, setSettingsBusy] = useState(false);
+  const [pathBusy, setPathBusy] = useState('');
+  const [ruleBusy, setRuleBusy] = useState('');
+  const confirm = useConfirm();
+  const toast = useToast();
 
   async function loadPaths() {
     const response = await fetch('/api/monitor-folders');
@@ -143,37 +156,57 @@ export function SettingsPage() {
     event.preventDefault();
     setError('');
     setMessage('');
+    setPathBusy('create');
     const response = await fetch('/api/monitor-folders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, rootPath, enabled: true, ignorePatterns, ignoreHidden, minFileSizeBytes: Math.max(0, Math.round(Number(minFileSizeKb || 0) * 1024)) })
+      body: JSON.stringify({ name, rootPath, enabled: true, importMode, ignorePatterns, ignoreHidden, minFileSizeBytes: Math.max(0, Math.round(Number(minFileSizeKb || 0) * 1024)) })
     });
     const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
     if (!payload.ok) {
-      setError(payload.error?.message ?? '保存失败');
+      const nextError = payload.error?.message ?? '保存失败';
+      setError(nextError);
+      toast.error('保存失败', nextError);
+      setPathBusy('');
       return;
     }
     setMessage('监控文件夹已保存');
+    toast.success('监控文件夹已保存');
     await loadPaths();
+    setPathBusy('');
   }
 
   async function togglePath(path: MonitorFolder) {
+    setPathBusy(`toggle:${path.id}`);
     await fetch(`/api/monitor-folders/${path.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled: !path.enabled })
     });
     await loadPaths();
+    toast.success(path.enabled ? '监控文件夹已停用' : '监控文件夹已启用');
+    setPathBusy('');
   }
 
   async function deletePath(path: MonitorFolder) {
+    const confirmed = await confirm({
+      title: '删除监控文件夹',
+      description: `删除监控文件夹“${path.name}”？不会删除原始读物文件。`,
+      confirmLabel: '删除',
+      tone: 'danger'
+    });
+    if (!confirmed) return;
+    setPathBusy(`delete:${path.id}`);
     await fetch(`/api/monitor-folders/${path.id}`, { method: 'DELETE' });
     await loadPaths();
+    toast.success('监控文件夹已删除');
+    setPathBusy('');
   }
 
-  async function saveScanRules(path: MonitorFolder, updates: Pick<MonitorFolder, 'ignorePatterns' | 'ignoreHidden' | 'minFileSizeBytes'>) {
+  async function saveScanRules(path: MonitorFolder, updates: Pick<MonitorFolder, 'importMode' | 'ignorePatterns' | 'ignoreHidden' | 'minFileSizeBytes'>) {
     setError('');
     setMessage('');
+    setRuleBusy(path.id);
     const response = await fetch(`/api/monitor-folders/${path.id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -181,11 +214,16 @@ export function SettingsPage() {
     });
     const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
     if (!payload.ok) {
-      setError(payload.error?.message ?? '保存监控规则失败');
+      const nextError = payload.error?.message ?? '保存监控规则失败';
+      setError(nextError);
+      toast.error('保存监控规则失败', nextError);
+      setRuleBusy('');
       return;
     }
     setMessage('监控规则已保存');
+    toast.success('监控规则已保存');
     await loadPaths();
+    setRuleBusy('');
   }
 
   async function createBackup() {
@@ -196,10 +234,13 @@ export function SettingsPage() {
     const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
     setBackupBusy('');
     if (!payload.ok) {
-      setError(payload.error?.message ?? '创建备份失败');
+      const nextError = payload.error?.message ?? '创建备份失败';
+      setError(nextError);
+      toast.error('创建备份失败', nextError);
       return;
     }
     setMessage('备份已创建');
+    toast.success('备份已创建');
     await loadBackups();
   }
 
@@ -208,11 +249,17 @@ export function SettingsPage() {
   }
 
   async function restoreBackup(backup: BackupItem) {
-    const first = window.confirm('恢复备份会覆盖当前读物元数据、标签、阅读进度和监控文件夹配置，但不会删除原始读物文件。是否继续？');
+    const first = await confirm({
+      title: '恢复备份',
+      description: '恢复备份会覆盖当前读物元数据、标签、阅读进度和监控文件夹配置，但不会删除原始读物文件。是否继续？',
+      confirmLabel: '继续恢复',
+      tone: 'danger'
+    });
     if (!first) return;
     const confirmText = window.prompt(`二次确认：请输入 RESTORE 恢复备份 ${backup.filename}`);
     if (confirmText !== 'RESTORE') {
       setError('恢复已取消：确认文本不匹配');
+      toast.info('恢复已取消', '确认文本不匹配');
       return;
     }
     setError('');
@@ -226,15 +273,23 @@ export function SettingsPage() {
     const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
     setBackupBusy('');
     if (!payload.ok) {
-      setError(payload.error?.message ?? '恢复备份失败');
+      const nextError = payload.error?.message ?? '恢复备份失败';
+      setError(nextError);
+      toast.error('恢复备份失败', nextError);
       return;
     }
     setMessage('备份已恢复，原始读物文件未被删除');
+    toast.success('备份已恢复', '原始读物文件未被删除');
     await Promise.all([loadPaths(), loadBackups()]);
   }
 
   async function deleteBackup(backup: BackupItem) {
-    const confirmed = window.confirm(`删除备份 ${backup.filename}？`);
+    const confirmed = await confirm({
+      title: '删除备份',
+      description: `删除备份 ${backup.filename}？`,
+      confirmLabel: '删除',
+      tone: 'danger'
+    });
     if (!confirmed) return;
     setError('');
     setMessage('');
@@ -243,16 +298,20 @@ export function SettingsPage() {
     const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
     setBackupBusy('');
     if (!payload.ok) {
-      setError(payload.error?.message ?? '删除备份失败');
+      const nextError = payload.error?.message ?? '删除备份失败';
+      setError(nextError);
+      toast.error('删除备份失败', nextError);
       return;
     }
     setMessage('备份已删除');
+    toast.success('备份已删除');
     await loadBackups();
   }
 
   async function saveSettings() {
     setError('');
     setMessage('');
+    setSettingsBusy(true);
     const settingsToSave = hasCompleteAiSettings(settings)
       ? { ...settings, 'metadata.ai.enabled': 'true' }
       : settings;
@@ -262,16 +321,21 @@ export function SettingsPage() {
       body: JSON.stringify(settingsToSave)
     });
     const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
-    if (!payload.ok) setError(payload.error?.message ?? '保存设置失败');
-    else {
+    setSettingsBusy(false);
+    if (!payload.ok) {
+      const nextError = payload.error?.message ?? '保存设置失败';
+      setError(nextError);
+      toast.error('保存设置失败', nextError);
+    } else {
       setSettings(settingsToSave);
       setMessage('系统设置已保存');
+      toast.success('系统设置已保存');
     }
   }
 
   return (
     <div className="space-y-6">
-      <PageTitle title="系统设置" desc="配置系统、监控文件夹、监控规则、同步、安全和备份。" action={<Button icon={CheckCircle2} onClick={saveSettings}>保存设置</Button>} />
+      <PageTitle title="系统设置" desc="配置系统、监控文件夹、监控规则、同步、安全和备份。" action={<Button icon={CheckCircle2} loading={settingsBusy} loadingText="保存中" onClick={saveSettings}>保存设置</Button>} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
         <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm lg:col-span-3">
           {groups.map((group) => (
@@ -309,13 +373,17 @@ export function SettingsPage() {
           ) : active === '监控文件夹' ? (
             <div className="mt-6 space-y-5">
               <form onSubmit={savePath} className="grid grid-cols-1 gap-4 rounded-3xl border border-slate-200 bg-slate-50 p-5 md:grid-cols-12">
-                <label className="md:col-span-4">
+                <label className="md:col-span-3">
                   <span className="text-sm font-medium text-slate-700">名称</span>
                   <input value={name} onChange={(event) => setName(event.target.value)} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
                 </label>
                 <label className="md:col-span-6">
                   <span className="text-sm font-medium text-slate-700">监控文件夹路径</span>
                   <input value={rootPath} onChange={(event) => setRootPath(event.target.value)} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
+                </label>
+                <label className="md:col-span-3">
+                  <span className="text-sm font-medium text-slate-700">添加模式</span>
+                  <Select value={importMode} options={importModeOptions} onChange={(value) => setImportMode(value as 'COPY' | 'MOVE')} ariaLabel="添加模式" className="mt-2 w-full" />
                 </label>
                 <label className="md:col-span-9">
                   <span className="text-sm font-medium text-slate-700">自定义忽略规则</span>
@@ -335,7 +403,7 @@ export function SettingsPage() {
                   <input type="number" min={0} value={minFileSizeKb} onChange={(event) => setMinFileSizeKb(event.target.value)} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
                 </label>
                 <div className="flex items-end md:col-span-2">
-                  <Button className="h-11 w-full" icon={FolderOpen}>保存</Button>
+                  <Button className="h-11 w-full" icon={FolderOpen} loading={pathBusy === 'create'} loadingText="保存中">保存</Button>
                 </div>
                 {message ? <div className="md:col-span-12 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div> : null}
                 {error ? <div className="md:col-span-12 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
@@ -349,12 +417,12 @@ export function SettingsPage() {
                     <div className="min-w-0 flex-1">
                       <div className="font-semibold">{path.name}</div>
                       <div className="break-words text-sm text-slate-500">{path.rootPath}</div>
-                      <div className="mt-2 text-xs text-slate-500">{path.ignoreHidden ? '忽略隐藏文件' : '包含隐藏文件'} · 小于 {Math.round((path.minFileSizeBytes ?? 0) / 1024)} KB 跳过 · {path.ignorePatterns?.trim() ? '已配置自定义忽略规则' : '仅默认忽略规则'}</div>
+                      <div className="mt-2 text-xs text-slate-500">{path.importMode === 'MOVE' ? '移动到项目文件夹' : '复制到项目文件夹'} · {path.ignoreHidden ? '忽略隐藏文件' : '包含隐藏文件'} · 小于 {Math.round((path.minFileSizeBytes ?? 0) / 1024)} KB 跳过 · {path.ignorePatterns?.trim() ? '已配置自定义忽略规则' : '仅默认忽略规则'}</div>
                     </div>
-                    <button onClick={() => togglePath(path)} className={cn('h-7 w-12 rounded-full p-1 transition', path.enabled ? 'bg-blue-600' : 'bg-slate-300')} aria-label="启用监控文件夹">
+                    <button disabled={pathBusy === `toggle:${path.id}`} onClick={() => togglePath(path)} className={cn('h-7 w-12 rounded-full p-1 transition disabled:cursor-not-allowed disabled:opacity-60', path.enabled ? 'bg-blue-600' : 'bg-slate-300')} aria-label="启用监控文件夹">
                       <span className={cn('block h-5 w-5 rounded-full bg-white transition', path.enabled && 'translate-x-5')} />
                     </button>
-                    <Button variant="danger" icon={Trash2} onClick={() => deletePath(path)}>删除</Button>
+                    <Button variant="danger" icon={Trash2} loading={pathBusy === `delete:${path.id}`} loadingText="删除中" onClick={() => deletePath(path)}>删除</Button>
                   </div>
                 ))}
                 {folders.length === 0 ? <div className="rounded-3xl bg-slate-50 p-6 text-sm text-slate-500">尚未保存监控文件夹。</div> : null}
@@ -363,7 +431,7 @@ export function SettingsPage() {
           ) : active === '监控规则' ? (
             <div className="mt-6 space-y-4">
               {folders.map((path) => (
-                <ScanRuleEditor key={path.id} path={path} onSave={saveScanRules} />
+                <ScanRuleEditor key={path.id} path={path} saving={ruleBusy === path.id} onSave={saveScanRules} />
               ))}
               {folders.length === 0 ? <div className="rounded-3xl bg-slate-50 p-6 text-sm text-slate-500">请先添加监控文件夹。</div> : null}
             </div>
@@ -375,7 +443,7 @@ export function SettingsPage() {
                   <div className="mt-1 text-sm leading-6 text-slate-500">数据库数据、读物元数据、标签、阅读进度、监控文件夹配置和封面缓存索引。原始读物文件不会写入备份。</div>
                   <div className="mt-2 text-xs text-slate-500">自动备份未配置；当前仅显示真实备份文件。</div>
                 </div>
-                <Button icon={Save} onClick={createBackup} disabled={backupBusy === 'create'}>{backupBusy === 'create' ? '创建中' : '立即备份'}</Button>
+                <Button icon={Save} onClick={createBackup} loading={backupBusy === 'create'} loadingText="创建中">立即备份</Button>
               </div>
               {message ? <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div> : null}
               {error ? <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
@@ -399,10 +467,8 @@ export function SettingsPage() {
                     </div>
                     <div className="flex flex-wrap gap-2">
                       <Button variant="secondary" icon={Download} onClick={() => downloadBackup(backup)}>下载</Button>
-                      <Button variant="secondary" icon={RotateCcw} onClick={() => restoreBackup(backup)} disabled={backupBusy === `restore:${backup.id}`}>
-                        {backupBusy === `restore:${backup.id}` ? '恢复中' : '恢复'}
-                      </Button>
-                      <Button variant="danger" icon={Trash2} onClick={() => deleteBackup(backup)} disabled={backupBusy === `delete:${backup.id}`}>删除</Button>
+                      <Button variant="secondary" icon={RotateCcw} onClick={() => restoreBackup(backup)} loading={backupBusy === `restore:${backup.id}`} loadingText="恢复中">恢复</Button>
+                      <Button variant="danger" icon={Trash2} onClick={() => deleteBackup(backup)} loading={backupBusy === `delete:${backup.id}`} loadingText="删除中">删除</Button>
                     </div>
                   </div>
                 ))}
@@ -554,15 +620,17 @@ export function SettingsPage() {
   );
 }
 
-function ScanRuleEditor({ path, onSave }: { path: MonitorFolder; onSave: (path: MonitorFolder, updates: Pick<MonitorFolder, 'ignorePatterns' | 'ignoreHidden' | 'minFileSizeBytes'>) => Promise<void> }) {
+function ScanRuleEditor({ path, saving, onSave }: { path: MonitorFolder; saving: boolean; onSave: (path: MonitorFolder, updates: Pick<MonitorFolder, 'importMode' | 'ignorePatterns' | 'ignoreHidden' | 'minFileSizeBytes'>) => Promise<void> }) {
   const [patterns, setPatterns] = useState(path.ignorePatterns ?? '');
   const [hidden, setHidden] = useState(path.ignoreHidden);
   const [minSizeKb, setMinSizeKb] = useState(String(Math.round((path.minFileSizeBytes ?? 0) / 1024)));
+  const [mode, setMode] = useState<'COPY' | 'MOVE'>(path.importMode ?? 'COPY');
 
   useEffect(() => {
     setPatterns(path.ignorePatterns ?? '');
     setHidden(path.ignoreHidden);
     setMinSizeKb(String(Math.round((path.minFileSizeBytes ?? 0) / 1024)));
+    setMode(path.importMode ?? 'COPY');
   }, [path]);
 
   return (
@@ -577,6 +645,10 @@ function ScanRuleEditor({ path, onSave }: { path: MonitorFolder; onSave: (path: 
           忽略隐藏文件
         </label>
       </div>
+      <label className="mt-4 block text-sm text-slate-600">
+        添加模式
+        <Select value={mode} options={importModeOptions} onChange={(value) => setMode(value as 'COPY' | 'MOVE')} ariaLabel="添加模式" className="mt-2 w-full max-w-xs" />
+      </label>
       <label className="mt-4 block text-sm text-slate-600">
         小于此大小的文件跳过（KB）
         <input
@@ -595,7 +667,7 @@ function ScanRuleEditor({ path, onSave }: { path: MonitorFolder; onSave: (path: 
       />
       <div className="mt-2 text-xs leading-5 text-slate-500">默认已忽略封面、缩略图、临时文件、说明文件和普通图片；这里填写额外规则，每行一条。</div>
       <div className="mt-3 flex justify-end">
-        <Button type="button" icon={CheckCircle2} onClick={() => onSave(path, { ignorePatterns: patterns, ignoreHidden: hidden, minFileSizeBytes: Math.max(0, Math.round(Number(minSizeKb || 0) * 1024)) })}>保存规则</Button>
+        <Button type="button" icon={CheckCircle2} loading={saving} loadingText="保存中" onClick={() => onSave(path, { importMode: mode, ignorePatterns: patterns, ignoreHidden: hidden, minFileSizeBytes: Math.max(0, Math.round(Number(minSizeKb || 0) * 1024)) })}>保存规则</Button>
       </div>
     </div>
   );

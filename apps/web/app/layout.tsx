@@ -1,6 +1,7 @@
 import './globals.css';
 import type { Metadata, Viewport } from 'next';
 import { AppShell } from '../components/layout/app-shell';
+import { FeedbackProvider } from '../components/ui/feedback';
 
 export const metadata: Metadata = {
   title: '书库星舰',
@@ -36,7 +37,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="zh-CN">
       <body>
-        <AppShell>{children}</AppShell>
+        <FeedbackProvider>
+          <AppShell>{children}</AppShell>
+        </FeedbackProvider>
       </body>
     </html>
   );

@@ -57,7 +57,7 @@ pnpm --filter @shuku/scan-worker dev
 
 Docker 默认把项目根目录的 `./books` 挂载为容器内 `/books`。本地开发或 NAS 部署时，请把入站读物目录挂载、同步或软链接到 `./books`，然后在设置页保存 `/books` 作为监控文件夹。
 
-监控文件夹只是导入来源。手动上传和监控导入都会把 EPUB/CBZ/ZIP 复制到系统托管目录 `STORAGE_ROOT/library`，阅读时不再依赖原始入站路径。
+监控文件夹只是导入来源。手动上传会把 EPUB/CBZ/ZIP 复制到系统托管目录 `STORAGE_ROOT/library`；监控导入默认也会复制，也可以在设置页把单个监控文件夹改为“移动到项目文件夹”。阅读时使用系统托管目录中的文件，不再依赖原始入站路径。
 
 ## Demo 数据隔离
 

@@ -7,6 +7,7 @@ import { Cover } from '../../components/book/cover';
 import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
+import { useConfirm, useToast } from '../../components/ui/feedback';
 import { Progress } from '../../components/ui/progress';
 import { Select } from '../../components/ui/select';
 import type { WorkView } from '../../lib/books';
@@ -83,6 +84,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   const [comicSections, setComicSections] = useState<ComicSectionView[]>([]);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [busyAction, setBusyAction] = useState('');
   const [metadataLookupOpen, setMetadataLookupOpen] = useState(false);
   const [coverBust, setCoverBust] = useState(0);
   const [form, setForm] = useState({
@@ -102,6 +104,8 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
     localLatestTitle: '',
     localLatestAt: ''
   });
+  const confirm = useConfirm();
+  const toast = useToast();
 
   const loadBook = useCallback(() => {
     fetch(`/api/works/${bookId}`)
@@ -147,6 +151,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
 
   async function saveMetadata() {
     setSaving(true);
+    setBusyAction('saveMetadata');
     setError('');
     setMessage('');
     try {
@@ -177,15 +182,20 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
       setBook(payload.data.book);
       setEditing(false);
       setMessage('读物信息已保存');
+      toast.success('读物信息已保存');
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '保存失败');
+      const nextError = reason instanceof Error ? reason.message : '保存失败';
+      setError(nextError);
+      toast.error('保存失败', nextError);
     } finally {
       setSaving(false);
+      setBusyAction('');
     }
   }
 
-  async function postAction(path: string, successMessage: string, options: { refreshCover?: boolean; refreshBook?: boolean } = {}) {
+  async function postAction(path: string, successMessage: string, options: { refreshCover?: boolean; refreshBook?: boolean; busyKey?: string } = {}) {
     setSaving(true);
+    setBusyAction(options.busyKey ?? path);
     setError('');
     setMessage('');
     try {
@@ -196,15 +206,20 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
       if (options.refreshBook) loadBook();
       if (options.refreshCover) setCoverBust(Date.now());
       setMessage(successMessage);
+      toast.success(successMessage);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '操作失败');
+      const nextError = reason instanceof Error ? reason.message : '操作失败';
+      setError(nextError);
+      toast.error('操作失败', nextError);
     } finally {
       setSaving(false);
+      setBusyAction('');
     }
   }
 
   async function moveVolume(volumeId: string, direction: 'up' | 'down') {
     setSaving(true);
+    setBusyAction(`move:${volumeId}:${direction}`);
     setError('');
     setMessage('');
     try {
@@ -217,15 +232,20 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
       if (!payload.ok) throw new Error(payload.error?.message ?? '卷册顺序更新失败');
       loadBook();
       setMessage('卷册顺序已更新');
+      toast.success('卷册顺序已更新');
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '卷册顺序更新失败');
+      const nextError = reason instanceof Error ? reason.message : '卷册顺序更新失败';
+      setError(nextError);
+      toast.error('卷册顺序更新失败', nextError);
     } finally {
       setSaving(false);
+      setBusyAction('');
     }
   }
 
   async function setIgnored(ignored: boolean) {
     setSaving(true);
+    setBusyAction('ignored');
     setError('');
     setMessage('');
     try {
@@ -237,17 +257,29 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
       const payload = (await response.json()) as { ok: boolean; data?: { book: WorkView }; error?: { message: string } };
       if (!payload.ok || !payload.data?.book) throw new Error(payload.error?.message ?? '操作失败');
       setBook(payload.data.book);
-      setMessage(ignored ? '读物已忽略' : '读物已恢复显示');
+      const successMessage = ignored ? '读物已忽略' : '读物已恢复显示';
+      setMessage(successMessage);
+      toast.success(successMessage);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '操作失败');
+      const nextError = reason instanceof Error ? reason.message : '操作失败';
+      setError(nextError);
+      toast.error('操作失败', nextError);
     } finally {
       setSaving(false);
+      setBusyAction('');
     }
   }
 
   async function deleteRecord() {
-    if (!window.confirm(`确认删除《${book?.title ?? '这本读物'}》的数据库记录吗？源文件不会被删除。`)) return;
+    const confirmed = await confirm({
+      title: '确认删除记录',
+      description: `确认删除《${book?.title ?? '这本读物'}》的数据库记录吗？源文件不会被删除。`,
+      confirmLabel: '删除记录',
+      tone: 'danger'
+    });
+    if (!confirmed) return;
     setSaving(true);
+    setBusyAction('delete');
     setError('');
     setMessage('');
     try {
@@ -255,16 +287,21 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
       const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
       if (!payload.ok) throw new Error(payload.error?.message ?? '删除失败');
       setMessage('已删除数据库记录，源文件未删除');
+      toast.success('已删除数据库记录', '源文件未删除');
       window.setTimeout(() => router.push('/library'), 700);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '删除失败');
+      const nextError = reason instanceof Error ? reason.message : '删除失败';
+      setError(nextError);
+      toast.error('删除失败', nextError);
       setSaving(false);
+      setBusyAction('');
     }
   }
 
   async function uploadCover(file: File | null) {
     if (!file) return;
     setSaving(true);
+    setBusyAction('uploadCover');
     setError('');
     setMessage('');
     try {
@@ -276,10 +313,14 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
       setCoverBust(Date.now());
       loadBook();
       setMessage('自定义封面已保存');
+      toast.success('自定义封面已保存');
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : '上传封面失败');
+      const nextError = reason instanceof Error ? reason.message : '上传封面失败';
+      setError(nextError);
+      toast.error('上传封面失败', nextError);
     } finally {
       setSaving(false);
+      setBusyAction('');
     }
   }
 
@@ -317,9 +358,9 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
               <Button icon={BookOpen} onClick={() => router.push(comicSections[0] && book.editionId ? `/reader/${book.editionId}?volume=${encodeURIComponent(comicSections[0].id)}` : `/reader/${book.editionId ?? book.id}`)}>{book.progress > 0 ? '继续阅读' : '开始阅读'}</Button>
               <Button variant="secondary" icon={Edit3} onClick={() => setEditing((value) => !value)}>编辑信息</Button>
               <Button disabled={saving} variant="secondary" icon={Database} onClick={() => setMetadataLookupOpen(true)}>元数据识别</Button>
-              <Button disabled={saving} variant="secondary" icon={RefreshCw} onClick={() => postAction(`/api/works/${book.id}/cover/regenerate`, '封面已重新生成', { refreshCover: true })}>重新生成封面</Button>
-              <Button disabled={saving} variant={book.ignored ? 'secondary' : 'danger'} icon={book.ignored ? EyeOff : Trash2} onClick={() => setIgnored(!book.ignored)}>{book.ignored ? '恢复显示' : '忽略读物'}</Button>
-              <Button disabled={saving} variant="danger" icon={Trash2} onClick={() => void deleteRecord()}>删除记录</Button>
+              <Button loading={busyAction === 'regenerateCover'} disabled={saving && busyAction !== 'regenerateCover'} variant="secondary" icon={RefreshCw} onClick={() => postAction(`/api/works/${book.id}/cover/regenerate`, '封面已重新生成', { refreshCover: true, busyKey: 'regenerateCover' })}>重新生成封面</Button>
+              <Button loading={busyAction === 'ignored'} disabled={saving && busyAction !== 'ignored'} variant={book.ignored ? 'secondary' : 'danger'} icon={book.ignored ? EyeOff : Trash2} onClick={() => setIgnored(!book.ignored)}>{book.ignored ? '恢复显示' : '忽略读物'}</Button>
+              <Button loading={busyAction === 'delete'} loadingText="删除中" disabled={saving && busyAction !== 'delete'} variant="danger" icon={Trash2} onClick={() => void deleteRecord()}>删除记录</Button>
             </div>
             {message ? <div className="mt-4 text-sm text-emerald-600">{message}</div> : null}
           </div>
@@ -456,7 +497,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
           </div>
           <div className="mt-5 flex justify-end gap-3">
             <Button variant="secondary" onClick={() => setEditing(false)}>取消</Button>
-            <Button disabled={saving} icon={Save} onClick={saveMetadata}>保存信息</Button>
+            <Button loading={busyAction === 'saveMetadata'} loadingText="保存中" disabled={saving && busyAction !== 'saveMetadata'} icon={Save} onClick={saveMetadata}>保存信息</Button>
           </div>
         </div>
       ) : null}
@@ -477,8 +518,8 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
               </div>
               <div className="mt-3 flex flex-wrap gap-2">
                 <Button variant="secondary" onClick={() => router.push(`/reader/${edition.id}${edition.volumes[0] ? `?volume=${encodeURIComponent(edition.volumes[0].id)}` : ''}`)}>阅读</Button>
-                {!edition.primary ? <Button disabled={saving} variant="secondary" onClick={() => postAction(`/api/works/${book.id}/editions/${edition.id}/primary`, '已设为主版本', { refreshBook: true })}>设为主版本</Button> : null}
-                {book.editions.length > 1 ? <Button disabled={saving} variant="secondary" onClick={() => postAction(`/api/works/${book.id}/editions/${edition.id}/split`, '版本已拆出为新作品', { refreshBook: true })}>拆出作品</Button> : null}
+                {!edition.primary ? <Button loading={busyAction === `primary:${edition.id}`} disabled={saving && busyAction !== `primary:${edition.id}`} variant="secondary" onClick={() => postAction(`/api/works/${book.id}/editions/${edition.id}/primary`, '已设为主版本', { refreshBook: true, busyKey: `primary:${edition.id}` })}>设为主版本</Button> : null}
+                {book.editions.length > 1 ? <Button loading={busyAction === `split:${edition.id}`} disabled={saving && busyAction !== `split:${edition.id}`} variant="secondary" onClick={() => postAction(`/api/works/${book.id}/editions/${edition.id}/split`, '版本已拆出为新作品', { refreshBook: true, busyKey: `split:${edition.id}` })}>拆出作品</Button> : null}
               </div>
             </div>
           ))}
@@ -497,8 +538,8 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
                   <div className="mt-1 text-xs text-slate-500">漫画 · {section.pageCount} 页</div>
                 </div>
                 <div className="flex gap-1" onClick={(event) => event.stopPropagation()}>
-                  <Button variant="ghost" className="min-h-8 px-2 py-1" onClick={() => moveVolume(section.id, 'up')}>上移</Button>
-                  <Button variant="ghost" className="min-h-8 px-2 py-1" onClick={() => moveVolume(section.id, 'down')}>下移</Button>
+                  <Button loading={busyAction === `move:${section.id}:up`} disabled={saving && busyAction !== `move:${section.id}:up`} variant="ghost" className="min-h-8 px-2 py-1" onClick={() => moveVolume(section.id, 'up')}>上移</Button>
+                  <Button loading={busyAction === `move:${section.id}:down`} disabled={saving && busyAction !== `move:${section.id}:down`} variant="ghost" className="min-h-8 px-2 py-1" onClick={() => moveVolume(section.id, 'down')}>下移</Button>
                 </div>
                 <ChevronRight size={16} className="text-slate-400" />
               </button>
@@ -546,6 +587,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
           if (nextBook) setBook(nextBook);
           loadBook();
           setMessage('元数据已应用');
+          toast.success('元数据已应用');
         }}
       />
     </div>
