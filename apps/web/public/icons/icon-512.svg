@@ -1,7 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="书库星舰">
-  <rect width="512" height="512" rx="112" fill="#0F172A"/>
-  <path d="M128 144c0-21 17-38 38-38h144c42 0 74 32 74 74v170c0 21-17 38-38 38H166c-21 0-38-17-38-38V144z" fill="#2563EB"/>
-  <path d="M181 165h119c18 0 32 14 32 32v133H181V165z" fill="#F8FAFC"/>
-  <path d="M213 213h90M213 256h90M213 299h64" stroke="#2563EB" stroke-width="22" stroke-linecap="round"/>
-  <path d="M373 144l27 54 60 8-43 42 10 59-54-28-53 28 10-59-43-42 60-8 26-54z" fill="#93C5FD"/>
+  <rect width="512" height="512" rx="186" fill="#020617"/>
+  <g transform="translate(128 128) scale(10.6667)" fill="none" stroke="#FFFFFF" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="m16 6 4 14"/>
+    <path d="M12 6v14"/>
+    <path d="M8 8v12"/>
+    <path d="M4 4v16"/>
+  </g>
 </svg>

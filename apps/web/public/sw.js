@@ -1,9 +1,21 @@
-const VERSION = 'shuku-pwa-v0.4.1';
+const VERSION = 'shuku-pwa-v0.4.2';
 const SHELL_CACHE = `${VERSION}-app-shell`;
 const STATIC_CACHE = `${VERSION}-static`;
 const PRIVATE_COVER_CACHE = `${VERSION}-private-cover`;
 const PRIVATE_API_CACHE = `${VERSION}-private-api`;
-const SHELL_URLS = ['/offline', '/mobile', '/mobile?source=pwa', '/manifest.webmanifest', '/icons/icon-192.svg', '/icons/icon-512.svg', '/icons/maskable-512.svg'];
+const SHELL_URLS = [
+  '/offline',
+  '/mobile',
+  '/mobile?source=pwa',
+  '/manifest.webmanifest',
+  '/favicon.ico',
+  '/favicon-16x16.png',
+  '/favicon-32x32.png',
+  '/apple-touch-icon.png',
+  '/icons/icon-192.png',
+  '/icons/icon-512.png',
+  '/icons/maskable-512.png'
+];
 const PRIVATE_CACHES = [PRIVATE_COVER_CACHE, PRIVATE_API_CACHE];
 
 function isSameOrigin(url) {
