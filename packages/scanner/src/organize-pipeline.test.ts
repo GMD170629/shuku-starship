@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { candidateToSuggestions, contextSearchTitle, externalTitleMatchesWork, metadataRefreshProvidersForImport, metadataRefreshProvidersFromSettings, normalizeAiSuggestionConfidence, parseDoubanSearchHtml, parseDoubanSubjectHtml, parseMetadataFromFileName, safeCacheQueryKey } from './organize-pipeline';
+import { candidateToSuggestions, contextSearchTitle, externalTitleMatchesWork, metadataRefreshProvidersForImport, metadataRefreshProvidersFromSettings, normalizeAiSuggestionConfidence, parseDoubanSearchHtml, parseDoubanSubjectHtml, parseMetadataFromFileName, safeCacheQueryKey, shouldAutoConfirmExternalMetadata } from './organize-pipeline';
 
 describe('parseMetadataFromFileName', () => {
   it('parses Chinese volume markers', () => {
@@ -104,6 +104,31 @@ describe('metadata auto refresh policy', () => {
   it('only auto-applies external titles that strictly match the work title or series', () => {
     assert.equal(externalTitleMatchesWork({ title: '齐木楠雄的灾难', seriesName: null } as any, '齐木楠雄的灾难'), true);
     assert.equal(externalTitleMatchesWork({ title: '齐木楠雄的灾难', seriesName: null } as any, '+20cm的距离'), false);
+  });
+
+  it('auto-confirms organization when an external high-confidence match is selected', () => {
+    const work = { title: '齐木楠雄的灾难', seriesName: null } as any;
+    const suggestions = [
+      { field: 'title', source: 'external', suggestedValue: JSON.stringify('齐木楠雄的灾难') },
+      { field: 'author', source: 'external', suggestedValue: JSON.stringify('麻生周一') }
+    ] as any[];
+    assert.equal(shouldAutoConfirmExternalMetadata(work, suggestions, suggestions), true);
+  });
+
+  it('does not auto-confirm organization without applied external suggestions', () => {
+    const work = { title: '齐木楠雄的灾难', seriesName: null } as any;
+    assert.equal(shouldAutoConfirmExternalMetadata(work, [], []), false);
+    assert.equal(shouldAutoConfirmExternalMetadata(work, [{ field: 'author', source: 'ai', suggestedValue: JSON.stringify('麻生周一') }] as any[], [{ field: 'author', source: 'ai', suggestedValue: JSON.stringify('麻生周一') }] as any[]), false);
+  });
+
+  it('does not auto-confirm organization when an external title candidate mismatches', () => {
+    const work = { title: '齐木楠雄的灾难', seriesName: null } as any;
+    const selected = [{ field: 'author', source: 'external', suggestedValue: JSON.stringify('作者') }] as any[];
+    const candidates = [
+      { field: 'title', source: 'external', suggestedValue: JSON.stringify('+20cm的距离') },
+      ...selected
+    ] as any[];
+    assert.equal(shouldAutoConfirmExternalMetadata(work, selected, candidates), false);
   });
 });
 

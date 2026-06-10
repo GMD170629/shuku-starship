@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 import { copyFile, mkdir, stat, unlink, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join, normalize, posix, resolve } from 'node:path';
 import type { Readable } from 'node:stream';
@@ -633,6 +634,17 @@ function fileHashForPath(path: string) {
   return createHash('sha256').update(path).digest('hex');
 }
 
+async function contentHashForFile(path: string) {
+  const hash = createHash('sha256');
+  await new Promise<void>((resolveHash, reject) => {
+    const stream = createReadStream(path);
+    stream.on('data', (chunk) => hash.update(chunk));
+    stream.once('end', resolveHash);
+    stream.once('error', reject);
+  });
+  return hash.digest('hex');
+}
+
 function comicMimeType(format: 'cbz' | 'zip') {
   return format === 'cbz' ? 'application/vnd.comicbook+zip' : 'application/zip';
 }
@@ -1106,7 +1118,8 @@ export async function importManagedBook(options: ImportManagedBookOptions): Prom
   try {
     const fileStat = await stat(options.sourceFilePath);
     if (!fileStat.isFile()) throw new Error('导入源不是文件');
-    await prisma.importTask.update({ where: { id: importTaskId }, data: { progress: 30, message: '正在读取元数据' } });
+    const contentHash = await contentHashForFile(options.sourceFilePath);
+    await prisma.importTask.update({ where: { id: importTaskId }, data: { contentHash, progress: 30, message: '正在读取元数据' } });
 
     const result = ext === '.epub'
       ? await importReadableEpub({ ...options, importTaskId, fileSize: fileStat.size, ext })
@@ -1144,7 +1157,7 @@ export async function importManagedBook(options: ImportManagedBookOptions): Prom
             return logImport(
               importTaskId,
               errors.length ? 'warn' : 'info',
-              `metadata auto refresh providers=${providerLabels} added=${added} applied=${metadataResult.applied}${disabled.length ? ` disabled=${disabled.join('|')}` : ''}${errors.length ? ` errors=${errors.join('|')}` : ''}`
+              `metadata auto refresh providers=${providerLabels} added=${added} applied=${metadataResult.applied} externalApplied=${metadataResult.appliedExternal} autoOrganized=${metadataResult.autoMarkedOrganized}${disabled.length ? ` disabled=${disabled.join('|')}` : ''}${errors.length ? ` errors=${errors.join('|')}` : ''}`
             );
           })
           .catch((error) => logImport(importTaskId, 'warn', `metadata auto refresh skipped: ${error instanceof Error ? error.message : String(error)}`));
@@ -1154,10 +1167,10 @@ export async function importManagedBook(options: ImportManagedBookOptions): Prom
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    await prisma.importTask.update({
+    await prisma.importTask.updateMany({
       where: { id: importTaskId },
-      data: { status: 'FAILED', progress: 100, errorSummary: message, message: `导入失败：${message}`, duration: Date.now() - startedAt, finishedAt: new Date() }
-    }).catch(() => undefined);
+      data: { status: 'FAILED', progress: 100, errorSummary: message, message: '导入失败，详情见错误信息', duration: Date.now() - startedAt, finishedAt: new Date() }
+    }).catch((updateError) => console.error('[managed-import] failed to mark import task failed', importTaskId, updateError));
     await logImport(importTaskId, 'error', message).catch(() => undefined);
     throw error;
   }

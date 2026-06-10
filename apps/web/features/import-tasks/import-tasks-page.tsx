@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertTriangle, CheckCircle2, Clock, FileArchive, RefreshCw } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, Clock, FileArchive, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Badge } from '../../components/ui/badge';
 import type { BadgeTone } from '../../components/ui/badge';
@@ -43,6 +43,8 @@ export function ImportTasksPage() {
   const [tasks, setTasks] = useState<ImportTask[]>([]);
   const [summary, setSummary] = useState({ added: 0, updated: 0, skipped: 0, failed: 0 });
   const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState<'clear' | 'rescan' | ''>('');
+  const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const activeTask = useMemo(() => tasks.find((task) => task.status === 'PARSING' || task.status === 'PENDING') ?? null, [tasks]);
 
@@ -65,6 +67,43 @@ export function ImportTasksPage() {
     }
   }
 
+  async function requestRescan() {
+    setBusy('rescan');
+    try {
+      const response = await fetch('/api/import-tasks/rescan', { method: 'POST' });
+      const text = await response.text();
+      const payload = text ? JSON.parse(text) as { ok: boolean; data?: { requestedAt: string }; error?: { message: string } } : null;
+      if (!response.ok) throw new Error(payload?.error?.message ?? `请求重新识别失败：HTTP ${response.status}`);
+      if (!payload?.ok) throw new Error(payload?.error?.message ?? '请求重新识别失败');
+      setMessage('已请求重新识别监控文件夹');
+      setError('');
+      await loadTasks();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '请求重新识别失败');
+    } finally {
+      setBusy('');
+    }
+  }
+
+  async function clearFinishedTasks() {
+    if (!window.confirm('确认清空已完成和失败的导入记录吗？书库读物和源文件不会被删除。')) return;
+    setBusy('clear');
+    try {
+      const response = await fetch('/api/import-tasks', { method: 'DELETE' });
+      const text = await response.text();
+      const payload = text ? JSON.parse(text) as { ok: boolean; data?: { deleted: number }; error?: { message: string } } : null;
+      if (!response.ok) throw new Error(payload?.error?.message ?? `清空记录失败：HTTP ${response.status}`);
+      if (!payload?.ok) throw new Error(payload?.error?.message ?? '清空记录失败');
+      setMessage(`已清空 ${payload.data?.deleted ?? 0} 条已结束导入记录`);
+      setError('');
+      await loadTasks();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '清空记录失败');
+    } finally {
+      setBusy('');
+    }
+  }
+
   useEffect(() => {
     void loadTasks();
     const timer = window.setInterval(() => void loadTasks(), 5000);
@@ -73,7 +112,22 @@ export function ImportTasksPage() {
 
   return (
     <div className="space-y-6">
-      <PageTitle title="导入任务" desc="查看手动上传和监控文件夹自动导入状态。" action={<Button variant="secondary" icon={RefreshCw} onClick={() => void loadTasks()}>刷新</Button>} />
+      <PageTitle
+        title="导入任务"
+        desc="查看手动上传和监控文件夹自动导入状态。"
+        action={(
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="secondary" icon={RefreshCw} onClick={() => void loadTasks()}>刷新</Button>
+            <Button disabled={busy === 'rescan'} variant="secondary" icon={Search} onClick={() => void requestRescan()}>
+              {busy === 'rescan' ? '请求中' : '强制重新识别'}
+            </Button>
+            <Button disabled={busy === 'clear'} variant="danger" icon={Trash2} onClick={() => void clearFinishedTasks()}>
+              {busy === 'clear' ? '清空中' : '清空记录'}
+            </Button>
+          </div>
+        )}
+      />
+      {message ? <div className="rounded-3xl border border-emerald-100 bg-emerald-50 p-4 text-sm text-emerald-700">{message}</div> : null}
       {activeTask ? (
         <div className="rounded-[28px] border border-amber-100 bg-amber-50 p-5 text-amber-800">
           <div className="flex items-center gap-2 font-semibold"><Clock size={18} />{activeTask.message ?? '正在导入读物'}</div>

@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { basename, dirname, extname, join } from 'node:path';
 import { prisma } from '@shuku/database';
-import type { ImportTask, LibraryEdition, LibraryFile, LibraryMetadata, LibraryVolume, LibraryWork, Prisma } from '@prisma/client';
+import type { ImportTask, LibraryEdition, LibraryFile, LibraryMetadata, LibraryVolume, LibraryWork, MetadataSuggestion, Prisma } from '@prisma/client';
 
 export type SuggestionField = 'title' | 'author' | 'description' | 'tags' | 'seriesName' | 'seriesIndex' | 'publishedYear';
 export type SuggestionSource = 'filename' | 'embedded' | 'aggregation' | 'external' | 'ai' | 'rule';
@@ -1064,11 +1064,19 @@ export async function refreshOrganizeMetadataProviders(jobId: string, providers:
 export async function refreshAndApplyImportMetadata(jobId: string, options: { includeExternal?: boolean } = {}) {
   const providers = metadataRefreshProvidersForImport(await enabledMetadataRefreshProviders(), options);
   if (providers.length === 0) {
-    return { providers, refresh: null, applied: 0, enabled: false };
+    return { providers, refresh: null, applied: 0, appliedExternal: 0, autoMarkedOrganized: false, enabled: false };
   }
   const refresh = await refreshOrganizeMetadataProviders(jobId, providers);
-  const apply = await applyMetadataSuggestions({ jobId, highConfidenceOnly: true });
-  return { providers, refresh, applied: apply.applied, enabled: true };
+  const externalRefreshEnabled = providers.includes('external') && refresh.results.some((result) => result.provider === 'external' && result.enabled);
+  const apply = await applyMetadataSuggestions({ jobId, highConfidenceOnly: true, autoConfirmExternal: externalRefreshEnabled });
+  return {
+    providers,
+    refresh,
+    applied: apply.applied,
+    appliedExternal: apply.appliedExternal,
+    autoMarkedOrganized: apply.autoMarkedOrganized,
+    enabled: true
+  };
 }
 
 export function metadataQualityFor(suggestions: PipelineSuggestion[], duplicates: PipelineDuplicate[]) {
@@ -1129,7 +1137,19 @@ export async function createOrRefreshOrganizeJob(options: { workId: string; edit
   return job;
 }
 
-export async function applyMetadataSuggestions(options: { jobId: string; suggestionIds?: string[]; highConfidenceOnly?: boolean; markOrganized?: boolean; dismiss?: boolean }) {
+type SuggestionForExternalAutoConfirm = Pick<MetadataSuggestion, 'field' | 'source' | 'suggestedValue'>;
+
+export function shouldAutoConfirmExternalMetadata(
+  work: Pick<LibraryWork, 'title' | 'seriesName'>,
+  selectedSuggestions: SuggestionForExternalAutoConfirm[],
+  candidateSuggestions: SuggestionForExternalAutoConfirm[]
+) {
+  if (!selectedSuggestions.some((suggestion) => suggestion.source === 'external')) return false;
+  const externalTitleSuggestions = candidateSuggestions.filter((suggestion) => suggestion.source === 'external' && suggestion.field === 'title');
+  return externalTitleSuggestions.every((suggestion) => externalTitleMatchesWork(work, parseJson(suggestion.suggestedValue) ?? suggestion.suggestedValue));
+}
+
+export async function applyMetadataSuggestions(options: { jobId: string; suggestionIds?: string[]; highConfidenceOnly?: boolean; markOrganized?: boolean; autoConfirmExternal?: boolean; dismiss?: boolean }) {
   const job = await prisma.organizeJob.findUnique({
     where: { id: options.jobId },
     include: { suggestions: true, work: { select: { title: true, seriesName: true } } }
@@ -1143,11 +1163,13 @@ export async function applyMetadataSuggestions(options: { jobId: string; suggest
     return { applied: 0, dismissed: true };
   }
   const allowed = new Set(options.suggestionIds ?? []);
-  const selected = job.suggestions.filter((suggestion) =>
+  const candidateSuggestions = job.suggestions.filter((suggestion) =>
     suggestion.status === 'PENDING'
     && (options.suggestionIds ? allowed.has(suggestion.id) : true)
     && (!options.highConfidenceOnly || suggestion.confidence >= 0.8)
-    && (!options.highConfidenceOnly || suggestion.field !== 'title' || suggestion.source !== 'external' || externalTitleMatchesWork(job.work, parseJson(suggestion.suggestedValue) ?? suggestion.suggestedValue))
+  );
+  const selected = candidateSuggestions.filter((suggestion) =>
+    !options.highConfidenceOnly || suggestion.field !== 'title' || suggestion.source !== 'external' || externalTitleMatchesWork(job.work, parseJson(suggestion.suggestedValue) ?? suggestion.suggestedValue)
   );
   const data: Prisma.LibraryWorkUpdateInput = {};
   for (const suggestion of selected) {
@@ -1166,16 +1188,22 @@ export async function applyMetadataSuggestions(options: { jobId: string; suggest
     if (suggestion.field === 'seriesIndex' && typeof value === 'number' && Number.isFinite(value)) data.seriesIndex = value;
     if (suggestion.field === 'publishedYear' && typeof value === 'number' && Number.isInteger(value)) data.publishedYear = value;
   }
-  if (options.markOrganized) {
+  const autoMarkedOrganized = Boolean(options.autoConfirmExternal && shouldAutoConfirmExternalMetadata(job.work, selected, candidateSuggestions));
+  if (options.markOrganized || autoMarkedOrganized) {
     data.organized = true;
     data.organizeStatus = 'APPLIED';
   }
   await prisma.$transaction([
     ...(Object.keys(data).length ? [prisma.libraryWork.update({ where: { id: job.workId }, data })] : []),
     ...(selected.length ? [prisma.metadataSuggestion.updateMany({ where: { id: { in: selected.map((suggestion) => suggestion.id) } }, data: { status: 'APPLIED' } })] : []),
-    prisma.organizeJob.update({ where: { id: job.id }, data: { status: options.markOrganized ? 'APPLIED' : job.status } })
+    prisma.organizeJob.update({ where: { id: job.id }, data: { status: options.markOrganized || autoMarkedOrganized ? 'APPLIED' : job.status } })
   ]);
-  return { applied: selected.length, dismissed: false };
+  return {
+    applied: selected.length,
+    appliedExternal: selected.filter((suggestion) => suggestion.source === 'external').length,
+    autoMarkedOrganized,
+    dismissed: false
+  };
 }
 
 const suggestionFieldSet = new Set<SuggestionField>(['title', 'author', 'description', 'tags', 'seriesName', 'seriesIndex', 'publishedYear']);

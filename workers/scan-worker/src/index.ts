@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { access, rm, stat, writeFile } from 'node:fs/promises';
+import { access, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { basename, join } from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
@@ -9,6 +9,8 @@ import { importManagedBook, isSupportedImportFile, normalizeConfiguredPath, Path
 const readyFile = '/tmp/scan-worker-ready';
 const refreshIntervalMs = Number(process.env.MONITOR_REFRESH_INTERVAL_MS ?? 30_000);
 const stableDelayMs = Number(process.env.MONITOR_FILE_STABLE_DELAY_MS ?? 2_000);
+const rescanRequestedAtKey = 'monitor.rescanRequestedAt';
+const rescanHandledAtKey = 'monitor.rescanHandledAt';
 
 type WatchState = {
   watcher: FSWatcher;
@@ -16,8 +18,18 @@ type WatchState = {
   timers: Map<string, NodeJS.Timeout>;
 };
 
+type MonitorFolderConfig = {
+  id: string;
+  rootPath: string;
+  ignoreHidden: boolean;
+  ignorePatterns?: string | null;
+  minFileSizeBytes: number;
+};
+
 const watchers = new Map<string, WatchState>();
 let importQueue = Promise.resolve();
+const queuedOrImportingPaths = new Set<string>();
+let lastHandledRescanRequest: string | null = null;
 
 function loadEnvFile(path: string, options: { override?: boolean } = {}) {
   if (!existsSync(path)) return;
@@ -71,6 +83,19 @@ async function waitForStableFile(filePath: string, minFileSizeBytes: number) {
 
 async function importWatchedFile(filePath: string, folder: { id: string; minFileSizeBytes: number }) {
   if (!(await waitForStableFile(filePath, folder.minFileSizeBytes))) return;
+  const existingCompletedTask = await prisma.importTask.findFirst({
+    where: {
+      origin: 'WATCH',
+      monitorFolderId: folder.id,
+      sourcePath: filePath,
+      status: 'COMPLETED'
+    },
+    select: { id: true }
+  });
+  if (existingCompletedTask) {
+    console.log(`[import-worker] skipped already imported file ${filePath}`);
+    return;
+  }
   try {
     await importManagedBook({
       sourceFilePath: filePath,
@@ -84,9 +109,12 @@ async function importWatchedFile(filePath: string, folder: { id: string; minFile
 }
 
 function enqueueWatchedImport(filePath: string, folder: { id: string; minFileSizeBytes: number }) {
+  if (queuedOrImportingPaths.has(filePath)) return importQueue;
+  queuedOrImportingPaths.add(filePath);
   const next = importQueue
     .catch(() => undefined)
-    .then(() => importWatchedFile(filePath, folder));
+    .then(() => importWatchedFile(filePath, folder))
+    .finally(() => queuedOrImportingPaths.delete(filePath));
   importQueue = next.catch(() => undefined);
   return next;
 }
@@ -100,6 +128,33 @@ function scheduleImport(filePath: string, folder: { id: string; ignoreHidden: bo
     void enqueueWatchedImport(filePath, folder);
   }, stableDelayMs);
   state.timers.set(filePath, timer);
+}
+
+async function scanDirectoryForImports(rootPath: string, folder: MonitorFolderConfig) {
+  const entries = await readdir(rootPath, { withFileTypes: true }).catch((error) => {
+    console.error('[import-worker] rescan directory failed', rootPath, error);
+    return [];
+  });
+  for (const entry of entries) {
+    const filePath = join(rootPath, entry.name);
+    if (entry.isDirectory()) {
+      if (!shouldIgnorePath(filePath, folder)) await scanDirectoryForImports(filePath, folder);
+      continue;
+    }
+    if (!entry.isFile() || shouldIgnoreFile(filePath, folder)) continue;
+    void enqueueWatchedImport(filePath, folder);
+  }
+}
+
+async function requestMonitorRescan(folder: MonitorFolderConfig) {
+  let realPath: string;
+  try {
+    realPath = (await PathSecurityService.fromEnv().validateMonitorFolder(folder.rootPath)).realPath;
+  } catch (error) {
+    console.error('[import-worker] rescan monitor folder unavailable', folder.rootPath, error);
+    return;
+  }
+  await scanDirectoryForImports(realPath, folder);
 }
 
 async function refreshWatchers() {
@@ -140,9 +195,36 @@ async function refreshWatchers() {
   }
 }
 
+async function processRescanRequests() {
+  const settings = await prisma.systemSetting.findMany({
+    where: { key: { in: [rescanRequestedAtKey, rescanHandledAtKey] } }
+  });
+  const values = new Map(settings.map((setting) => [setting.key, setting.value]));
+  const requestedAt = values.get(rescanRequestedAtKey) ?? null;
+  const handledAt = values.get(rescanHandledAtKey) ?? null;
+  if (!requestedAt || requestedAt === handledAt || requestedAt === lastHandledRescanRequest) return;
+
+  console.log(`[import-worker] rescan requested at ${requestedAt}`);
+  const folders = await prisma.monitorFolder.findMany({ where: { enabled: true }, orderBy: { createdAt: 'desc' } });
+  for (const folder of folders) {
+    await requestMonitorRescan(folder);
+  }
+  lastHandledRescanRequest = requestedAt;
+  await prisma.systemSetting.upsert({
+    where: { key: rescanHandledAtKey },
+    create: { key: rescanHandledAtKey, value: requestedAt },
+    update: { value: requestedAt }
+  });
+}
+
+async function refreshWorkerState() {
+  await refreshWatchers();
+  await processRescanRequests();
+}
+
 await startupCheck();
-await refreshWatchers();
-const refreshTimer = setInterval(() => void refreshWatchers(), refreshIntervalMs);
+await refreshWorkerState();
+const refreshTimer = setInterval(() => void refreshWorkerState(), refreshIntervalMs);
 await writeFile(readyFile, String(process.pid));
 console.log('[import-worker] ready');
 

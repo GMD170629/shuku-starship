@@ -1,7 +1,6 @@
 'use client';
 
 import {
-  BarChart3,
   BookMarked,
   CheckCircle2,
   Download,
@@ -33,7 +32,6 @@ const navItems = [
   { href: '/shelves', icon: BookMarked, label: '书架' },
   { href: '/organize/pending', icon: FolderOpen, label: '待整理' },
   { href: '/downloads', icon: Download, label: '下载队列' },
-  { href: '/', icon: BarChart3, label: '阅读统计' },
   { href: '/import-tasks', icon: RefreshCw, label: '导入任务' },
   { href: '/settings', icon: Settings, label: '系统设置' }
 ];
