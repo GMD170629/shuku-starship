@@ -6,7 +6,7 @@ from threading import Thread
 
 from sqlalchemy import text
 
-from app.worker.importer import ImportOptions, import_managed_book, parse_comic_volume_from_name, parse_epub_metadata, parse_pdf_metadata, stage_managed_import_file
+from app.worker.importer import ImportOptions, _work_merge_key, import_managed_book, parse_comic_volume_from_name, parse_epub_metadata, parse_pdf_metadata, stage_managed_import_file
 from app.worker.path_security import PathSecurityError, PathSecurityService, normalize_configured_path
 from app.worker.watcher import MonitorFolderConfig, should_ignore_file
 
@@ -167,6 +167,25 @@ def write_epub_fixture(path: Path):
         archive.writestr("OEBPS/cover.jpg", b"fake-jpeg")
 
 
+def write_epub_metadata_fixture(path: Path, title: str, author: str, identifiers: list[str] | None = None):
+    identifier_xml = "\n".join(f"<dc:identifier>{identifier}</dc:identifier>" for identifier in identifiers or [])
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr(
+            "META-INF/container.xml",
+            """<?xml version="1.0"?><container><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>""",
+        )
+        archive.writestr(
+            "OEBPS/content.opf",
+            f"""<?xml version="1.0"?><package><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            {identifier_xml}<dc:title>{title}</dc:title><dc:creator>{author}</dc:creator>
+            </metadata><manifest>
+            <item id="c1" href="one.xhtml" media-type="application/xhtml+xml"/>
+            </manifest><spine><itemref idref="c1"/></spine></package>""",
+        )
+        archive.writestr("OEBPS/one.xhtml", "<html><body><h1>正文</h1></body></html>")
+
+
 def write_epub_nav_fixture(path: Path):
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr("mimetype", "application/epub+zip")
@@ -177,7 +196,7 @@ def write_epub_nav_fixture(path: Path):
         archive.writestr(
             "OEBPS/content.opf",
             """<?xml version="1.0"?><package><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-            <dc:title>目录选择测试</dc:title><dc:creator>测试作者</dc:creator><dc:identifier>urn:isbn:9787111111111</dc:identifier>
+            <dc:title>目录选择测试</dc:title><dc:creator>测试作者</dc:creator><dc:identifier>urn:isbn:9787111111115</dc:identifier>
             <dc:language>zh-CN</dc:language><dc:publisher>测试出版社</dc:publisher><dc:subject>悬疑</dc:subject><dc:subject>推理</dc:subject>
             <meta name="cover" content="cover"/>
             </metadata><manifest>
@@ -350,6 +369,12 @@ def test_stage_managed_import_file_move_reports_read_only_source(tmp_path, monke
     assert not managed.exists()
 
 
+def test_work_merge_key_uses_title_author_and_media_type():
+    assert _work_merge_key("epub", "斯泰尔斯庄园奇案 (午夜文库)", "阿加莎·克里斯蒂", "B00T238N28", "9787111111115") == "ebook:斯泰尔斯庄园奇案午夜文库:阿加莎·克里斯蒂"
+    assert _work_merge_key("pdf", "斯泰尔斯庄园奇案 (午夜文库)", "阿加莎·克里斯蒂") == "ebook:斯泰尔斯庄园奇案午夜文库:阿加莎·克里斯蒂"
+    assert _work_merge_key("cbz", "斯泰尔斯庄园奇案 (午夜文库)", "阿加莎·克里斯蒂") == "comic:斯泰尔斯庄园奇案午夜文库:阿加莎·克里斯蒂"
+
+
 def test_import_epub_creates_library_records(db_session, test_settings, tmp_path):
     create_worker_tables(db_session)
     test_settings.resolved_storage_root.mkdir(parents=True)
@@ -365,6 +390,46 @@ def test_import_epub_creates_library_records(db_session, test_settings, tmp_path
     assert _count(db_session, "LibraryReadingUnit") == 2
     assert _count(db_session, "ImportTask") == 1
     assert _count(db_session, "OrganizeJob") == 1
+
+
+def test_watch_epub_prefers_filename_when_opf_title_conflicts(db_session, test_settings, tmp_path):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    source_name = "斯泰尔斯庄园奇案_阿加莎·克里 - (英)阿加莎·克里斯蒂.epub"
+    epub = tmp_path / source_name
+    write_epub_metadata_fixture(epub, "岛田庄司精选作品合集共14册（日本推理小说之神，新本格派导师岛田庄司）", "岛田庄司")
+
+    result = import_managed_book(
+        db_session,
+        test_settings,
+        ImportOptions(source_file_path=epub, origin="WATCH", original_name=source_name, monitor_folder_id="folder-1"),
+    )
+
+    assert result.duplicate is False
+    work = db_session.execute(text("SELECT title, author FROM LibraryWork")).mappings().first()
+    assert work["title"] == "斯泰尔斯庄园奇案"
+    assert work["author"] == "阿加莎·克里斯蒂"
+    raw = json.loads(db_session.execute(text("SELECT rawJson FROM LibraryMetadata")).scalar())
+    assert raw["originalDcTitle"].startswith("岛田庄司精选作品合集共14册")
+    assert raw["titleOverrideReason"] == "watch-source-filename-conflicts-with-opf"
+
+
+def test_import_epub_merges_same_title_author_despite_different_identifiers(db_session, test_settings, tmp_path):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    first = tmp_path / "first.epub"
+    second = tmp_path / "second.epub"
+    write_epub_metadata_fixture(first, "斯泰尔斯庄园奇案", "阿加莎·克里斯蒂", ["B00T238N28"])
+    write_epub_metadata_fixture(second, "斯泰尔斯庄园奇案", "阿加莎·克里斯蒂", ["B00DIFFERENT"])
+
+    first_result = import_managed_book(db_session, test_settings, ImportOptions(source_file_path=first, origin="MANUAL", original_name=first.name))
+    second_result = import_managed_book(db_session, test_settings, ImportOptions(source_file_path=second, origin="MANUAL", original_name=second.name))
+
+    assert first_result.duplicate is False
+    assert second_result.duplicate is True
+    assert first_result.work_id == second_result.work_id
+    assert _count(db_session, "LibraryWork") == 1
+    assert db_session.execute(text("SELECT mergeKey FROM LibraryWork")).scalar() == "ebook:斯泰尔斯庄园奇案:阿加莎·克里斯蒂"
 
 
 def test_import_epub_falls_back_to_bangumi_and_skips_pending_organize_queue(db_session, test_settings, tmp_path):
@@ -411,12 +476,38 @@ def test_parse_epub_nav_uses_toc_block_and_preserves_raw_opf_metadata(tmp_path):
         {"title": "第一节", "href": "chapters/one.xhtml", "idref": "c1", "mediaType": "application/xhtml+xml", "sortOrder": 1},
         {"title": "第二节", "href": "chapters/two.xhtml#p2", "idref": "c2", "mediaType": "application/xhtml+xml", "sortOrder": 2},
     ]
-    assert metadata["isbn"] == "9787111111111"
+    assert metadata["isbn"] == "9787111111115"
     assert metadata["publisher"] == "测试出版社"
     assert metadata["subjects"] == ["悬疑", "推理"]
     assert metadata["coverPath"] == "cover.jpg"
     assert metadata["rawMetadata"]["dc:subject"] == ["悬疑", "推理"]
     assert metadata["rawMetadata"]["meta"] == [{"name": "cover", "content": "cover"}]
+
+
+def test_parse_epub_metadata_does_not_extract_isbn_from_uuid(tmp_path):
+    epub = tmp_path / "uuid.epub"
+    with zipfile.ZipFile(epub, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr(
+            "META-INF/container.xml",
+            """<?xml version="1.0"?><container><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>""",
+        )
+        archive.writestr(
+            "OEBPS/content.opf",
+            """<?xml version="1.0"?><package><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:identifier>urn:uuid:273fd756-62f2-4858-8d67-99e08f24bba9</dc:identifier>
+            <dc:identifier>B00T238N28</dc:identifier>
+            <dc:title>斯泰尔斯庄园奇案 (午夜文库)</dc:title><dc:creator>阿加莎·克里斯蒂</dc:creator>
+            </metadata><manifest>
+            <item id="c1" href="one.xhtml" media-type="application/xhtml+xml"/>
+            </manifest><spine><itemref idref="c1"/></spine></package>""",
+        )
+        archive.writestr("OEBPS/one.xhtml", "<html><body><h1>正文</h1></body></html>")
+
+    metadata = parse_epub_metadata(epub)
+
+    assert metadata["isbn"] is None
+    assert metadata["identifier"] == "B00T238N28"
 
 
 def test_parse_epub_ncx_titles_take_priority_over_headings(tmp_path):

@@ -120,6 +120,7 @@ def import_managed_book(db: Session, settings: Settings, options: ImportOptions)
 
 def _import_epub(db: Session, settings: Settings, options: ImportOptions, task_id: str, file_size: int, ext: str) -> ImportResult:
     metadata = parse_epub_metadata(options.source_file_path)
+    metadata = _resolve_epub_import_metadata(metadata, options)
     merge_key = _work_merge_key("epub", metadata["title"], metadata["author"], metadata.get("identifier"), metadata.get("isbn"))
     work, created = _ensure_work(db, {"title": metadata["title"], "author": metadata["author"], "description": metadata.get("description"), "workType": "EPUB", "tags": metadata.get("subjects") or ["epub"], "mergeKey": merge_key, "origin": options.origin, "monitorFolderId": options.monitor_folder_id})
     existing = None if created else _row(db, "SELECT * FROM `LibraryEdition` WHERE `workId` = :work_id AND `format` = 'EPUB' AND `hidden` = 0 ORDER BY `createdAt` ASC LIMIT 1", {"work_id": work["id"]})
@@ -321,7 +322,7 @@ def parse_epub_metadata(path: Path) -> dict[str, Any]:
             "title": title,
             "author": author,
             "language": _first_text(opf_xml, "language"),
-            "identifier": identifiers[0] if identifiers else None,
+            "identifier": _preferred_identifier(identifiers),
             "isbn": _extract_isbn(identifiers),
             "publisher": _first_text(opf_xml, "publisher"),
             "publishedAt": _first_text(opf_xml, "date"),
@@ -334,6 +335,57 @@ def parse_epub_metadata(path: Path) -> dict[str, Any]:
             "opfPath": opf_path,
             "rawMetadata": raw_metadata,
         }
+
+
+def _resolve_epub_import_metadata(metadata: dict[str, Any], options: ImportOptions) -> dict[str, Any]:
+    if options.origin != "WATCH":
+        return metadata
+    source = _epub_source_metadata(options.source_file_path, options.original_name)
+    source_title = source.get("title")
+    opf_title = str(metadata.get("title") or "").strip()
+    if not source_title or not _epub_title_conflicts(opf_title, source_title):
+        return metadata
+    resolved = dict(metadata)
+    raw_metadata = dict(resolved.get("rawMetadata") or {})
+    raw_metadata["originalDcTitle"] = opf_title
+    raw_metadata["sourceFileTitle"] = source_title
+    raw_metadata["titleOverrideReason"] = "watch-source-filename-conflicts-with-opf"
+    resolved["rawMetadata"] = raw_metadata
+    resolved["title"] = source_title
+    if source.get("author"):
+        raw_metadata["sourceFileAuthor"] = source["author"]
+        resolved["author"] = source["author"]
+    return resolved
+
+
+def _epub_source_metadata(path: Path, original_name: str | None = None) -> dict[str, str]:
+    stem = Path(original_name or path.name).stem
+    title_part = stem
+    author = ""
+    dash_match = re.split(r"\s+-\s+", stem, maxsplit=1)
+    if len(dash_match) == 2:
+        title_part, author = dash_match
+    if "_" in title_part:
+        title_part = title_part.split("_", 1)[0]
+    title = _clean_title_part(title_part)
+    author = _clean_title_part(author)
+    author = re.sub(r"^[\(（][^)）]+[\)）]\s*", "", author).strip()
+    if not title or metadata_title_needs_ai(title):
+        return {}
+    result = {"title": title}
+    if author and not metadata_title_needs_ai(author):
+        result["author"] = author
+    return result
+
+
+def _epub_title_conflicts(opf_title: str, source_title: str) -> bool:
+    opf_key = _normalize_key(opf_title)
+    source_key = _normalize_key(source_title)
+    if not opf_key or not source_key or opf_key == source_key:
+        return False
+    if len(source_key) < 4:
+        return False
+    return opf_key not in source_key and source_key not in opf_key
 
 
 def parse_comic_archive(path: Path, original_name: str | None = None) -> dict[str, Any]:
@@ -645,12 +697,19 @@ def _normalize_key(value: Any) -> str:
 
 
 def _work_merge_key(fmt: str, title: str, author: str | None = None, identifier: str | None = None, isbn: str | None = None) -> str:
-    if isbn:
-        return f"isbn:{_normalize_key(isbn)}"
-    if identifier:
-        return f"id:{_normalize_key(identifier)}"
-    prefix = fmt if fmt in {"epub", "pdf"} else "comic"
+    prefix = _merge_type_prefix(fmt)
     return f"{prefix}:{_normalize_key(title)}:{_normalize_key(author)}"
+
+
+def _merge_type_prefix(fmt: str) -> str:
+    return "ebook" if fmt.lower() in {"epub", "pdf"} else "comic"
+
+
+def _usable_merge_identifier(identifier: str | None) -> bool:
+    if not identifier:
+        return False
+    value = str(identifier).strip().lower()
+    return not (value.startswith("urn:uuid:") or re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", value))
 
 
 def _source_group_key(options: ImportOptions, fallback_title: str) -> str:
@@ -885,10 +944,34 @@ def _extract_pdf_cover(settings: Settings, staged: Path, work_id: str, edition_i
 
 def _extract_isbn(ids: list[str]) -> str | None:
     for value in ids:
-        match = re.search(r"(?:97[89])?[0-9]{9}[0-9Xx]", re.sub(r"[^0-9Xx]", "", value))
-        if match:
-            return match.group(0).upper()
+        if "isbn" not in str(value).lower():
+            continue
+        candidates = re.findall(r"(?:97[89][-\s]?)?[0-9][0-9Xx\-\s]{8,16}[0-9Xx]", value)
+        for candidate in candidates:
+            normalized = re.sub(r"[^0-9Xx]", "", candidate).upper()
+            if _valid_isbn(normalized):
+                return normalized
     return None
+
+
+def _preferred_identifier(ids: list[str]) -> str | None:
+    for value in ids:
+        if "isbn" in str(value).lower():
+            continue
+        cleaned = str(value or "").strip()
+        if cleaned and _usable_merge_identifier(cleaned):
+            return cleaned
+    return None
+
+
+def _valid_isbn(value: str) -> bool:
+    if len(value) == 13 and value.isdigit():
+        total = sum((1 if index % 2 == 0 else 3) * int(char) for index, char in enumerate(value[:12]))
+        return (10 - total % 10) % 10 == int(value[-1])
+    if len(value) == 10 and re.fullmatch(r"[0-9]{9}[0-9X]", value):
+        total = sum((10 - index) * (10 if char == "X" else int(char)) for index, char in enumerate(value))
+        return total % 11 == 0
+    return False
 
 
 def _sanitize_description(value: str | None) -> str | None:
