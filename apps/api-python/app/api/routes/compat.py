@@ -670,7 +670,7 @@ async def import_work(request: Request, db: Session = Depends(get_db), settings:
                     source_file_path=target,
                     original_name=file_name,
                     origin="MANUAL",
-                    import_mode="COPY",
+                    import_mode="MOVE",
                 ),
             )
             task = _row(db, "SELECT * FROM `ImportTask` WHERE `sourcePath` = :source_path ORDER BY `createdAt` DESC LIMIT 1", {"source_path": str(target)}) if _has_table(db, "ImportTask") else None
@@ -1421,35 +1421,53 @@ def _ensure_volume_page_index(db: Session, settings: Settings, volume_id: str) -
         logger.warning("failed to rebuild comic page index volume=%s file=%s error=%s", volume_id, file.get("id"), exc)
         return 0
     now = _now()
-    for page in parsed["pages"]:
-        _insert(
-            db,
-            "LibraryReadingUnit",
-            {
-                "id": f"py_{time_ns()}_{page['index']}",
-                "editionId": volume.get("editionId"),
-                "volumeId": volume_id,
-                "fileId": file.get("id"),
-                "unitType": "page",
-                "title": page["title"],
-                "href": page["entryPath"],
-                "mediaType": page["mediaType"],
-                "sortOrder": page["index"],
-                "size": page.get("size"),
-                "metadataJson": _json_text(
-                    {
-                        "zipEntryName": page["entryPath"],
-                        "originalName": Path(page["entryPath"]).name,
-                        "pageInVolume": page["index"],
-                        "pageInSection": page["index"],
-                        "volumeIndex": volume.get("volumeIndex"),
-                        "sourceFileName": Path(file.get("path") or archive_path).name,
-                    }
+    rows = [
+        {
+            "id": f"py_{time_ns()}_{page['index']}",
+            "editionId": volume.get("editionId"),
+            "volumeId": volume_id,
+            "fileId": file.get("id"),
+            "unitType": "page",
+            "title": page["title"],
+            "href": page["entryPath"],
+            "mediaType": page["mediaType"],
+            "sortOrder": page["index"],
+            "size": page.get("size"),
+            "metadataJson": _json_text(
+                {
+                    "zipEntryName": page["entryPath"],
+                    "originalName": Path(page["entryPath"]).name,
+                    "pageInVolume": page["index"],
+                    "pageInSection": page["index"],
+                    "volumeIndex": volume.get("volumeIndex"),
+                    "sourceFileName": Path(file.get("path") or archive_path).name,
+                }
+            ),
+            "createdAt": now,
+            "updatedAt": now,
+        }
+        for page in parsed["pages"]
+    ]
+    if rows:
+        try:
+            db.execute(
+                text(
+                    """
+                    INSERT INTO `LibraryReadingUnit`
+                    (`id`, `editionId`, `volumeId`, `fileId`, `unitType`, `title`, `href`, `mediaType`, `sortOrder`, `size`, `metadataJson`, `createdAt`, `updatedAt`)
+                    VALUES
+                    (:id, :editionId, :volumeId, :fileId, :unitType, :title, :href, :mediaType, :sortOrder, :size, :metadataJson, :createdAt, :updatedAt)
+                    """
                 ),
-                "createdAt": now,
-                "updatedAt": now,
-            },
-        )
+                rows,
+            )
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            existing = db.execute(text("SELECT COUNT(*) FROM `LibraryReadingUnit` WHERE `volumeId` = :volume_id AND LOWER(`unitType`) = 'page'"), {"volume_id": volume_id}).scalar() or 0
+            if existing:
+                return int(existing)
+            raise
     count = len(parsed["pages"])
     _update(db, "LibraryVolume", volume_id, {"pageCount": count, "updatedAt": now})
     if volume.get("editionId") and _has_table(db, "LibraryVolume") and _has_table(db, "LibraryEdition"):

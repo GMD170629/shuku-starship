@@ -534,7 +534,7 @@ def test_parse_epub_without_toc_uses_headings_then_numbered_titles(tmp_path):
     assert [chapter["title"] for chapter in untitled_metadata["chapters"]] == ["第 1 章", "第 2 章"]
 
 
-def test_import_comic_creates_page_units_and_detects_duplicate(db_session, test_settings, tmp_path):
+def test_import_comic_defers_page_units_and_detects_duplicate(db_session, test_settings, tmp_path):
     create_worker_tables(db_session)
     test_settings.resolved_storage_root.mkdir(parents=True)
     comic = tmp_path / "星舰漫画 Vol.1.zip"
@@ -548,15 +548,21 @@ def test_import_comic_creates_page_units_and_detects_duplicate(db_session, test_
     assert second.duplicate is True
     assert _count(db_session, "LibraryWork") == 1
     assert _count(db_session, "LibraryVolume") == 1
-    assert _count(db_session, "LibraryReadingUnit") == 2
+    assert _count(db_session, "LibraryReadingUnit") == 0
+    assert db_session.execute(text("SELECT contentHash FROM ImportTask WHERE duplicate = 0")).scalar() is None
+    file_row = db_session.execute(text("SELECT fullHash, hashStatus FROM LibraryFile")).mappings().first()
+    assert file_row["fullHash"] is None
+    assert file_row["hashStatus"] == "PARTIAL_PENDING"
     work = db_session.execute(text("SELECT title, author, description, tags FROM LibraryWork")).mappings().first()
     assert work["title"] == "星舰漫画"
     assert work["author"] == "画师"
     assert work["description"] == "漫画简介"
     assert json.loads(work["tags"]) == ["manga", "space"]
-    edition = db_session.execute(text("SELECT publisher, pageCount, coverStatus FROM LibraryEdition")).mappings().first()
+    edition = db_session.execute(text("SELECT publisher, pageCount, coverPath, coverStatus FROM LibraryEdition")).mappings().first()
     assert edition["publisher"] == "星舰出版社"
     assert edition["pageCount"] == 2
+    assert edition["coverPath"]
+    assert Path(edition["coverPath"]).read_bytes() == b"one"
     assert edition["coverStatus"] == "READY"
     volume = db_session.execute(text("SELECT title, volumeIndex FROM LibraryVolume")).mappings().first()
     assert volume["title"] == "第 1 卷"

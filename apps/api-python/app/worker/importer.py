@@ -23,6 +23,7 @@ SUPPORTED_EXTS = {".epub", ".cbz", ".zip", ".pdf"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 MAX_EPUB_SIZE_BYTES = 512 * 1024 * 1024
 MAX_ARCHIVE_SIZE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_COMIC_INFO_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -81,8 +82,11 @@ def import_managed_book(db: Session, settings: Settings, options: ImportOptions)
         limit = import_file_size_limit_bytes_for_ext(ext)
         if limit and stat.st_size > limit:
             raise ValueError(f"文件过大：当前限制 {limit} bytes")
-        content_hash = _content_hash(source)
-        _update(db, "ImportTask", task_id, {"contentHash": content_hash, "progress": 30, "message": "正在读取元数据"})
+        content_hash = None if ext in {".cbz", ".zip"} else _content_hash(source)
+        task_update = {"progress": 30, "message": "正在读取元数据"}
+        if content_hash:
+            task_update["contentHash"] = content_hash
+        _update(db, "ImportTask", task_id, task_update)
         if ext == ".epub":
             result = _import_epub(db, settings, options, task_id, stat.st_size, ext)
         elif ext == ".pdf":
@@ -273,14 +277,16 @@ def _import_comic(db: Session, settings: Settings, options: ImportOptions, task_
         staged = stage_managed_import_file(options.source_file_path, managed, options.import_mode)
         _update(db, "ImportTask", task_id, {"managedFilePath": str(managed), "message": "正在建立漫画记录"})
         file = _insert(db, "LibraryFile", {"id": _id(), "editionId": edition["id"], "volumeId": volume["id"], "path": str(staged), "filePathHash": _hash_text(str(staged)), "hashStatus": "PARTIAL_PENDING", "kind": "COMIC", "mimeType": "application/vnd.comicbook+zip" if parsed["format"] == "cbz" else "application/zip", "sizeBytes": file_size, "mtimeMs": int(staged.stat().st_mtime * 1000), "sortOrder": sort_order, "createdAt": _now(), "updatedAt": _now()})
-        cover_path = _extract_comic_cover(settings, staged, work["id"], edition["id"], volume["id"], parsed["coverEntryPath"])
-        for page in parsed["pages"]:
-            _insert(db, "LibraryReadingUnit", {"id": _id(), "editionId": edition["id"], "volumeId": volume["id"], "fileId": file["id"], "unitType": "page", "title": page["title"], "href": page["entryPath"], "mediaType": page["mediaType"], "sortOrder": page["index"], "size": page.get("size"), "metadataJson": json.dumps({"zipEntryName": page["entryPath"], "originalName": Path(page["entryPath"]).name, "pageInVolume": page["index"], "pageInSection": page["index"], "volumeIndex": volume_index, "sourceFileName": options.original_name or options.source_file_path.name}, ensure_ascii=False), "createdAt": _now(), "updatedAt": _now()})
+        try:
+            cover_path = _extract_comic_cover(settings, staged, work["id"], edition["id"], volume["id"], parsed["coverEntryPath"])
+        except Exception as exc:
+            cover_path = None
+            _log_import(db, task_id, "warning", f"comic cover extraction skipped: {exc}")
         _insert(db, "LibraryMetadata", {"id": _id(), "editionId": edition["id"], "source": "comic_info" if parsed.get("comicInfo") else "system", "rawJson": json.dumps({**parsed["rawMetadata"], "volumeIndex": volume_index, "sourceFileName": options.original_name or options.source_file_path.name}, ensure_ascii=False), "createdAt": _now(), "updatedAt": _now()})
         _update(db, "LibraryVolume", volume["id"], {"coverPath": cover_path, "pageCount": parsed["pageCount"], "updatedAt": _now()})
         size_total = _scalar(db, "SELECT COALESCE(SUM(`sizeBytes`), 0) FROM `LibraryFile` WHERE `editionId` = :edition_id", {"edition_id": edition["id"]}, 0)
         page_total = _scalar(db, "SELECT COALESCE(SUM(`pageCount`), 0) FROM `LibraryVolume` WHERE `editionId` = :edition_id", {"edition_id": edition["id"]}, 0)
-        _update(db, "LibraryEdition", edition["id"], {"sizeBytes": int(size_total), "pageCount": int(page_total), "coverPath": edition.get("coverPath") or cover_path, "coverStatus": "READY", "importStatus": "COMPLETED", "updatedAt": _now()})
+        _update(db, "LibraryEdition", edition["id"], {"sizeBytes": int(size_total), "pageCount": int(page_total), "coverPath": edition.get("coverPath") or cover_path, "coverStatus": "READY" if (edition.get("coverPath") or cover_path) else "PENDING", "importStatus": "COMPLETED", "updatedAt": _now()})
         _finalize_work_primary(db, work["id"], edition["id"], cover_path)
         return ImportResult(work["id"], work["id"], edition["id"], volume["id"], work["title"], "comic", parsed["format"], parsed["pageCount"], "completed", False, (not created) or (not created_edition), "new-comic-work" if created else "new-comic-version" if created_edition else "same-comic-series")
     except Exception:
@@ -396,7 +402,7 @@ def parse_comic_archive(path: Path, original_name: str | None = None) -> dict[st
         if not images:
             raise ValueError("漫画压缩包内没有可导入的图片")
         images.sort(key=lambda item: _natural_key(item.filename))
-        comic_info_entry = next((info for info in entries if info.filename.lower().endswith("comicinfo.xml")), None)
+        comic_info_entry = next((info for info in entries if info.filename.lower().endswith("comicinfo.xml") and info.file_size <= MAX_COMIC_INFO_BYTES), None)
         comic_info = _parse_comic_info(archive.read(comic_info_entry).decode("utf-8", "replace")) if comic_info_entry else None
         pages = [{"index": index + 1, "title": f"第 {index + 1} 页", "entryPath": info.filename, "mediaType": mimetypes.guess_type(info.filename)[0] or "application/octet-stream", "size": info.file_size} for index, info in enumerate(images)]
         cover_index = (comic_info or {}).get("coverImageIndex")
@@ -911,7 +917,8 @@ def _extract_comic_cover(settings: Settings, staged: Path, work_id: str, edition
     target = settings.resolved_storage_root / "books" / work_id / edition_id / volume_id / f"cover{ext}"
     target.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(staged) as archive:
-        target.write_bytes(archive.read(entry))
+        with archive.open(entry, "r") as source, target.open("wb") as destination:
+            shutil.copyfileobj(source, destination, length=1024 * 1024)
     return str(target)
 
 

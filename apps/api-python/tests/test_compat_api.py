@@ -2412,11 +2412,13 @@ def test_manual_comic_upload_serves_archive_page(client, db_session, test_settin
 
     assert imported.status_code == 200
     volume_id = imported.json()["data"]["results"][0]["volumeId"]
+    assert db_session.execute(text("SELECT COUNT(*) FROM LibraryReadingUnit WHERE volumeId = :volume_id"), {"volume_id": volume_id}).scalar() == 0
     page = client.get(f"/api/volumes/{volume_id}/pages/1")
 
     assert page.status_code == 200
     assert page.content == b"one"
     assert page.headers["content-type"].startswith("image/jpeg")
+    assert db_session.execute(text("SELECT COUNT(*) FROM LibraryReadingUnit WHERE volumeId = :volume_id"), {"volume_id": volume_id}).scalar() == 2
 
     ranged = client.get(f"/api/volumes/{volume_id}/pages/1", headers={"Range": "bytes=1-2"})
     assert ranged.status_code == 206
@@ -2439,7 +2441,6 @@ def test_volume_pages_rebuilds_missing_comic_page_index(client, db_session, test
 
     assert imported.status_code == 200
     volume_id = imported.json()["data"]["results"][0]["volumeId"]
-    db_session.execute(text("DELETE FROM LibraryReadingUnit WHERE volumeId = :volume_id"), {"volume_id": volume_id})
     db_session.execute(text("UPDATE LibraryVolume SET pageCount = NULL WHERE id = :volume_id"), {"volume_id": volume_id})
     db_session.commit()
 
