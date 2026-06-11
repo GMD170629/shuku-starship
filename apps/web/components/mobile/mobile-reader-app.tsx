@@ -7,12 +7,10 @@ import {
   Cloud,
   Filter,
   MoreHorizontal,
-  FolderOpen,
   Home,
   Library,
   LogOut,
   Search,
-  Settings,
   UploadCloud,
   User,
 } from 'lucide-react';
@@ -54,6 +52,8 @@ const shelfFilters: Array<{ key: ShelfFilter; label: string }> = [
 
 function readSavedTab(): MobileTab {
   if (typeof window === 'undefined') return 'home';
+  const tabParam = new URLSearchParams(window.location.search).get('tab');
+  if (tabParam === 'shelf' || tabParam === 'me' || tabParam === 'home') return tabParam;
   const saved = window.localStorage.getItem('shuku.mobile.tab');
   if (saved === 'shelf' || saved === 'me' || saved === 'home') return saved;
   return saved === 'search' || saved === 'reading' ? 'shelf' : 'home';
@@ -224,7 +224,7 @@ export function MobileReaderApp() {
     const editionId = readableEditionId(book);
     if (!editionId) return;
     storeReaderOpeningContext(book, sourceElement);
-    router.push(`/reader/${editionId}?from=mobile`);
+    router.push(`/reader/${editionId}?from=mobile&tab=${tab}`);
   }
 
   async function uploadBook(event: ChangeEvent<HTMLInputElement>) {
@@ -270,7 +270,7 @@ export function MobileReaderApp() {
         <section
           className="flex-1 overflow-y-auto"
           style={{
-            padding: `${sv(25)} ${sv(27.5)} ${sv(70)}`
+            padding: `${sv(25)} ${sv(27.5)} calc(${sv(88)} + env(safe-area-inset-bottom))`
           }}
         >
           {tab === 'home' ? (
@@ -288,7 +288,6 @@ export function MobileReaderApp() {
               onGoShelfSearch={goShelfSearch}
               onOpenBook={openReader}
               onUpload={() => uploadInputRef.current?.click()}
-              onSettings={() => router.push('/settings')}
             />
           ) : null}
 
@@ -307,7 +306,6 @@ export function MobileReaderApp() {
               onOpenBook={openReader}
               onSearchTextChange={setSearchText}
               onUpload={() => uploadInputRef.current?.click()}
-              onSettings={() => router.push('/settings')}
             />
           ) : null}
 
@@ -318,9 +316,6 @@ export function MobileReaderApp() {
               systemStatus={systemStatus}
               uploading={uploading}
               onUpload={() => uploadInputRef.current?.click()}
-              onSettings={() => router.push('/settings')}
-              onImports={() => router.push('/import-tasks')}
-              onLibrary={() => router.push('/library')}
               onLogout={logout}
             />
           ) : null}
@@ -451,8 +446,7 @@ function HomeView({
   onGoShelf,
   onGoShelfSearch,
   onOpenBook,
-  onUpload,
-  onSettings
+  onUpload
 }: {
   books: WorkView[];
   continueItem: ContinueItem;
@@ -467,7 +461,6 @@ function HomeView({
   onGoShelfSearch: () => void;
   onOpenBook: OpenBookHandler;
   onUpload: () => void;
-  onSettings: () => void;
 }) {
   return (
     <div>
@@ -496,7 +489,7 @@ function HomeView({
       {loading ? <LoadingBlock label="正在读取书架..." /> : null}
 
       {!loading && continueItem ? <div style={{ marginTop: sv(10) }}><ContinueCard item={continueItem} onOpenBook={onOpenBook} /></div> : null}
-      {!loading && !continueItem && books.length === 0 ? <EmptyLibrary onUpload={onUpload} onSettings={onSettings} /> : null}
+      {!loading && !continueItem && books.length === 0 ? <EmptyLibrary onUpload={onUpload} /> : null}
 
       {!loading && recentBooks.length > 0 ? (
         <section style={{ marginTop: sv(15) }}>
@@ -679,8 +672,7 @@ function ShelfView({
   onFilterChange,
   onOpenBook,
   onSearchTextChange,
-  onUpload,
-  onSettings
+  onUpload
 }: {
   books: WorkView[];
   allBooks: WorkView[];
@@ -695,7 +687,6 @@ function ShelfView({
   onOpenBook: OpenBookHandler;
   onSearchTextChange: (value: string) => void;
   onUpload: () => void;
-  onSettings: () => void;
 }) {
   const searchInputRef = useRef<HTMLInputElement>(null);
 
@@ -739,7 +730,7 @@ function ShelfView({
       {loading ? <LoadingBlock label="正在读取书架..." /> : null}
       {searchLoading ? <LoadingBlock label="正在搜索..." /> : null}
 
-      {!loading && allBooks.length === 0 ? <EmptyLibrary onUpload={onUpload} onSettings={onSettings} /> : null}
+      {!loading && allBooks.length === 0 ? <EmptyLibrary onUpload={onUpload} /> : null}
       {!loading && allBooks.length > 0 && books.length === 0 ? (
         <SoftEmpty title={searchText.trim() ? '没有找到读物' : '暂无匹配读物'} text={searchText.trim() ? '换一个关键词或筛选条件再试。' : '切换筛选条件可以查看其他读物。'} />
       ) : null}
@@ -862,9 +853,6 @@ function MeView({
   systemStatus,
   uploading,
   onUpload,
-  onSettings,
-  onImports,
-  onLibrary,
   onLogout
 }: {
   user: UserInfo | null;
@@ -872,12 +860,10 @@ function MeView({
   systemStatus: SystemStatus | null;
   uploading: boolean;
   onUpload: () => void;
-  onSettings: () => void;
-  onImports: () => void;
-  onLibrary: () => void;
   onLogout: () => void;
 }) {
   const importTask = systemStatus?.currentImportTask;
+  const latestImport = systemStatus?.latestImportTask;
   return (
     <div className="space-y-6">
       <AppHeader title="我的" />
@@ -898,11 +884,22 @@ function MeView({
       </section>
       <section className="space-y-3">
         <MenuButton icon={UploadCloud} label={uploading ? '上传中...' : '上传读物'} value="EPUB / CBZ / ZIP" onClick={onUpload} />
-        <MenuButton icon={FolderOpen} label="导入任务" value={importTask ? `${importTask.progress}%` : '暂无任务'} onClick={onImports} />
-        <MenuButton icon={Home} label="管理书库" value="筛选和批量管理" onClick={onLibrary} />
-        <MenuButton icon={Settings} label="系统设置" value="监控文件夹和账户" onClick={onSettings} />
+        <StatusPanel
+          title="导入状态"
+          value={importTask ? `正在导入 ${importTask.progress}%` : latestImport ? `最近任务 ${latestImport.status}` : '暂无导入任务'}
+        />
+        <StatusPanel title="移动端模式" value="专注书架、搜索与阅读" />
         <MenuButton icon={LogOut} label="退出登录" value="" onClick={onLogout} danger />
       </section>
+    </div>
+  );
+}
+
+function StatusPanel({ title, value }: { title: string; value: string }) {
+  return (
+    <div className="rounded-[20px] border border-[#DED5C7] bg-[#FBF8F1] px-4 py-3">
+      <div className="text-sm font-semibold text-[#211C17]">{title}</div>
+      <div className="mt-1 text-sm text-[#70665C]">{value}</div>
     </div>
   );
 }
@@ -954,14 +951,13 @@ function BookProgress({ value, className = '', style }: { value: number; classNa
   );
 }
 
-function EmptyLibrary({ onUpload, onSettings }: { onUpload: () => void; onSettings: () => void }) {
+function EmptyLibrary({ onUpload }: { onUpload: () => void }) {
   return (
     <section className="rounded-[22px] border border-[#DED5C7] bg-[#FBF8F1] p-5">
       <h2 className="text-xl font-semibold">暂无读物</h2>
-      <p className="mt-2 text-sm leading-6 text-[#70665C]">上传 EPUB/CBZ/ZIP，或添加监控文件夹后，就可以在手机上阅读。</p>
+      <p className="mt-2 text-sm leading-6 text-[#70665C]">上传 EPUB/CBZ/ZIP 后，就可以在手机上开始阅读。</p>
       <div className="mt-5 flex flex-col gap-3">
         <button type="button" onClick={onUpload} className="min-h-11 rounded-2xl bg-[#7A4B22] px-4 text-sm font-semibold text-white">上传读物</button>
-        <button type="button" onClick={onSettings} className="min-h-11 rounded-2xl border border-[#DED5C7] bg-[#FBF8F1] px-4 text-sm font-semibold text-[#6F4420]">添加监控文件夹</button>
       </div>
     </section>
   );

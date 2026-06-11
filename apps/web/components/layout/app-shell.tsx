@@ -45,6 +45,13 @@ const mobileNavItems = [
   { href: '/settings', icon: Settings, label: '设置' }
 ];
 
+const shellSurfaces = {
+  app: { background: '#F6F7F9', statusBarStyle: 'default' },
+  mobile: { background: '#F7F1E7', statusBarStyle: 'default' },
+  login: { background: '#F8FAFC', statusBarStyle: 'default' },
+  offline: { background: '#020617', statusBarStyle: 'black-translucent' }
+} satisfies Record<string, { background: string; statusBarStyle: 'default' | 'black-translucent' }>;
+
 type BooksPayload = {
   ok: boolean;
   data?: { books: WorkView[]; total: number };
@@ -61,6 +68,15 @@ function isActive(pathname: string, href: string) {
 
 function isStandaloneDisplay() {
   return window.matchMedia('(display-mode: standalone)').matches || ('standalone' in navigator && Boolean((navigator as Navigator & { standalone?: boolean }).standalone));
+}
+
+function ensureMeta(name: string) {
+  const existing = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`);
+  if (existing) return { meta: existing, created: false };
+  const meta = document.createElement('meta');
+  meta.setAttribute('name', name);
+  document.head.appendChild(meta);
+  return { meta, created: true };
 }
 
 export function AppShell({ children }: { children: ReactNode }) {
@@ -85,6 +101,51 @@ export function AppShell({ children }: { children: ReactNode }) {
   const isMobileReader = pathname === '/mobile';
   const isMobilePreview = pathname === '/mobile-preview';
   const isOffline = pathname === '/offline';
+  const shellSurface = isReader
+    ? null
+    : isMobileReader || isMobilePreview
+      ? shellSurfaces.mobile
+      : isLogin
+        ? shellSurfaces.login
+        : isOffline
+          ? shellSurfaces.offline
+          : shellSurfaces.app;
+
+  useEffect(() => {
+    if (!shellSurface) return undefined;
+
+    const previousHtmlBackground = document.documentElement.style.backgroundColor;
+    const previousBodyBackground = document.body.style.backgroundColor;
+    const previousColorScheme = document.documentElement.style.colorScheme;
+    const foundThemeColorMetas = Array.from(document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]'));
+    const createdThemeColor = foundThemeColorMetas.length === 0 ? ensureMeta('theme-color') : null;
+    const themeColorMetas = createdThemeColor ? [createdThemeColor.meta] : foundThemeColorMetas;
+    const { meta: statusBarMeta, created: createdStatusBarMeta } = ensureMeta('apple-mobile-web-app-status-bar-style');
+    const previousThemeColors = themeColorMetas.map((meta) => meta.content);
+    const previousStatusBarStyle = statusBarMeta.content;
+
+    document.documentElement.style.backgroundColor = shellSurface.background;
+    document.body.style.backgroundColor = shellSurface.background;
+    document.documentElement.style.colorScheme = shellSurface.statusBarStyle === 'black-translucent' ? 'dark' : 'light';
+    themeColorMetas.forEach((meta) => meta.setAttribute('content', shellSurface.background));
+    statusBarMeta.setAttribute('content', shellSurface.statusBarStyle);
+
+    return () => {
+      document.documentElement.style.backgroundColor = previousHtmlBackground;
+      document.body.style.backgroundColor = previousBodyBackground;
+      document.documentElement.style.colorScheme = previousColorScheme;
+      themeColorMetas.forEach((meta, index) => {
+        const previousThemeColor = previousThemeColors[index];
+        if (createdThemeColor?.meta === meta) {
+          meta.remove();
+          return;
+        }
+        meta.setAttribute('content', previousThemeColor);
+      });
+      if (createdStatusBarMeta) statusBarMeta.remove();
+      else statusBarMeta.setAttribute('content', previousStatusBarStyle);
+    };
+  }, [shellSurface]);
 
   useEffect(() => {
     if (pathname !== '/') return;
