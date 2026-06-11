@@ -439,7 +439,7 @@ def suggestion_from_ai_item(item: dict[str, Any]) -> dict[str, Any] | None:
     }
 
 
-def suggestion_from_external(field: str, value: Any, confidence: float, reason: str) -> dict[str, Any] | None:
+def suggestion_from_external(field: str, value: Any, confidence: float, reason: str, source: str = "external") -> dict[str, Any] | None:
     if field not in {"title", "author", "description", "tags", "seriesName", "seriesIndex", "publishedYear"}:
         return None
     if value is None or value == "" or value == []:
@@ -447,7 +447,7 @@ def suggestion_from_external(field: str, value: Any, confidence: float, reason: 
     return {
         "field": field,
         "suggestedValue": json_text(value) if isinstance(value, (dict, list, int, float, bool)) else str(value),
-        "source": "external",
+        "source": source,
         "confidence": confidence,
         "reason": reason,
         "status": "PENDING",
@@ -456,7 +456,23 @@ def suggestion_from_external(field: str, value: Any, confidence: float, reason: 
 
 def douban_candidates(payload: Any, confidence: float) -> list[dict[str, Any]]:
     raw = payload if isinstance(payload, dict) else {}
-    books = raw.get("books") if isinstance(raw.get("books"), list) else raw.get("items") if isinstance(raw.get("items"), list) else payload if isinstance(payload, list) else [raw] if raw.get("title") or raw.get("id") else []
+    books = (
+        raw.get("books")
+        if isinstance(raw.get("books"), list)
+        else raw.get("items")
+        if isinstance(raw.get("items"), list)
+        else raw.get("results")
+        if isinstance(raw.get("results"), list)
+        else raw.get("subjects")
+        if isinstance(raw.get("subjects"), list)
+        else raw.get("data")
+        if isinstance(raw.get("data"), list)
+        else payload
+        if isinstance(payload, list)
+        else [raw]
+        if raw.get("title") or raw.get("id")
+        else []
+    )
     candidates = []
     for index, item in enumerate(books):
         if not isinstance(item, dict):
@@ -473,6 +489,7 @@ def douban_candidates(payload: Any, confidence: float) -> list[dict[str, Any]]:
                 "description": first_string(item.get("summary"), item.get("description")),
                 "tags": tags,
                 "publishedYear": item.get("publishedYear") if isinstance(item.get("publishedYear"), int) else extract_year(pubdate),
+                "coverUrl": first_url(item.get("image"), item.get("coverUrl"), item.get("cover_url"), (item.get("images") or {}).get("large") if isinstance(item.get("images"), dict) else None),
                 "confidence": confidence,
                 "raw": item,
             }
@@ -662,17 +679,17 @@ def fetch_douban_subject(base_url: str, subject_url: str, headers: dict[str, str
     return parse_douban_subject_html(fetch_text(url, headers), fallback)
 
 
-def run_douban_crawler_provider(context: dict[str, Any], settings: dict[str, str | None]) -> dict[str, Any]:
+def run_douban_crawler_provider(context: dict[str, Any], settings: dict[str, str | None], query: str | None = None) -> dict[str, Any]:
     base_url = douban_base_url(settings)
     headers = douban_crawler_headers(settings)
     edition = next(iter(context["editions"]), {})
     isbn = first_string(edition.get("isbn"), edition.get("identifier"))
     title = first_string(context["work"].get("title")) or ""
     author = first_string(context["work"].get("author")) or ""
-    query_text = isbn or " ".join(part for part in [title, author] if part)
+    query_text = query or isbn or " ".join(part for part in [title, author] if part)
     confidence = 0.9 if isbn else 0.8 if author else 0.7
     if not query_text:
-        return {"provider": "external", "enabled": True, "added": 0, "cacheHit": False, "message": "豆瓣查询文本为空", "suggestions": []}
+        return {"provider": "douban", "enabled": True, "added": 0, "cacheHit": False, "message": "豆瓣查询文本为空", "suggestions": []}
 
     subject_match = re.search(r"(?:book\.douban\.com/subject/)?(\d{4,})", query_text)
     if subject_match and "/subject/" in query_text:
@@ -682,12 +699,17 @@ def run_douban_crawler_provider(context: dict[str, Any], settings: dict[str, str
         candidates = [normalize_douban_candidate(candidate) for candidate in parse_douban_search_html(search_html, confidence)]
         first = candidates[0] if candidates else None
         subject_url = first_string((first.get("raw") or {}).get("url")) if isinstance(first, dict) and isinstance(first.get("raw"), dict) else None
-        candidate = fetch_douban_subject(base_url, subject_url, headers, first) if first and subject_url else first
+        try:
+            subject_candidate = fetch_douban_subject(base_url, subject_url, headers, first) if first and subject_url else None
+        except Exception:
+            subject_candidate = None
+        candidate = subject_candidate or first
     if not candidate:
-        return {"provider": "external", "enabled": True, "added": 0, "cacheHit": False, "message": "豆瓣未找到匹配图书", "suggestions": []}
-    suggestions = douban_book_suggestions(normalize_douban_candidate(candidate), float(candidate.get("confidence") or confidence))
+        return {"provider": "douban", "enabled": True, "added": 0, "cacheHit": False, "message": "豆瓣未找到匹配图书", "suggestions": []}
+    normalized_candidate = normalize_douban_candidate(candidate)
+    suggestions = douban_book_suggestions(normalized_candidate, float(candidate.get("confidence") or confidence))
     message = None if suggestions else "豆瓣未找到可用候选字段"
-    return {"provider": "external", "enabled": True, "added": 0, "cacheHit": False, "message": message, "suggestions": suggestions}
+    return {"provider": "douban", "enabled": True, "added": 0, "cacheHit": False, "message": message, "suggestions": suggestions, "candidates": [normalized_candidate]}
 
 
 def douban_book_suggestions(payload: Any, confidence: float) -> list[dict[str, Any]]:
@@ -695,11 +717,11 @@ def douban_book_suggestions(payload: Any, confidence: float) -> list[dict[str, A
     if not book:
         return []
     raw = [
-        suggestion_from_external("title", book.get("title"), confidence, "外部数据源 · 豆瓣：匹配图书标题"),
-        suggestion_from_external("author", book.get("author"), confidence, "外部数据源 · 豆瓣：匹配作者"),
-        suggestion_from_external("description", book.get("description"), min(confidence, 0.82), "外部数据源 · 豆瓣：补全简介"),
-        suggestion_from_external("tags", book.get("tags"), min(confidence, 0.76), "外部数据源 · 豆瓣：补全标签"),
-        suggestion_from_external("publishedYear", book.get("publishedYear"), min(confidence, 0.82), "外部数据源 · 豆瓣：补全出版年"),
+        suggestion_from_external("title", book.get("title"), confidence, "外部数据源 · 豆瓣：匹配图书标题", "douban"),
+        suggestion_from_external("author", book.get("author"), confidence, "外部数据源 · 豆瓣：匹配作者", "douban"),
+        suggestion_from_external("description", book.get("description"), min(confidence, 0.82), "外部数据源 · 豆瓣：补全简介", "douban"),
+        suggestion_from_external("tags", book.get("tags"), min(confidence, 0.76), "外部数据源 · 豆瓣：补全标签", "douban"),
+        suggestion_from_external("publishedYear", book.get("publishedYear"), min(confidence, 0.82), "外部数据源 · 豆瓣：补全出版年", "douban"),
     ]
     return [item for item in raw if item]
 
@@ -716,7 +738,19 @@ def number_or_none(value: Any) -> int | float | None:
 
 def bangumi_candidates(payload: Any, confidence: float) -> list[dict[str, Any]]:
     raw = payload if isinstance(payload, dict) else {}
-    data = raw.get("data") if isinstance(raw.get("data"), list) else payload if isinstance(payload, list) else [raw] if raw.get("name") or raw.get("id") else []
+    data = (
+        raw.get("data")
+        if isinstance(raw.get("data"), list)
+        else raw.get("list")
+        if isinstance(raw.get("list"), list)
+        else raw.get("results")
+        if isinstance(raw.get("results"), list)
+        else payload
+        if isinstance(payload, list)
+        else [raw]
+        if raw.get("name") or raw.get("name_cn") or raw.get("id")
+        else []
+    )
     candidates = []
     for index, item in enumerate(data):
         if not isinstance(item, dict):
@@ -738,6 +772,7 @@ def bangumi_candidates(payload: Any, confidence: float) -> list[dict[str, Any]]:
             if volume is None and re.search(r"册数|卷数|话数", key):
                 volume = value
         date = first_string(item.get("date"), item.get("air_date"))
+        images = item.get("images") if isinstance(item.get("images"), dict) else {}
         candidates.append(
             {
                 "id": str(item.get("id") or item.get("url") or f"bangumi-{index}"),
@@ -750,6 +785,7 @@ def bangumi_candidates(payload: Any, confidence: float) -> list[dict[str, Any]]:
                 "seriesName": first_string(item.get("name_cn"), item.get("name")),
                 "seriesIndex": number_or_none(volume),
                 "publishedYear": extract_year(date),
+                "coverUrl": first_url(images.get("large"), images.get("common"), images.get("medium"), images.get("small"), item.get("image")),
                 "confidence": confidence,
                 "raw": item,
             }
@@ -762,12 +798,12 @@ def bangumi_subject_suggestions(payload: Any, confidence: float) -> list[dict[st
     if not subject:
         return []
     raw = [
-        suggestion_from_external("title", subject.get("title"), confidence, "外部数据源 · Bangumi：匹配漫画条目"),
-        suggestion_from_external("author", subject.get("author"), min(confidence, 0.78), "外部数据源 · Bangumi：补全作者/原作"),
-        suggestion_from_external("description", subject.get("description"), min(confidence, 0.8), "外部数据源 · Bangumi：补全简介"),
-        suggestion_from_external("tags", subject.get("tags"), min(confidence, 0.72), "外部数据源 · Bangumi：补全标签"),
-        suggestion_from_external("seriesName", subject.get("seriesName"), min(confidence, 0.82), "外部数据源 · Bangumi：补全系列名"),
-        suggestion_from_external("publishedYear", subject.get("publishedYear"), min(confidence, 0.78), "外部数据源 · Bangumi：补全出版年"),
+        suggestion_from_external("title", subject.get("title"), confidence, "外部数据源 · Bangumi：匹配条目", "bangumi"),
+        suggestion_from_external("author", subject.get("author"), min(confidence, 0.78), "外部数据源 · Bangumi：补全作者/原作", "bangumi"),
+        suggestion_from_external("description", subject.get("description"), min(confidence, 0.8), "外部数据源 · Bangumi：补全简介", "bangumi"),
+        suggestion_from_external("tags", subject.get("tags"), min(confidence, 0.72), "外部数据源 · Bangumi：补全标签", "bangumi"),
+        suggestion_from_external("seriesName", subject.get("seriesName"), min(confidence, 0.82), "外部数据源 · Bangumi：补全系列名", "bangumi"),
+        suggestion_from_external("publishedYear", subject.get("publishedYear"), min(confidence, 0.78), "外部数据源 · Bangumi：补全出版年", "bangumi"),
     ]
     return [item for item in raw if item]
 
@@ -812,6 +848,68 @@ def run_ai_metadata_provider(db: Session, context: dict[str, Any], force: bool =
     return {"provider": "ai", "enabled": True, "added": 0, "cacheHit": False, "suggestions": ai_suggestions_from_payload(payload)}
 
 
+def run_bangumi_metadata_provider(db: Session, context: dict[str, Any], settings: dict[str, str | None], force: bool = True, query: str | None = None) -> dict[str, Any]:
+    if not force and not coerce_bool(settings.get("metadata.bangumi.enabled")):
+        return {"provider": "bangumi", "enabled": False, "added": 0, "cacheHit": False, "message": "Bangumi 元数据源未启用", "suggestions": []}
+    user_agent = string_value(settings.get("metadata.bangumi.userAgent")) or "Shuku Starship Python"
+    if not user_agent:
+        return {"provider": "bangumi", "enabled": False, "added": 0, "cacheHit": False, "message": "Bangumi User-Agent 未配置", "suggestions": []}
+    base_url = string_value(settings.get("metadata.bangumi.baseUrl")).rstrip("/") or "https://api.bgm.tv"
+    headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": user_agent}
+    access_token = string_value(settings.get("metadata.bangumi.accessToken"))
+    if access_token:
+        headers["Authorization"] = f"Bearer {access_token}"
+    title = query or first_string(context["work"].get("seriesName"), context["work"].get("title")) or ""
+    if not title:
+        return {"provider": "bangumi", "enabled": True, "added": 0, "cacheHit": False, "message": "Bangumi 查询文本为空", "suggestions": []}
+    request = UrlRequest(
+        f"{base_url}/v0/search/subjects",
+        data=json.dumps({"keyword": title, "sort": "match", "filter": {"type": [1]}}, ensure_ascii=False).encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    with urlopen(request, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    suggestions = bangumi_subject_suggestions(payload, 0.82)
+    message = None if suggestions else "Bangumi 未找到匹配条目"
+    return {"provider": "bangumi", "enabled": True, "added": 0, "cacheHit": False, "message": message, "suggestions": suggestions, "candidates": bangumi_candidates(payload, 0.82)}
+
+
+def run_douban_metadata_provider(db: Session, context: dict[str, Any], settings: dict[str, str | None], force: bool = True, query: str | None = None) -> dict[str, Any]:
+    if not force and not coerce_bool(settings.get("metadata.douban.enabled")):
+        return {"provider": "douban", "enabled": False, "added": 0, "cacheHit": False, "message": "豆瓣元数据源未启用", "suggestions": []}
+    if (settings.get("metadata.douban.mode") or "crawler") != "api":
+        return run_douban_crawler_provider(context, settings, query)
+    base_url = string_value(settings.get("metadata.douban.baseUrl")).rstrip("/")
+    if not base_url:
+        return {"provider": "douban", "enabled": False, "added": 0, "cacheHit": False, "message": "豆瓣兼容 API 地址未配置", "suggestions": []}
+    edition = next(iter(context["editions"]), {})
+    isbn = None if query else first_string(edition.get("isbn"), edition.get("identifier"))
+    title = first_string(context["work"].get("title")) or ""
+    author = first_string(context["work"].get("author")) or ""
+    params: dict[str, str] = {}
+    api_key = string_value(settings.get("metadata.douban.apiKey"))
+    if api_key:
+        params["apikey"] = api_key
+    if isbn:
+        endpoint = f"/v2/book/isbn/{isbn}"
+        confidence = 0.92
+    else:
+        endpoint = "/v2/book/search"
+        params["q"] = query or " ".join(part for part in [title, author] if part)
+        params["count"] = "3"
+        confidence = 0.82 if author else 0.68
+    if endpoint.endswith("/search") and not params.get("q"):
+        return {"provider": "douban", "enabled": True, "added": 0, "cacheHit": False, "message": "豆瓣查询文本为空", "suggestions": []}
+    query_string = urlencode(params)
+    request = UrlRequest(f"{base_url}{endpoint}{'?' + query_string if query_string else ''}", headers={"Accept": "application/json"})
+    with urlopen(request, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    suggestions = douban_book_suggestions(payload, confidence)
+    message = None if suggestions else "豆瓣未找到匹配图书"
+    return {"provider": "douban", "enabled": True, "added": 0, "cacheHit": False, "message": message, "suggestions": suggestions, "candidates": douban_candidates(payload, confidence)}
+
+
 def run_external_metadata_provider(db: Session, context: dict[str, Any], force: bool = True) -> dict[str, Any]:
     work_type = string_value(context["work"].get("workType")).upper()
     settings = system_settings(
@@ -829,58 +927,50 @@ def run_external_metadata_provider(db: Session, context: dict[str, Any], force: 
             "metadata.bangumi.userAgent",
         ],
     )
-    enabled_key = "metadata.bangumi.enabled" if work_type == "COMIC" else "metadata.douban.enabled"
-    if not force and (not coerce_bool(settings.get("metadata.external.enabled")) or not coerce_bool(settings.get(enabled_key))):
+    if not force and not coerce_bool(settings.get("metadata.external.enabled")):
         return {"provider": "external", "enabled": False, "added": 0, "cacheHit": False, "message": "外部数据源未启用", "suggestions": []}
     if work_type == "COMIC":
-        user_agent = string_value(settings.get("metadata.bangumi.userAgent")) or "Shuku Starship Python"
-        if not user_agent:
-            return {"provider": "external", "enabled": False, "added": 0, "cacheHit": False, "message": "Bangumi User-Agent 未配置", "suggestions": []}
-        base_url = string_value(settings.get("metadata.bangumi.baseUrl")).rstrip("/") or "https://api.bgm.tv"
-        headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": user_agent}
-        access_token = string_value(settings.get("metadata.bangumi.accessToken"))
-        if access_token:
-            headers["Authorization"] = f"Bearer {access_token}"
-        title = first_string(context["work"].get("seriesName"), context["work"].get("title")) or ""
-        request = UrlRequest(
-            f"{base_url}/v0/search/subjects",
-            data=json.dumps({"keyword": title, "sort": "match", "filter": {"type": [1]}}, ensure_ascii=False).encode("utf-8"),
-            headers=headers,
-            method="POST",
-        )
-        with urlopen(request, timeout=30) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-        suggestions = bangumi_subject_suggestions(payload, 0.82)
-        message = None if suggestions else "Bangumi 未找到匹配漫画"
-        return {"provider": "external", "enabled": True, "added": 0, "cacheHit": False, "message": message, "suggestions": suggestions}
-    if (settings.get("metadata.douban.mode") or "crawler") != "api":
-        return run_douban_crawler_provider(context, settings)
-    base_url = string_value(settings.get("metadata.douban.baseUrl")).rstrip("/")
-    if not base_url:
-        return {"provider": "external", "enabled": False, "added": 0, "cacheHit": False, "message": "豆瓣兼容 API 地址未配置", "suggestions": []}
-    edition = next(iter(context["editions"]), {})
-    isbn = first_string(edition.get("isbn"), edition.get("identifier"))
-    title = first_string(context["work"].get("title")) or ""
-    author = first_string(context["work"].get("author")) or ""
-    params: dict[str, str] = {}
-    api_key = string_value(settings.get("metadata.douban.apiKey"))
-    if api_key:
-        params["apikey"] = api_key
-    if isbn:
-        endpoint = f"/v2/book/isbn/{isbn}"
-        confidence = 0.92
+        return run_bangumi_metadata_provider(db, context, settings, force)
+    return run_douban_metadata_provider(db, context, settings, force)
+
+
+def metadata_search_candidates(db: Session, context: dict[str, Any], source: str, query: str | None = None) -> dict[str, Any]:
+    settings = system_settings(
+        db,
+        [
+            "metadata.douban.enabled",
+            "metadata.douban.mode",
+            "metadata.douban.baseUrl",
+            "metadata.douban.apiKey",
+            "metadata.douban.userAgent",
+            "metadata.bangumi.enabled",
+            "metadata.bangumi.baseUrl",
+            "metadata.bangumi.accessToken",
+            "metadata.bangumi.userAgent",
+        ],
+    )
+    if source == "bangumi":
+        result = run_bangumi_metadata_provider(db, context, settings, force=True, query=query)
+    elif source == "douban":
+        result = run_douban_metadata_provider(db, context, settings, force=True, query=query)
     else:
-        endpoint = "/v2/book/search"
-        params["q"] = " ".join(part for part in [title, author] if part)
-        params["count"] = "3"
-        confidence = 0.82 if author else 0.68
-    query = urlencode(params)
-    request = UrlRequest(f"{base_url}{endpoint}{'?' + query if query else ''}", headers={"Accept": "application/json"})
-    with urlopen(request, timeout=30) as response:
-        payload = json.loads(response.read().decode("utf-8"))
-    suggestions = douban_book_suggestions(payload, confidence)
-    message = None if suggestions else "豆瓣未找到匹配图书"
-    return {"provider": "external", "enabled": True, "added": 0, "cacheHit": False, "message": message, "suggestions": suggestions}
+        ai_result = run_ai_metadata_provider(db, context, force=True)
+        fields = {item["field"]: parse_json_value(item.get("suggestedValue")) for item in ai_result.get("suggestions") or []}
+        candidate = {
+            "id": "ai-suggestion",
+            "source": "ai",
+            "title": fields.get("title"),
+            "author": fields.get("author"),
+            "description": fields.get("description"),
+            "tags": fields.get("tags") if isinstance(fields.get("tags"), list) else [],
+            "seriesName": fields.get("seriesName"),
+            "seriesIndex": fields.get("seriesIndex"),
+            "publishedYear": fields.get("publishedYear"),
+            "confidence": max([float(item.get("confidence") or 0) for item in ai_result.get("suggestions") or []] or [0.0]),
+            "raw": {"suggestions": ai_result.get("suggestions") or []},
+        }
+        result = {**ai_result, "candidates": [candidate] if ai_result.get("suggestions") else []}
+    return result
 
 
 def add_suggestions_to_job(db: Session, job_id: str, suggestions: list[dict[str, Any]]) -> int:
@@ -914,7 +1004,7 @@ def add_suggestions_to_job(db: Session, job_id: str, suggestions: list[dict[str,
 def refresh_metadata_providers(db: Session, job_id: str, providers: list[str], force: bool = True) -> dict[str, Any]:
     selected = []
     for provider in providers:
-        if provider in {"external", "ai"} and provider not in selected:
+        if provider in {"external", "bangumi", "douban", "ai"} and provider not in selected:
             selected.append(provider)
     if not selected:
         raise ValueError("请选择要刷新的元数据来源")
@@ -928,10 +1018,19 @@ def refresh_metadata_providers(db: Session, job_id: str, providers: list[str], f
     total_added = 0
     for provider in selected:
         try:
-            result = run_external_metadata_provider(db, context, force) if provider == "external" else run_ai_metadata_provider(db, context, force)
+            if provider == "external":
+                result = run_external_metadata_provider(db, context, force)
+            elif provider == "bangumi":
+                settings = system_settings(db, ["metadata.bangumi.enabled", "metadata.bangumi.baseUrl", "metadata.bangumi.accessToken", "metadata.bangumi.userAgent"])
+                result = run_bangumi_metadata_provider(db, context, settings, force)
+            elif provider == "douban":
+                settings = system_settings(db, ["metadata.douban.enabled", "metadata.douban.mode", "metadata.douban.baseUrl", "metadata.douban.apiKey", "metadata.douban.userAgent"])
+                result = run_douban_metadata_provider(db, context, settings, force)
+            else:
+                result = run_ai_metadata_provider(db, context, force)
             added = add_suggestions_to_job(db, job_id, result.get("suggestions") or [])
             total_added += added
-            results.append({key: value for key, value in {**result, "added": added}.items() if key != "suggestions"})
+            results.append({key: value for key, value in {**result, "added": added}.items() if key not in {"suggestions", "candidates"}})
         except Exception as exc:
             results.append({"provider": provider, "enabled": True, "added": 0, "cacheHit": False, "error": str(exc)})
     if total_added > 0:

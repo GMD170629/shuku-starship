@@ -92,7 +92,7 @@ function defaultFields(book: WorkView, candidate: MetadataCandidate | null) {
 
 function sourceOptions(book: WorkView) {
   return [
-    { value: 'bangumi', label: 'Bangumi', disabled: book.type !== 'comic' },
+    { value: 'bangumi', label: 'Bangumi' },
     { value: 'douban', label: '豆瓣', disabled: book.type !== 'ebook' },
     { value: 'ai', label: 'AI' }
   ];

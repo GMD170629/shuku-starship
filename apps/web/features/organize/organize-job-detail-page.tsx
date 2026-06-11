@@ -31,6 +31,8 @@ const sourceLabels: Record<string, string> = {
   filename: '文件名',
   aggregation: '自动聚合',
   external: '外部数据源',
+  bangumi: 'Bangumi',
+  douban: '豆瓣',
   ai: 'AI',
   rule: '规则'
 };

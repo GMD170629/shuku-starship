@@ -1,6 +1,6 @@
 'use client';
 
-import { BookOpen, ChevronDown, ChevronLeft, ChevronRight, Database, Edit3, EyeOff, RefreshCw, Save, Trash2, UploadCloud } from 'lucide-react';
+import { BookOpen, ChevronDown, ChevronLeft, ChevronRight, Database, Download, Edit3, EyeOff, RefreshCw, Save, Trash2, UploadCloud, X } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Cover } from '../../components/book/cover';
@@ -86,6 +86,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   const [saving, setSaving] = useState(false);
   const [busyAction, setBusyAction] = useState('');
   const [metadataLookupOpen, setMetadataLookupOpen] = useState(false);
+  const [dangerActionOpen, setDangerActionOpen] = useState(false);
   const [coverBust, setCoverBust] = useState(0);
   const [form, setForm] = useState({
     title: '',
@@ -270,14 +271,17 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
     }
   }
 
-  async function deleteRecord() {
-    const confirmed = await confirm({
-      title: '确认删除记录',
-      description: `确认删除《${book?.title ?? '这本读物'}》的数据库记录吗？源文件不会被删除。`,
-      confirmLabel: '删除记录',
-      tone: 'danger'
-    });
-    if (!confirmed) return;
+  async function deleteRecord(skipConfirm = false) {
+    if (!skipConfirm) {
+      const confirmed = await confirm({
+        title: '确认删除记录',
+        description: `确认删除《${book?.title ?? '这本读物'}》的数据库记录吗？源文件不会被删除。`,
+        confirmLabel: '删除记录',
+        tone: 'danger'
+      });
+      if (!confirmed) return;
+    }
+    setDangerActionOpen(false);
     setSaving(true);
     setBusyAction('delete');
     setError('');
@@ -296,6 +300,11 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
       setSaving(false);
       setBusyAction('');
     }
+  }
+
+  function downloadPrimaryEdition() {
+    if (!book?.editionId) return;
+    window.location.href = `/api/editions/${book.editionId}/file`;
   }
 
   async function uploadCover(file: File | null) {
@@ -343,6 +352,10 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
               ))}
               {book.tags.length === 0 ? <Badge>未标记</Badge> : null}
               {book.ignored ? <Badge tone="amber">已忽略</Badge> : null}
+              {book.trackingStatusValue === 'TRACKING' ? <Badge tone="green">追更中</Badge> : null}
+              {book.trackingStatusValue !== 'TRACKING' && book.trackingStatusValue !== 'NOT_TRACKING' ? <Badge tone="amber">{book.trackingStatus}</Badge> : null}
+              {book.publicationStatusValue !== 'UNKNOWN' ? <Badge tone={book.publicationStatusValue === 'ONGOING' ? 'green' : 'slate'}>{book.publicationStatus}</Badge> : null}
+              {localLatestLabel(book) !== '未记录' ? <Badge tone="slate">{localLatestLabel(book)}</Badge> : null}
             </div>
             <h1 className="mt-3 text-2xl font-semibold tracking-tight">《{book.title}》</h1>
             <p className="mt-2 text-slate-500">{book.author} · {book.type === 'comic' ? '漫画' : '电子书'} · {book.format}</p>
@@ -356,11 +369,15 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
             </div>
             <div className="mt-5 flex flex-wrap gap-3">
               <Button icon={BookOpen} onClick={() => router.push(comicSections[0] && book.editionId ? `/reader/${book.editionId}?volume=${encodeURIComponent(comicSections[0].id)}` : `/reader/${book.editionId ?? book.id}`)}>{book.progress > 0 ? '继续阅读' : '开始阅读'}</Button>
+              <Button disabled={!book.editionId} variant="secondary" icon={Download} onClick={downloadPrimaryEdition}>下载</Button>
               <Button variant="secondary" icon={Edit3} onClick={() => setEditing((value) => !value)}>编辑信息</Button>
               <Button disabled={saving} variant="secondary" icon={Database} onClick={() => setMetadataLookupOpen(true)}>元数据识别</Button>
               <Button loading={busyAction === 'regenerateCover'} disabled={saving && busyAction !== 'regenerateCover'} variant="secondary" icon={RefreshCw} onClick={() => postAction(`/api/works/${book.id}/cover/regenerate`, '封面已重新生成', { refreshCover: true, busyKey: 'regenerateCover' })}>重新生成封面</Button>
-              <Button loading={busyAction === 'ignored'} disabled={saving && busyAction !== 'ignored'} variant={book.ignored ? 'secondary' : 'danger'} icon={book.ignored ? EyeOff : Trash2} onClick={() => setIgnored(!book.ignored)}>{book.ignored ? '恢复显示' : '忽略读物'}</Button>
-              <Button loading={busyAction === 'delete'} loadingText="删除中" disabled={saving && busyAction !== 'delete'} variant="danger" icon={Trash2} onClick={() => void deleteRecord()}>删除记录</Button>
+              {book.ignored ? (
+                <Button loading={busyAction === 'ignored'} disabled={saving && busyAction !== 'ignored'} variant="secondary" icon={EyeOff} onClick={() => setIgnored(false)}>恢复显示</Button>
+              ) : (
+                <Button loading={busyAction === 'ignored' || busyAction === 'delete'} loadingText={busyAction === 'delete' ? '删除中' : '处理中'} disabled={saving && !['ignored', 'delete'].includes(busyAction)} variant="danger" icon={Trash2} onClick={() => setDangerActionOpen(true)}>忽略/删除</Button>
+              )}
             </div>
             {message ? <div className="mt-4 text-sm text-emerald-600">{message}</div> : null}
           </div>
@@ -382,6 +399,18 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
                 <div className="text-xs text-slate-400">同步状态</div>
                 <div className={cn('mt-1 line-clamp-1 font-medium', book.lastReadAt ? 'text-emerald-600' : 'text-slate-900')}>{book.lastReadAt ? '有进度' : '暂无进度'}</div>
               </div>
+              <div className="rounded-2xl bg-white p-3">
+                <div className="text-xs text-slate-400">追更状态</div>
+                <div className={cn('mt-1 line-clamp-1 font-medium', book.trackingStatusValue === 'TRACKING' ? 'text-emerald-600' : 'text-slate-900')}>{book.trackingStatus}</div>
+              </div>
+              <div className="rounded-2xl bg-white p-3">
+                <div className="text-xs text-slate-400">本地最新</div>
+                <div className="mt-1 line-clamp-1 font-medium text-slate-900">{localLatestLabel(book)}</div>
+              </div>
+              <div className="rounded-2xl bg-white p-3">
+                <div className="text-xs text-slate-400">最新时间</div>
+                <div className="mt-1 line-clamp-1 font-medium text-slate-900">{formatDateTime(book.localLatestAt)}</div>
+              </div>
             </div>
             <details className="group mt-3 rounded-2xl bg-white">
               <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-3 text-sm font-medium text-slate-700">
@@ -396,30 +425,6 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
               </div>
             </details>
           </aside>
-        </div>
-      </div>
-      <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold">追更信息</h2>
-          <Button variant="secondary" icon={Edit3} onClick={() => setEditing(true)}>编辑追更信息</Button>
-        </div>
-        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-4">
-          <div className="rounded-2xl bg-slate-50 p-4">
-            <div className="text-xs text-slate-400">出版状态</div>
-            <div className="mt-1 font-medium text-slate-900">{book.publicationStatus}</div>
-          </div>
-          <div className="rounded-2xl bg-slate-50 p-4">
-            <div className="text-xs text-slate-400">追更状态</div>
-            <div className="mt-1 font-medium text-slate-900">{book.trackingStatus}</div>
-          </div>
-          <div className="rounded-2xl bg-slate-50 p-4">
-            <div className="text-xs text-slate-400">本地最新卷/章/话</div>
-            <div className="mt-1 break-words font-medium text-slate-900">{localLatestLabel(book)}</div>
-          </div>
-          <div className="rounded-2xl bg-slate-50 p-4">
-            <div className="text-xs text-slate-400">本地最新更新时间</div>
-            <div className="mt-1 font-medium text-slate-900">{formatDateTime(book.localLatestAt)}</div>
-          </div>
         </div>
       </div>
       {editing ? (
@@ -590,6 +595,47 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
           toast.success('元数据已应用');
         }}
       />
+      {dangerActionOpen ? (
+        <div className="fixed inset-0 z-[90] flex items-end justify-center bg-slate-950/40 p-0 backdrop-blur-sm md:items-center md:p-6" role="dialog" aria-modal="true" aria-label="忽略或删除读物">
+          <div className="w-full max-w-lg rounded-t-[28px] border border-slate-200 bg-white p-5 shadow-2xl shadow-slate-950/20 md:rounded-[28px]">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-950">忽略或删除读物</h2>
+                <p className="mt-2 text-sm leading-6 text-slate-600">可以只隐藏《{book.title}》，也可以删除数据库记录。两种操作都不会删除源文件。</p>
+              </div>
+              <button type="button" onClick={() => setDangerActionOpen(false)} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-slate-500 hover:bg-slate-100" aria-label="关闭">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="mt-5 grid gap-3 sm:grid-cols-2">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => {
+                  setDangerActionOpen(false);
+                  void setIgnored(true);
+                }}
+                className="rounded-2xl border border-amber-100 bg-amber-50 p-4 text-left text-sm text-amber-800 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <span className="block font-semibold">仅忽略读物</span>
+                <span className="mt-2 block leading-6 opacity-80">从书库和整理列表隐藏，稍后仍可恢复显示。</span>
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => void deleteRecord(true)}
+                className="rounded-2xl border border-red-100 bg-red-50 p-4 text-left text-sm text-red-800 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <span className="block font-semibold">删除数据库记录</span>
+                <span className="mt-2 block leading-6 opacity-80">移除这条读物记录，源文件保留在原位置。</span>
+              </button>
+            </div>
+            <div className="mt-5 flex justify-end">
+              <Button variant="secondary" onClick={() => setDangerActionOpen(false)}>取消</Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

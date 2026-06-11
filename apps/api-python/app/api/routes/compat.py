@@ -14,6 +14,8 @@ from pathlib import Path
 from time import monotonic, time_ns
 from typing import Any
 from urllib.parse import quote
+from urllib.request import Request as UrlRequest
+from urllib.request import urlopen
 
 from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -40,7 +42,10 @@ from app.services.health import run_system_health_checks
 from app.services.organize_service import (
     apply_organize_job,
     bulk_apply_organize_jobs as apply_organize_jobs_bulk,
+    context_for_job,
     ensure_organize_job_for_work,
+    metadata_search_candidates,
+    normalize_key,
     refresh_metadata_providers,
     refresh_organize_job,
 )
@@ -566,6 +571,8 @@ async def update_work(work_id: str, request: Request, db: Session = Depends(get_
     payload = await request.json()
     allowed = {"title", "author", "description", "status", "publicationStatus", "trackingStatus", "tags", "seriesName", "seriesIndex", "publishedYear", "hidden", "organized", "metadataQuality"}
     values = {key: (_json_text(value) if key == "tags" and isinstance(value, list) else value) for key, value in payload.items() if key in allowed}
+    if "ignored" in payload:
+        values["hidden"] = bool(payload.get("ignored"))
     work = _update(db, "LibraryWork", work_id, values)
     if not work:
         return fail("作品不存在", status_code=404)
@@ -589,6 +596,8 @@ async def bulk_works(request: Request, db: Session = Depends(get_db), settings: 
     ids = payload.get("ids") or payload.get("bookIds") or []
     action = payload.get("action")
     updated = 0
+    if action is None and "ignored" in payload:
+        action = "ignore" if payload.get("ignored") else "restore"
     if _has_table(db, "LibraryWork") and ids and action in {"hide", "ignore", "restore", "unignore", "mark_organized"}:
         hidden = action in {"hide", "ignore"}
         organized = action == "mark_organized"
@@ -2081,7 +2090,7 @@ async def mutate_organize_job(job_id: str, request: Request, db: Session = Depen
     payload = await request.json()
     try:
         if action == "refresh":
-            providers = [str(provider) for provider in payload.get("providers") or [] if str(provider) in {"external", "ai"}]
+            providers = [str(provider) for provider in payload.get("providers") or [] if str(provider) in {"external", "bangumi", "douban", "ai"}]
             if providers:
                 result = refresh_metadata_providers(db, job_id, providers, force=True)
                 disabled = all(not item.get("enabled") for item in result["results"])
@@ -2192,13 +2201,86 @@ def delete_backup(backup_id: str, request: Request, db: Session = Depends(get_db
     return ok({"deleted": False, "id": backup_id})
 
 
+def _metadata_context_for_work(db: Session, work_id: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    job = ensure_organize_job_for_work(db, work_id)
+    if not job:
+        return None, None
+    return job, context_for_job(db, job)
+
+
+def _metadata_field_patch(candidate: dict[str, Any], fields: list[str]) -> dict[str, Any]:
+    patch: dict[str, Any] = {}
+    selected = set(fields)
+    if "title" in selected and isinstance(candidate.get("title"), str) and candidate.get("title").strip():
+        patch["title"] = candidate["title"].strip()
+        patch["normalizedTitle"] = normalize_key(candidate["title"])
+    if "author" in selected and isinstance(candidate.get("author"), str):
+        patch["author"] = candidate["author"].strip() or None
+        patch["normalizedAuthor"] = normalize_key(candidate["author"]) or None
+    if "description" in selected and isinstance(candidate.get("description"), str):
+        patch["description"] = candidate["description"].strip() or None
+    if "tags" in selected and isinstance(candidate.get("tags"), list):
+        tags = sorted({str(tag).strip() for tag in candidate.get("tags") or [] if str(tag).strip()})
+        patch["tags"] = _json_text(tags)
+    if "seriesName" in selected and isinstance(candidate.get("seriesName"), str):
+        patch["seriesName"] = candidate["seriesName"].strip() or None
+    if "seriesIndex" in selected and candidate.get("seriesIndex") is not None:
+        try:
+            patch["seriesIndex"] = float(candidate["seriesIndex"])
+        except (TypeError, ValueError):
+            pass
+    if "publishedYear" in selected and candidate.get("publishedYear") is not None:
+        try:
+            patch["publishedYear"] = int(candidate["publishedYear"])
+        except (TypeError, ValueError):
+            pass
+    if patch:
+        patch["organized"] = True
+        patch["metadataQuality"] = 85
+        patch["updatedAt"] = _now()
+    return patch
+
+
+def _apply_remote_cover(work_id: str, cover_url: str, settings: Settings) -> dict[str, Any]:
+    if not cover_url.startswith(("http://", "https://")):
+        return {}
+    request = UrlRequest(cover_url, headers={"Accept": "image/*,*/*", "User-Agent": "Shuku Starship Python"})
+    with urlopen(request, timeout=30) as response:
+        content_type = response.headers.get("content-type") or ""
+        data = response.read(8 * 1024 * 1024)
+    suffix = ".jpg"
+    if "png" in content_type:
+        suffix = ".png"
+    elif "webp" in content_type:
+        suffix = ".webp"
+    elif "." in cover_url.rsplit("/", 1)[-1].split("?", 1)[0]:
+        suffix = Path(cover_url.rsplit("/", 1)[-1].split("?", 1)[0]).suffix[:12] or suffix
+    target_dir = settings.resolved_storage_root / "covers"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{work_id}{suffix}"
+    target.write_bytes(data)
+    return {"coverPath": str(target.relative_to(settings.resolved_storage_root)), "coverStatus": "READY", "updatedAt": _now()}
+
+
 @router.post("/works/{work_id}/metadata/search")
 async def metadata_search(work_id: str, request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
     _user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    work = _get_work(db, work_id)
-    return ok({"results": [], "query": (work or {}).get("title")})
+    payload = await request.json()
+    source = str(payload.get("source") or "bangumi")
+    if source not in {"bangumi", "douban", "ai"}:
+        return fail("不支持的元数据来源", status_code=400)
+    job, context = _metadata_context_for_work(db, work_id)
+    if not job or not context:
+        return fail("读物不存在或无权访问", status_code=404)
+    query = str(payload.get("query") or "").strip() or None
+    try:
+        result = metadata_search_candidates(db, context, source, query)
+    except Exception as exc:
+        return fail(str(exc), status_code=400)
+    candidates = result.get("candidates") or []
+    return ok({"candidates": candidates, "results": candidates, "query": query or context["work"].get("title"), "source": source, "message": result.get("message")})
 
 
 @router.post("/works/{work_id}/metadata/apply")
@@ -2210,9 +2292,27 @@ async def compatible_work_action(work_id: str, request: Request, edition_id: str
     user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
+    if request.url.path.endswith("/metadata/apply"):
+        payload = await request.json()
+        candidate = payload.get("candidate") if isinstance(payload.get("candidate"), dict) else {}
+        fields = [str(field) for field in payload.get("fields") or []]
+        if not candidate or not fields:
+            return fail("请选择要应用的元数据字段", status_code=400)
+        patch = _metadata_field_patch(candidate, fields)
+        if "coverUrl" in fields and isinstance(candidate.get("coverUrl"), str) and candidate.get("coverUrl").strip():
+            try:
+                patch.update(_apply_remote_cover(work_id, candidate["coverUrl"].strip(), settings))
+            except Exception as exc:
+                logger.warning("failed to apply remote cover work=%s url=%s error=%s", work_id, candidate.get("coverUrl"), exc)
+        if not patch:
+            return fail("候选中没有可应用的字段", status_code=400)
+        work = _update(db, "LibraryWork", work_id, patch)
+        if not work:
+            return fail("作品不存在", status_code=404)
+        return ok({"book": _work_view(db, work, user.id), "appliedFields": fields})
     if request.url.path.endswith("/metadata/refresh"):
         payload = await request.json()
-        providers = [str(provider) for provider in payload.get("providers") or [] if str(provider) in {"external", "ai"}]
+        providers = [str(provider) for provider in payload.get("providers") or [] if str(provider) in {"external", "bangumi", "douban", "ai"}]
         if not providers:
             return fail("请选择要刷新的元数据来源", status_code=400)
         job = ensure_organize_job_for_work(db, work_id)

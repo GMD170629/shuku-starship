@@ -17,6 +17,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.services.organize_service import apply_organize_job, refresh_metadata_providers
 
 SUPPORTED_EXTS = {".epub", ".cbz", ".zip", ".pdf"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
@@ -106,6 +107,8 @@ def import_managed_book(db: Session, settings: Settings, options: ImportOptions)
         )
         if not result.duplicate:
             _create_or_refresh_organize_job(db, result.work_id, result.edition_id, task_id)
+            if result.format == "epub":
+                _auto_apply_epub_metadata(db, result.work_id, result.edition_id, task_id)
         _log_import(db, task_id, "info", f"import completed: {result.book_id}")
         return result
     except Exception as exc:
@@ -503,6 +506,35 @@ def _create_or_refresh_organize_job(db: Session, work_id: str, edition_id: str, 
     _insert(db, "OrganizeJob", {"id": _id(), "workId": work_id, "editionId": edition_id, "importTaskId": task_id, "status": "REVIEWING", "issueCodes": "[]", "summary": "Python worker import metadata review", "createdAt": _now(), "updatedAt": _now()})
 
 
+def _auto_apply_epub_metadata(db: Session, work_id: str, edition_id: str, task_id: str) -> bool:
+    if not all(_has_table(db, table) for table in ["LibraryWork", "OrganizeJob", "MetadataSuggestion"]):
+        return False
+    job = _row(db, "SELECT * FROM `OrganizeJob` WHERE `workId` = :work_id AND `editionId` = :edition_id ORDER BY `updatedAt` DESC LIMIT 1", {"work_id": work_id, "edition_id": edition_id})
+    if not job:
+        return False
+    for provider in ["douban", "bangumi"]:
+        try:
+            result = refresh_metadata_providers(db, job["id"], [provider], force=True)
+        except Exception:
+            continue
+        if int(result.get("added") or 0) <= 0:
+            continue
+        suggestion_ids = [
+            item["id"]
+            for item in _rows(
+                db,
+                "SELECT `id` FROM `MetadataSuggestion` WHERE `jobId` = :job_id AND `status` = 'PENDING' AND `source` = :source ORDER BY `confidence` DESC, `createdAt` ASC",
+                {"job_id": job["id"], "source": provider},
+            )
+        ]
+        if not suggestion_ids:
+            continue
+        apply_organize_job(db, job["id"], {"suggestionIds": suggestion_ids, "markOrganized": True})
+        _log_import(db, task_id, "info", f"auto metadata applied from {provider}")
+        return True
+    return False
+
+
 def _insert(db: Session, table: str, values: dict[str, Any]) -> dict[str, Any]:
     columns = _columns(db, table)
     filtered = {key: value for key, value in values.items() if key in columns}
@@ -541,6 +573,10 @@ def _table_count(db: Session, table: str, where: str = "", params: dict[str, Any
 
 def _columns(db: Session, table: str) -> set[str]:
     return {column["name"] for column in inspect(db.get_bind()).get_columns(table)}
+
+
+def _has_table(db: Session, table: str) -> bool:
+    return table in inspect(db.get_bind()).get_table_names()
 
 
 def _id() -> str:

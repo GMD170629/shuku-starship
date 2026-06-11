@@ -10,6 +10,7 @@ from sqlalchemy import text
 from app.api.routes import compat
 from app.core.auth import hash_password
 from app.models.auth import User
+from app.services.organize_service import bangumi_candidates, douban_candidates
 from app.services.download_queue import process_next_download_task
 from tests.test_worker_importer import create_worker_tables, write_comic_fixture, write_epub_fixture, write_pdf_fixture
 
@@ -393,6 +394,44 @@ def serve_bangumi_api_gateway():
     thread.start()
     server.requests = requests
     return server
+
+
+def test_metadata_candidate_parsers_accept_common_provider_shapes():
+    douban = douban_candidates(
+        {
+            "results": [
+                {
+                    "id": "douban-result-1",
+                    "title": "搜索结果书名",
+                    "authors": [{"name": "作者甲"}],
+                    "summary": "简介",
+                    "cover_url": "https://example.test/cover.jpg",
+                    "pubdate": "2024-01",
+                }
+            ]
+        },
+        0.7,
+    )
+    bangumi = bangumi_candidates(
+        {
+            "list": [
+                {
+                    "id": 123,
+                    "name": "Bangumi Name",
+                    "name_cn": "中文条目",
+                    "summary": "简介",
+                    "images": {"common": "https://example.test/bgm.jpg"},
+                }
+            ]
+        },
+        0.82,
+    )
+
+    assert douban[0]["title"] == "搜索结果书名"
+    assert douban[0]["author"] == "作者甲"
+    assert douban[0]["coverUrl"] == "https://example.test/cover.jpg"
+    assert bangumi[0]["title"] == "中文条目"
+    assert bangumi[0]["coverUrl"] == "https://example.test/bgm.jpg"
 
 
 def test_core_compat_endpoints_return_envelopes(client, db_session, test_settings):
@@ -1499,7 +1538,7 @@ def test_work_metadata_refresh_runs_douban_api_external_provider(client, db_sess
         payload = refreshed.json()["data"]
         assert payload["enabled"] is True
         assert payload["added"] == 5
-        assert payload["results"][0]["provider"] == "external"
+        assert payload["results"][0]["provider"] == "douban"
         assert douban.requests[0]["path"] == "/v2/book/isbn/9787111111111?apikey=douban-key"
         assert douban.requests[0]["accept"] == "application/json"
         suggestions = db_session.execute(
@@ -1507,11 +1546,11 @@ def test_work_metadata_refresh_runs_douban_api_external_provider(client, db_sess
             {"job_id": payload["jobId"]},
         ).mappings().all()
         assert [dict(item) for item in suggestions] == [
-            {"field": "author", "source": "external", "suggestedValue": "External Author", "confidence": 0.92},
-            {"field": "description", "source": "external", "suggestedValue": "External description", "confidence": 0.82},
-            {"field": "publishedYear", "source": "external", "suggestedValue": "2024", "confidence": 0.82},
-            {"field": "tags", "source": "external", "suggestedValue": '["fiction", "space"]', "confidence": 0.76},
-            {"field": "title", "source": "external", "suggestedValue": "Douban Clean Title", "confidence": 0.92},
+            {"field": "author", "source": "douban", "suggestedValue": "External Author", "confidence": 0.92},
+            {"field": "description", "source": "douban", "suggestedValue": "External description", "confidence": 0.82},
+            {"field": "publishedYear", "source": "douban", "suggestedValue": "2024", "confidence": 0.82},
+            {"field": "tags", "source": "douban", "suggestedValue": '["fiction", "space"]', "confidence": 0.76},
+            {"field": "title", "source": "douban", "suggestedValue": "Douban Clean Title", "confidence": 0.92},
         ]
     finally:
         douban.shutdown()
@@ -1568,10 +1607,10 @@ def test_work_metadata_refresh_runs_douban_crawler_external_provider(client, db_
             {"job_id": payload["jobId"]},
         ).mappings().all()
         assert [dict(item) for item in suggestions] == [
-            {"field": "author", "source": "external", "suggestedValue": "余华", "confidence": 0.8},
-            {"field": "description", "source": "external", "suggestedValue": "这是一本关于生命韧性的小说。", "confidence": 0.8},
-            {"field": "publishedYear", "source": "external", "suggestedValue": "2012", "confidence": 0.8},
-            {"field": "title", "source": "external", "suggestedValue": "活着", "confidence": 0.8},
+            {"field": "author", "source": "douban", "suggestedValue": "余华", "confidence": 0.8},
+            {"field": "description", "source": "douban", "suggestedValue": "这是一本关于生命韧性的小说。", "confidence": 0.8},
+            {"field": "publishedYear", "source": "douban", "suggestedValue": "2012", "confidence": 0.8},
+            {"field": "title", "source": "douban", "suggestedValue": "活着", "confidence": 0.8},
         ]
     finally:
         douban.shutdown()
@@ -1629,13 +1668,81 @@ def test_work_metadata_refresh_runs_bangumi_external_provider(client, db_session
             {"job_id": payload["jobId"]},
         ).mappings().all()
         assert [dict(item) for item in suggestions] == [
-            {"field": "author", "source": "external", "suggestedValue": "漫画作者", "confidence": 0.78},
-            {"field": "description", "source": "external", "suggestedValue": "Bangumi description", "confidence": 0.8},
-            {"field": "publishedYear", "source": "external", "suggestedValue": "2022", "confidence": 0.78},
-            {"field": "seriesName", "source": "external", "suggestedValue": "星舰漫画", "confidence": 0.82},
-            {"field": "tags", "source": "external", "suggestedValue": '["科幻", "漫画"]', "confidence": 0.72},
-            {"field": "title", "source": "external", "suggestedValue": "星舰漫画", "confidence": 0.82},
+            {"field": "author", "source": "bangumi", "suggestedValue": "漫画作者", "confidence": 0.78},
+            {"field": "description", "source": "bangumi", "suggestedValue": "Bangumi description", "confidence": 0.8},
+            {"field": "publishedYear", "source": "bangumi", "suggestedValue": "2022", "confidence": 0.78},
+            {"field": "seriesName", "source": "bangumi", "suggestedValue": "星舰漫画", "confidence": 0.82},
+            {"field": "tags", "source": "bangumi", "suggestedValue": '["科幻", "漫画"]', "confidence": 0.72},
+            {"field": "title", "source": "bangumi", "suggestedValue": "星舰漫画", "confidence": 0.82},
         ]
+    finally:
+        bangumi.shutdown()
+
+
+def test_ebook_metadata_search_apply_and_refresh_can_use_bangumi(client, db_session):
+    create_worker_tables(db_session)
+    create_organize_detail_tables(db_session)
+    db_session.execute(text("CREATE TABLE IF NOT EXISTS SystemSetting (`key` TEXT PRIMARY KEY, `value` TEXT, `createdAt` TEXT, `updatedAt` TEXT)"))
+    bangumi = serve_bangumi_api_gateway()
+    try:
+        for key, value in {
+            "metadata.bangumi.baseUrl": f"http://127.0.0.1:{bangumi.server_port}",
+            "metadata.bangumi.userAgent": "ShukuEbookTest/1.0",
+        }.items():
+            db_session.execute(
+                text("INSERT INTO SystemSetting (`key`, `value`, `createdAt`, `updatedAt`) VALUES (:key, :value, 'now', 'now')"),
+                {"key": key, "value": value},
+            )
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryWork (
+                    id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                    trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                    mergeKey, createdAt, updatedAt
+                ) VALUES (
+                    'work-ebook-bangumi', 'Messy Ebook', 'messyebook', '', '', 'EPUB', 'WANT', 'UNKNOWN',
+                    'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', 0, 0, 'epub:bangumi', 'now', 'now'
+                )"""
+            )
+        )
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryEdition (
+                    id, workId, origin, format, importStatus, sizeBytes, "primary", hidden, createdAt, updatedAt
+                ) VALUES ('edition-ebook-bangumi', 'work-ebook-bangumi', 'MANUAL', 'EPUB', 'IMPORTED', 10, 1, 0, 'now', 'now')"""
+            )
+        )
+        db_session.commit()
+        _login(client, db_session)
+
+        searched = client.post("/api/works/work-ebook-bangumi/metadata/search", json={"source": "bangumi", "query": "星舰"})
+
+        assert searched.status_code == 200
+        search_payload = searched.json()["data"]
+        assert search_payload["candidates"][0]["source"] == "bangumi"
+        assert search_payload["candidates"][0]["title"] == "星舰漫画"
+        assert bangumi.requests[0]["body"] == {"keyword": "星舰", "sort": "match", "filter": {"type": [1]}}
+
+        applied = client.post(
+            "/api/works/work-ebook-bangumi/metadata/apply",
+            json={"source": "bangumi", "candidate": search_payload["candidates"][0], "fields": ["title", "author", "description", "tags"]},
+        )
+
+        assert applied.status_code == 200
+        applied_book = applied.json()["data"]["book"]
+        assert applied_book["title"] == "星舰漫画"
+        assert applied_book["author"] == "漫画作者"
+        assert applied_book["tags"] == ["漫画", "科幻"]
+
+        refreshed = client.post("/api/works/work-ebook-bangumi/metadata/refresh", json={"providers": ["bangumi"]})
+
+        assert refreshed.status_code == 200
+        refresh_payload = refreshed.json()["data"]
+        assert refresh_payload["enabled"] is True
+        assert refresh_payload["added"] == 6
+        assert bangumi.requests[-1]["body"] == {"keyword": "星舰漫画", "sort": "match", "filter": {"type": [1]}}
+        sources = db_session.execute(text("SELECT DISTINCT source FROM MetadataSuggestion")).scalars().all()
+        assert sources == ["bangumi"]
     finally:
         bangumi.shutdown()
 

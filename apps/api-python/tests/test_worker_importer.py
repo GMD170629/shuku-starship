@@ -1,6 +1,8 @@
 import json
 import zipfile
 from pathlib import Path
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from threading import Thread
 
 from sqlalchemy import text
 
@@ -59,6 +61,82 @@ def create_worker_tables(db):
     for statement in statements:
         db.execute(text(statement))
     db.commit()
+
+
+def create_metadata_provider_tables(db):
+    db.execute(
+        text(
+            """CREATE TABLE MetadataSuggestion (
+                id TEXT PRIMARY KEY, jobId TEXT, field TEXT, currentValue TEXT, suggestedValue TEXT,
+                source TEXT, confidence REAL, reason TEXT, status TEXT, createdAt TEXT, updatedAt TEXT
+            )"""
+        )
+    )
+    db.execute(text("CREATE TABLE IF NOT EXISTS SystemSetting (`key` TEXT PRIMARY KEY, `value` TEXT, `createdAt` TEXT, `updatedAt` TEXT)"))
+    db.commit()
+
+
+def set_system_setting(db, key: str, value: str):
+    db.execute(text("INSERT INTO SystemSetting (`key`, `value`, `createdAt`, `updatedAt`) VALUES (:key, :value, 'now', 'now')"), {"key": key, "value": value})
+    db.commit()
+
+
+def serve_import_metadata_gateways():
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def json_response(self, payload):
+            encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def do_GET(self):
+            requests.append({"method": "GET", "path": self.path})
+            if self.path.startswith("/v2/book/search") or self.path.startswith("/v2/book/isbn/"):
+                self.json_response({"books": []})
+                return
+            self.send_response(404)
+            self.end_headers()
+
+        def do_POST(self):
+            length = int(self.headers.get("content-length", "0"))
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            requests.append({"method": "POST", "path": self.path, "body": body})
+            if self.path == "/v0/search/subjects":
+                self.json_response(
+                    {
+                        "data": [
+                            {
+                                "id": 99,
+                                "name": "Starship Novel",
+                                "name_cn": "星舰小说",
+                                "summary": "Bangumi fallback description",
+                                "date": "2024-04-01",
+                                "tags": [{"name": "科幻"}, {"name": "小说"}],
+                                "infobox": [
+                                    {"key": "作者", "value": "Bangumi 作者"},
+                                    {"key": "出版社", "value": "Bangumi 出版社"},
+                                    {"key": "册数", "value": "2"},
+                                ],
+                            }
+                        ]
+                    }
+                )
+                return
+            self.send_response(404)
+            self.end_headers()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    server.requests = requests
+    return server
 
 
 def _count(db, table):
@@ -260,6 +338,40 @@ def test_import_epub_creates_library_records(db_session, test_settings, tmp_path
     assert _count(db_session, "LibraryReadingUnit") == 2
     assert _count(db_session, "ImportTask") == 1
     assert _count(db_session, "OrganizeJob") == 1
+
+
+def test_import_epub_falls_back_to_bangumi_and_skips_pending_organize_queue(db_session, test_settings, tmp_path):
+    create_worker_tables(db_session)
+    create_metadata_provider_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    gateway = serve_import_metadata_gateways()
+    try:
+        for key, value in {
+            "metadata.douban.mode": "api",
+            "metadata.douban.baseUrl": f"http://127.0.0.1:{gateway.server_port}",
+            "metadata.bangumi.baseUrl": f"http://127.0.0.1:{gateway.server_port}",
+            "metadata.bangumi.userAgent": "ShukuImportTest/1.0",
+        }.items():
+            set_system_setting(db_session, key, value)
+        epub = tmp_path / "fallback.epub"
+        write_epub_fixture(epub)
+
+        result = import_managed_book(db_session, test_settings, ImportOptions(source_file_path=epub, origin="MANUAL", original_name="fallback.epub"))
+
+        assert result.import_status == "completed"
+        assert [request["path"] for request in gateway.requests] == ["/v2/book/search?q=%E7%9B%AE%E5%BD%95%E6%B5%8B%E8%AF%95+%E6%B5%8B%E8%AF%95%E4%BD%9C%E8%80%85&count=3", "/v0/search/subjects"]
+        work = db_session.execute(text("SELECT title, author, description, tags, organized, organizeStatus FROM LibraryWork")).mappings().first()
+        assert work["title"] == "星舰小说"
+        assert work["author"] == "Bangumi 作者"
+        assert work["description"] == "Bangumi fallback description"
+        assert json.loads(work["tags"]) == ["小说", "科幻"]
+        assert work["organized"] == 1
+        assert work["organizeStatus"] == "APPLIED"
+        assert db_session.execute(text("SELECT COUNT(*) FROM OrganizeJob WHERE status IN ('PENDING', 'REVIEWING', 'FAILED')")).scalar() == 0
+        assert db_session.execute(text("SELECT status FROM OrganizeJob")).scalar() == "APPLIED"
+        assert db_session.execute(text("SELECT DISTINCT source FROM MetadataSuggestion")).scalar() == "bangumi"
+    finally:
+        gateway.shutdown()
 
 
 def test_parse_epub_nav_uses_toc_block_and_preserves_raw_opf_metadata(tmp_path):
