@@ -6,6 +6,7 @@ RUN apt-get update \
   && corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
+COPY patches ./patches
 COPY apps/web/package.json apps/web/package.json
 RUN pnpm install --frozen-lockfile --filter @shuku/web...
 
