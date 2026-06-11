@@ -163,7 +163,6 @@ fi
 
 build_image "shuku-starship-web" "apps/web/Dockerfile.prod" "runner"
 build_image "shuku-starship-migrator" "apps/web/Dockerfile.prod" "migrator"
-build_image "shuku-starship-scan-worker" "workers/scan-worker/Dockerfile.prod" "runner"
 
 cat <<EOF
 ==> Published:
@@ -171,6 +170,4 @@ cat <<EOF
   ${IMAGE_PREFIX}/shuku-starship-web:${VERSION_TAG}
   ${IMAGE_PREFIX}/shuku-starship-migrator:${CHANNEL_TAG}
   ${IMAGE_PREFIX}/shuku-starship-migrator:${VERSION_TAG}
-  ${IMAGE_PREFIX}/shuku-starship-scan-worker:${CHANNEL_TAG}
-  ${IMAGE_PREFIX}/shuku-starship-scan-worker:${VERSION_TAG}
 EOF

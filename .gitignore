@@ -2,6 +2,8 @@ node_modules
 .pnpm-store
 .next
 dist
+.tmp
+tmp-worker-smoke
 .env
 .env.production
 storage

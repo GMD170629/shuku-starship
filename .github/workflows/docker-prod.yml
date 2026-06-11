@@ -23,10 +23,6 @@ jobs:
             image: gamersgu/shuku-starship-web
             dockerfile: apps/web/Dockerfile.prod
             target: runner
-          - name: scan-worker
-            image: gamersgu/shuku-starship-scan-worker
-            dockerfile: workers/scan-worker/Dockerfile.prod
-            target: runner
           - name: migrator
             image: gamersgu/shuku-starship-migrator
             dockerfile: apps/web/Dockerfile.prod

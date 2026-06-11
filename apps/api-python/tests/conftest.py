@@ -20,7 +20,9 @@ def test_settings(tmp_path) -> Settings:
         session_secret="test-secret",
         monitor_root=str(tmp_path / "monitor"),
         storage_root=str(tmp_path / "storage"),
+        download_inbox_path=str(tmp_path / "downloads" / "inbox"),
         secure_cookies=False,
+        automatic_backup_enabled=False,
     )
 
 
@@ -44,7 +46,7 @@ def db_session(test_settings: Settings) -> Generator[Session, None, None]:
 
 @pytest.fixture()
 def client(test_settings: Settings, db_session: Session) -> Generator[TestClient, None, None]:
-    app = create_app()
+    app = create_app(test_settings)
 
     def override_settings() -> Settings:
         return test_settings

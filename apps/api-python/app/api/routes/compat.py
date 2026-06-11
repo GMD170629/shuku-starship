@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
+import os
 import re
 import shutil
+import threading
 import zipfile
 from datetime import datetime, timezone
+from email.utils import format_datetime, parsedate_to_datetime
 from pathlib import Path
-from time import time_ns
+from time import monotonic, time_ns
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Request, UploadFile
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
@@ -20,13 +25,44 @@ from app.core.config import Settings, get_settings
 from app.db.session import get_db
 from app.models.auth import User
 from app.schemas.responses import fail, ok
+from app.services.backup_service import create_backup as create_backup_archive
+from app.services.backup_service import list_backups as list_backup_archives
+from app.services.backup_service import restore_backup as restore_backup_archive
+from app.services.download_executor import (
+    create_remote_ref_from_search_record,
+    execute_download_task,
+    find_active_download_task,
+    has_usable_download_meta,
+    import_download_task,
+    infer_download_task_type,
+)
 from app.services.health import run_system_health_checks
+from app.services.organize_service import (
+    apply_organize_job,
+    bulk_apply_organize_jobs as apply_organize_jobs_bulk,
+    ensure_organize_job_for_work,
+    refresh_metadata_providers,
+    refresh_organize_job,
+)
+from app.services.source_providers import PROVIDER_CAPABILITIES, search_source_provider, test_source_provider
+from app.worker.importer import ImportOptions, import_managed_book, is_supported_import_file, parse_comic_archive
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+_active_file_streams_by_user: dict[str, int] = {}
+_active_file_streams_lock = threading.Lock()
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _positive_env_int(name: str, fallback: int) -> int:
+    try:
+        value = int(os.environ.get(name, ""))
+    except ValueError:
+        return fallback
+    return value if value >= 0 else fallback
 
 
 def _has_table(db: Session, table: str) -> bool:
@@ -96,6 +132,22 @@ def _parse_json(value: Any, fallback: Any) -> Any:
 
 def _json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
+
+
+def _positive_int(value: Any, fallback: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    if parsed < 1:
+        return fallback
+    return min(parsed, maximum)
+
+
+def _safe_upload_name(value: str | None) -> str:
+    name = Path(value or "upload").name
+    sanitized = re.sub(r"[^A-Za-z0-9._()（）\-\u4e00-\u9fff]+", "_", name).strip("._")
+    return sanitized or "upload"
 
 
 def _dt(value: Any) -> str | None:
@@ -485,28 +537,59 @@ async def import_work(request: Request, db: Session = Depends(get_db), settings:
         return auth_error
     form = await request.form()
     files = [value for value in form.values() if hasattr(value, "filename")]
-    tasks = []
-    if _has_table(db, "ImportTask"):
-        for upload in files:
-            file_name = getattr(upload, "filename", None) or "upload"
-            task = _insert(
+    if not files:
+        return fail("请选择要导入的文件", status_code=400)
+
+    import_dir = settings.resolved_storage_root / "imports" / str(time_ns())
+    import_dir.mkdir(parents=True, exist_ok=True)
+    tasks: list[dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
+
+    for upload in files:
+        file_name = _safe_upload_name(getattr(upload, "filename", None))
+        target = import_dir / file_name
+        with target.open("wb") as handle:
+            shutil.copyfileobj(upload.file, handle)
+        if not is_supported_import_file(target):
+            target.unlink(missing_ok=True)
+            return fail("当前版本仅支持 EPUB、CBZ、ZIP、PDF 格式。", status_code=400, details={"file": file_name})
+        try:
+            result = import_managed_book(
                 db,
-                "ImportTask",
-                {
-                    "id": f"py_{time_ns()}",
-                    "origin": "MANUAL",
-                    "status": "PENDING",
-                    "originalName": file_name,
-                    "sourcePath": file_name,
-                    "progress": 0,
-                    "duplicate": False,
-                    "duration": 0,
-                    "createdAt": _now(),
-                    "updatedAt": _now(),
-                },
+                settings,
+                ImportOptions(
+                    source_file_path=target,
+                    original_name=file_name,
+                    origin="MANUAL",
+                    import_mode="COPY",
+                ),
             )
-            tasks.append(task)
-    return ok({"tasks": tasks, "queued": len(files)})
+            task = _row(db, "SELECT * FROM `ImportTask` WHERE `sourcePath` = :source_path ORDER BY `createdAt` DESC LIMIT 1", {"source_path": str(target)}) if _has_table(db, "ImportTask") else None
+            if task:
+                tasks.append(task)
+            results.append(
+                {
+                    "bookId": result.book_id,
+                    "workId": result.work_id,
+                    "editionId": result.edition_id,
+                    "volumeId": result.volume_id,
+                    "title": result.title,
+                    "type": result.type,
+                    "format": result.format,
+                    "totalUnits": result.total_units,
+                    "importStatus": result.import_status,
+                    "duplicate": result.duplicate,
+                    "merged": result.merged,
+                    "mergeReason": result.merge_reason,
+                }
+            )
+        except Exception as exc:
+            failed_task = _row(db, "SELECT * FROM `ImportTask` WHERE `sourcePath` = :source_path ORDER BY `createdAt` DESC LIMIT 1", {"source_path": str(target)}) if _has_table(db, "ImportTask") else None
+            if failed_task:
+                tasks.append(failed_task)
+            return fail("导入失败", status_code=400, details={"file": file_name, "message": str(exc), "tasks": tasks})
+
+    return ok({"tasks": tasks, "results": results, "queued": len(files), "imported": len(results)})
 
 
 @router.get("/monitor-folders")
@@ -656,9 +739,51 @@ def reader_bootstrap(edition_id: str, request: Request, db: Session = Depends(ge
     work = _get_work(db, edition["workId"])
     units = _rows(db, "SELECT * FROM `LibraryReadingUnit` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryReadingUnit") else []
     progress = _row(db, "SELECT * FROM `LibraryReadingProgress` WHERE `userId` = :user_id AND `editionId` = :edition_id", {"user_id": user.id, "edition_id": edition_id}) if _has_table(db, "LibraryReadingProgress") else None
-    preference_type = "comic" if edition.get("format") == "COMIC" else "epub"
-    pref = _row(db, "SELECT * FROM `ReaderPreference` WHERE `userId` = :user_id AND `readerType` = :reader_type", {"user_id": user.id, "reader_type": preference_type}) if _has_table(db, "ReaderPreference") else None
-    return ok({"book": _work_view(db, work, user.id) if work else None, "edition": edition, "units": units, "progress": progress, "preferences": _parse_json((pref or {}).get("settings"), {}), "readerType": preference_type})
+    preferences = {
+        row["readerType"]: _parse_json(row.get("settings"), {})
+        for row in (_rows(db, "SELECT * FROM `ReaderPreference` WHERE `userId` = :user_id", {"user_id": user.id}) if _has_table(db, "ReaderPreference") else [])
+    }
+    work_view = _work_view(db, work, user.id) if work else None
+    book_view = {**work_view, "editionId": edition["id"], "formatValue": edition.get("format")} if work_view else None
+    reader_type = "comic" if edition.get("format") == "COMIC" else ("ebook" if edition.get("format") == "EPUB" else "unknown")
+    base_payload = {"book": book_view, "edition": edition, "units": units, "progress": progress, "preferences": preferences, "readerType": reader_type}
+    if reader_type == "ebook":
+        reading_units = [_reading_unit_view(unit) for unit in units]
+        return ok({**base_payload, "readingUnits": reading_units, "totalUnits": len(reading_units)})
+    if reader_type == "comic":
+        requested_volume_id = request.query_params.get("volume") or request.query_params.get("section")
+        volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
+        volume = next((item for item in volumes if item["id"] == requested_volume_id), None) if requested_volume_id else None
+        volume = volume or (volumes[0] if volumes else None)
+        page_units = [unit for unit in units if not volume or unit.get("volumeId") == volume["id"]]
+        if volume and not page_units:
+            _ensure_volume_page_index(db, settings, volume["id"])
+            page_units = _rows(db, "SELECT * FROM `LibraryReadingUnit` WHERE `volumeId` = :volume_id AND LOWER(`unitType`) = 'page' ORDER BY `sortOrder` ASC", {"volume_id": volume["id"]}) if _has_table(db, "LibraryReadingUnit") else []
+        pages = [
+            {
+                "pageIndex": index + 1,
+                "title": page.get("title"),
+                "mimeType": page.get("mediaType"),
+                "width": page.get("width"),
+                "height": page.get("height"),
+                "size": page.get("size"),
+            }
+            for index, page in enumerate(page_units)
+        ]
+        return ok(
+            {
+                **base_payload,
+                "section": {"id": volume["id"], "title": volume.get("title"), "pageCount": len(page_units)} if volume else None,
+                "sections": [{"id": item["id"], "title": item.get("title"), "pageCount": item.get("pageCount") or 0} for item in volumes],
+                "pageCount": len(page_units),
+                "pages": pages,
+            }
+        )
+    return ok(base_payload)
+
+
+def _reading_unit_view(unit: dict[str, Any]) -> dict[str, Any]:
+    return {**unit, "metadataJson": _parse_json(unit.get("metadataJson"), {})}
 
 
 @router.get("/editions/{edition_id}/progress")
@@ -714,35 +839,309 @@ def _stored_path(path_value: str | None, settings: Settings) -> Path | None:
     return None
 
 
-def _send_file(path: Path | None) -> Response:
+def _parse_byte_range(header: str | None, size: int) -> tuple[str, tuple[int, int] | None]:
+    if not header:
+        return "none", None
+    match = re.match(r"^bytes=(\d*)-(\d*)$", header.strip())
+    if not match:
+        return "invalid", None
+    raw_start, raw_end = match.groups()
+    if not raw_start and not raw_end:
+        return "invalid", None
+    if size <= 0:
+        return "unsatisfiable", None
+    if not raw_start:
+        try:
+            suffix_length = int(raw_end)
+        except ValueError:
+            return "unsatisfiable", None
+        if suffix_length <= 0:
+            return "unsatisfiable", None
+        return "range", (max(0, size - suffix_length), size - 1)
+    try:
+        start = int(raw_start)
+        end = int(raw_end) if raw_end else size - 1
+    except ValueError:
+        return "unsatisfiable", None
+    if start < 0 or end < start or start >= size:
+        return "unsatisfiable", None
+    return "range", (start, min(end, size - 1))
+
+
+def _weak_etag(size: int, mtime_ms: int, extra: str = "") -> str:
+    suffix = f"-{extra.encode('utf-8').hex()}" if extra else ""
+    return f'W/"{size:x}-{mtime_ms:x}{suffix}"'
+
+
+def _not_modified(request: Request, etag: str, last_modified: str) -> bool:
+    if_none_match = request.headers.get("if-none-match")
+    if if_none_match:
+        tags = [tag.strip() for tag in if_none_match.split(",")]
+        return "*" in tags or etag in tags
+    if_modified_since = request.headers.get("if-modified-since")
+    if if_modified_since:
+        try:
+            since = parsedate_to_datetime(if_modified_since)
+            modified = parsedate_to_datetime(last_modified)
+            return modified <= since
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
+def _should_use_range(request: Request, etag: str, last_modified: str) -> bool:
+    if_range = request.headers.get("if-range")
+    if not if_range:
+        return True
+    if if_range.startswith("W/") or if_range.startswith('"'):
+        return if_range == etag
+    try:
+        if_range_date = parsedate_to_datetime(if_range)
+        modified = parsedate_to_datetime(last_modified)
+        return modified <= if_range_date
+    except (TypeError, ValueError):
+        return False
+
+
+def _response_headers(size: int, mtime: float, media_type: str, name: str, extra: str = "") -> dict[str, str]:
+    modified = datetime.fromtimestamp(mtime, timezone.utc).replace(microsecond=0)
+    return {
+        "Accept-Ranges": "bytes",
+        "Content-Type": media_type,
+        "Content-Disposition": f"inline; filename*=UTF-8''{quote(name)}",
+        "Cache-Control": "private, max-age=86400" if media_type.lower().startswith("image/") else "private, max-age=60",
+        "ETag": _weak_etag(size, int(mtime * 1000), extra),
+        "Last-Modified": format_datetime(modified, usegmt=True),
+    }
+
+
+def _bytes_response(data: bytes, request: Request, media_type: str, name: str, mtime: float | None = None, extra: str = "") -> Response:
+    started_at = monotonic()
+    size = len(data)
+    headers = _response_headers(size, mtime or _now().timestamp(), media_type, name, extra)
+    if not request.headers.get("range") and _not_modified(request, headers["ETag"], headers["Last-Modified"]):
+        return Response(status_code=304, headers=headers)
+    range_header = request.headers.get("range")
+    byte_range = None
+    if range_header and _should_use_range(request, headers["ETag"], headers["Last-Modified"]):
+        kind, parsed = _parse_byte_range(range_header, size)
+        if kind == "invalid":
+            response = fail("Range 请求格式不正确", status_code=416)
+            response.headers["Content-Range"] = f"bytes */{size}"
+            return response
+        if kind == "unsatisfiable":
+            response = fail("Range 超出文件大小", status_code=416)
+            response.headers["Content-Range"] = f"bytes */{size}"
+            return response
+        byte_range = parsed
+    if byte_range:
+        start, end = byte_range
+        body = data[start : end + 1]
+        headers["Content-Length"] = str(len(body))
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        _log_slow_file_request(request, "bytes", "memory", request.headers.get("range"), len(body), 206, started_at)
+        return Response(content=body, status_code=206, headers=headers, media_type=media_type)
+    headers["Content-Length"] = str(size)
+    _log_slow_file_request(request, "bytes", "memory", request.headers.get("range"), size, 200, started_at)
+    return Response(content=data, headers=headers, media_type=media_type)
+
+
+def _file_stream_limit_response() -> Response:
+    return fail("同时文件流请求过多，请稍后重试", status_code=429)
+
+
+def _acquire_file_stream_slot(user_id: str):
+    limit = max(1, _positive_env_int("FILE_STREAMS_PER_USER", 4))
+    with _active_file_streams_lock:
+        current = _active_file_streams_by_user.get(user_id, 0)
+        if current >= limit:
+            return None
+        _active_file_streams_by_user[user_id] = current + 1
+
+    released = False
+
+    def release() -> None:
+        nonlocal released
+        if released:
+            return
+        released = True
+        with _active_file_streams_lock:
+            next_count = max(0, _active_file_streams_by_user.get(user_id, 1) - 1)
+            if next_count == 0:
+                _active_file_streams_by_user.pop(user_id, None)
+            else:
+                _active_file_streams_by_user[user_id] = next_count
+
+    return release
+
+
+def _log_slow_file_request(request: Request, route: str, file_id: str, range_header: str | None, bytes_sent: int, status_code: int, started_at: float) -> None:
+    threshold_ms = _positive_env_int("SLOW_FILE_REQUEST_MS", 1500)
+    duration_ms = int((monotonic() - started_at) * 1000)
+    if duration_ms < threshold_ms:
+        return
+    logger.warning(
+        "[slow-file-request] route=%s userId=%s fileId=%s range=%s bytes=%s status=%s durationMs=%s",
+        route,
+        getattr(request.state, "user_id", "unknown"),
+        file_id,
+        range_header,
+        bytes_sent,
+        status_code,
+        duration_ms,
+    )
+
+
+def _file_response(path: Path | None, request: Request, user_id: str, media_type: str | None = None, name: str | None = None, missing_message: str = "文件不存在", route: str = "file", file_id: str | None = None) -> Response:
     if path is None or not path.exists() or not path.is_file():
-        return fail("文件不存在", status_code=404)
-    return FileResponse(path, media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream", filename=path.name)
+        return fail(missing_message, status_code=404)
+    request.state.user_id = user_id
+    stat = path.stat()
+    resolved_media_type = media_type or mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    headers = _response_headers(stat.st_size, stat.st_mtime, resolved_media_type, name or path.name)
+    if not request.headers.get("range") and _not_modified(request, headers["ETag"], headers["Last-Modified"]):
+        return Response(status_code=304, headers=headers)
+    byte_range = None
+    range_header = request.headers.get("range")
+    if range_header and _should_use_range(request, headers["ETag"], headers["Last-Modified"]):
+        kind, parsed = _parse_byte_range(range_header, stat.st_size)
+        if kind == "invalid":
+            response = fail("Range 请求格式不正确", status_code=416)
+            response.headers["Content-Range"] = f"bytes */{stat.st_size}"
+            return response
+        if kind == "unsatisfiable":
+            response = fail("Range 超出文件大小", status_code=416)
+            response.headers["Content-Range"] = f"bytes */{stat.st_size}"
+            return response
+        byte_range = parsed
+
+    def iterator(release, started_at: float, status_code: int, bytes_sent: int, start: int = 0, end: int | None = None):
+        try:
+            remaining = None if end is None else end - start + 1
+            with path.open("rb") as handle:
+                handle.seek(start)
+                while True:
+                    chunk_size = 1024 * 1024 if remaining is None else min(1024 * 1024, remaining)
+                    if chunk_size <= 0:
+                        break
+                    chunk = handle.read(chunk_size)
+                    if not chunk:
+                        break
+                    if remaining is not None:
+                        remaining -= len(chunk)
+                    yield chunk
+        finally:
+            release()
+            _log_slow_file_request(request, route, file_id or str(path), range_header, bytes_sent, status_code, started_at)
+
+    release = _acquire_file_stream_slot(user_id)
+    if release is None:
+        return _file_stream_limit_response()
+    started_at = monotonic()
+    if byte_range:
+        start, end = byte_range
+        bytes_sent = end - start + 1
+        headers["Content-Length"] = str(bytes_sent)
+        headers["Content-Range"] = f"bytes {start}-{end}/{stat.st_size}"
+        return StreamingResponse(iterator(release, started_at, 206, bytes_sent, start, end), status_code=206, headers=headers, media_type=resolved_media_type)
+    headers["Content-Length"] = str(stat.st_size)
+    return StreamingResponse(iterator(release, started_at, 200, stat.st_size), headers=headers, media_type=resolved_media_type)
+
+
+def _send_file(path: Path | None, request: Request, user_id: str, media_type: str | None = None, name: str | None = None, route: str = "file", file_id: str | None = None) -> Response:
+    return _file_response(path, request, user_id=user_id, media_type=media_type, name=name, route=route, file_id=file_id)
+
+
+def _send_zip_entry(archive_path: Path | None, entry_name: str | None, request: Request, user_id: str, media_type: str | None = None, route: str = "zip-entry", file_id: str | None = None) -> Response:
+    if archive_path is None or not archive_path.exists() or not archive_path.is_file() or not entry_name:
+        return fail("页面不存在", status_code=404)
+    try:
+        with zipfile.ZipFile(archive_path) as archive:
+            info = archive.getinfo(entry_name)
+    except (KeyError, OSError, zipfile.BadZipFile):
+        return fail("页面不存在", status_code=404)
+    request.state.user_id = user_id
+    resolved_media_type = media_type or mimetypes.guess_type(entry_name)[0] or "application/octet-stream"
+    size = int(info.file_size)
+    headers = _response_headers(size, archive_path.stat().st_mtime, resolved_media_type, Path(entry_name).name, extra=entry_name)
+    if not request.headers.get("range") and _not_modified(request, headers["ETag"], headers["Last-Modified"]):
+        return Response(status_code=304, headers=headers)
+    byte_range = None
+    range_header = request.headers.get("range")
+    if range_header and _should_use_range(request, headers["ETag"], headers["Last-Modified"]):
+        kind, parsed = _parse_byte_range(range_header, size)
+        if kind == "invalid":
+            response = fail("Range 请求格式不正确", status_code=416)
+            response.headers["Content-Range"] = f"bytes */{size}"
+            return response
+        if kind == "unsatisfiable":
+            response = fail("Range 超出文件大小", status_code=416)
+            response.headers["Content-Range"] = f"bytes */{size}"
+            return response
+        byte_range = parsed
+
+    def iterator(release, started_at: float, status_code: int, bytes_sent: int, start: int = 0, end: int | None = None):
+        try:
+            with zipfile.ZipFile(archive_path) as archive:
+                with archive.open(entry_name, "r") as handle:
+                    remaining_skip = start
+                    while remaining_skip > 0:
+                        skipped = handle.read(min(1024 * 1024, remaining_skip))
+                        if not skipped:
+                            return
+                        remaining_skip -= len(skipped)
+                    remaining = None if end is None else end - start + 1
+                    while True:
+                        chunk_size = 1024 * 1024 if remaining is None else min(1024 * 1024, remaining)
+                        if chunk_size <= 0:
+                            break
+                        chunk = handle.read(chunk_size)
+                        if not chunk:
+                            break
+                        if remaining is not None:
+                            remaining -= len(chunk)
+                        yield chunk
+        finally:
+            release()
+            _log_slow_file_request(request, route, file_id or entry_name, range_header, bytes_sent, status_code, started_at)
+
+    release = _acquire_file_stream_slot(user_id)
+    if release is None:
+        return _file_stream_limit_response()
+    started_at = monotonic()
+    if byte_range:
+        start, end = byte_range
+        bytes_sent = end - start + 1
+        headers["Content-Length"] = str(bytes_sent)
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        return StreamingResponse(iterator(release, started_at, 206, bytes_sent, start, end), status_code=206, headers=headers, media_type=resolved_media_type)
+    headers["Content-Length"] = str(size)
+    return StreamingResponse(iterator(release, started_at, 200, size), headers=headers, media_type=resolved_media_type)
 
 
 @router.get("/files/{file_id}")
 def get_file(file_id: str, request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
     file = _row(db, "SELECT * FROM `LibraryFile` WHERE `id` = :id", {"id": file_id}) if _has_table(db, "LibraryFile") else None
-    return _send_file(_stored_path((file or {}).get("path"), settings))
+    return _send_file(_stored_path((file or {}).get("path"), settings), request, user.id, media_type=(file or {}).get("mimeType"), name=Path((file or {}).get("path") or "file").name, route="files", file_id=file_id)
 
 
 @router.get("/editions/{edition_id}/file")
 def get_edition_file(edition_id: str, request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
     file = _row(db, "SELECT * FROM `LibraryFile` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC LIMIT 1", {"edition_id": edition_id}) if _has_table(db, "LibraryFile") else None
-    return _send_file(_stored_path((file or {}).get("path"), settings))
+    return _send_file(_stored_path((file or {}).get("path"), settings), request, user.id, media_type=(file or {}).get("mimeType"), name=Path((file or {}).get("path") or "file").name, route="edition-file", file_id=(file or {}).get("id") or edition_id)
 
 
 @router.get("/works/{work_id}/cover")
 @router.get("/editions/{edition_id}/cover")
 @router.get("/volumes/{volume_id}/cover")
 def get_cover(request: Request, work_id: str | None = None, edition_id: str | None = None, volume_id: str | None = None, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
     row = None
@@ -752,7 +1151,8 @@ def get_cover(request: Request, work_id: str | None = None, edition_id: str | No
         row = _row(db, "SELECT `coverPath` FROM `LibraryEdition` WHERE `id` = :id", {"id": edition_id})
     elif volume_id and _has_table(db, "LibraryVolume"):
         row = _row(db, "SELECT `coverPath` FROM `LibraryVolume` WHERE `id` = :id", {"id": volume_id})
-    return _send_file(_stored_path((row or {}).get("coverPath"), settings))
+    cover_id = work_id or edition_id or volume_id or "cover"
+    return _send_file(_stored_path((row or {}).get("coverPath"), settings), request, user.id, route="cover", file_id=cover_id)
 
 
 @router.post("/works/{work_id}/cover/upload")
@@ -784,22 +1184,218 @@ def list_volume_pages(volume_id: str, request: Request, db: Session = Depends(ge
     _user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    units = _rows(db, "SELECT * FROM `LibraryReadingUnit` WHERE `volumeId` = :volume_id AND `unitType` = 'PAGE' ORDER BY `sortOrder` ASC", {"volume_id": volume_id}) if _has_table(db, "LibraryReadingUnit") else []
+    units = _rows(db, "SELECT * FROM `LibraryReadingUnit` WHERE `volumeId` = :volume_id AND LOWER(`unitType`) = 'page' ORDER BY `sortOrder` ASC", {"volume_id": volume_id}) if _has_table(db, "LibraryReadingUnit") else []
+    if not units:
+        _ensure_volume_page_index(db, settings, volume_id)
+        units = _rows(db, "SELECT * FROM `LibraryReadingUnit` WHERE `volumeId` = :volume_id AND LOWER(`unitType`) = 'page' ORDER BY `sortOrder` ASC", {"volume_id": volume_id}) if _has_table(db, "LibraryReadingUnit") else []
     return ok({"pages": units, "total": len(units)})
 
 
 @router.get("/volumes/{volume_id}/pages/{page_index}")
 def get_volume_page(volume_id: str, page_index: int, request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    unit = _row(db, "SELECT * FROM `LibraryReadingUnit` WHERE `volumeId` = :volume_id AND `unitType` = 'PAGE' AND `sortOrder` = :sort_order", {"volume_id": volume_id, "sort_order": page_index}) if _has_table(db, "LibraryReadingUnit") else None
-    return _send_file(_stored_path((unit or {}).get("href"), settings))
+    unit = _row(db, "SELECT * FROM `LibraryReadingUnit` WHERE `volumeId` = :volume_id AND LOWER(`unitType`) = 'page' AND `sortOrder` = :sort_order", {"volume_id": volume_id, "sort_order": page_index}) if _has_table(db, "LibraryReadingUnit") else None
+    if not unit:
+        _ensure_volume_page_index(db, settings, volume_id)
+        unit = _row(db, "SELECT * FROM `LibraryReadingUnit` WHERE `volumeId` = :volume_id AND LOWER(`unitType`) = 'page' AND `sortOrder` = :sort_order", {"volume_id": volume_id, "sort_order": page_index}) if _has_table(db, "LibraryReadingUnit") else None
+        if not unit:
+            return fail("页面不存在", status_code=404)
+    file = _row(db, "SELECT * FROM `LibraryFile` WHERE `id` = :id", {"id": unit.get("fileId")}) if _has_table(db, "LibraryFile") and unit.get("fileId") else None
+    if file and file.get("kind") == "COMIC":
+        metadata = _parse_json(unit.get("metadataJson"), {})
+        entry_name = metadata.get("zipEntryName") or unit.get("href")
+        return _send_zip_entry(_stored_path(file.get("path"), settings), entry_name, request, user.id, unit.get("mediaType"), route="volume-page-zip", file_id=unit.get("id") or f"{volume_id}:{page_index}")
+    return _send_file(_stored_path(unit.get("href"), settings), request, user.id, route="volume-page", file_id=unit.get("id") or f"{volume_id}:{page_index}")
+
+
+def _ensure_volume_page_index(db: Session, settings: Settings, volume_id: str) -> int:
+    if not all(_has_table(db, table) for table in ["LibraryVolume", "LibraryFile", "LibraryReadingUnit"]):
+        return 0
+    existing = db.execute(text("SELECT COUNT(*) FROM `LibraryReadingUnit` WHERE `volumeId` = :volume_id AND LOWER(`unitType`) = 'page'"), {"volume_id": volume_id}).scalar() or 0
+    if existing:
+        return int(existing)
+    volume = _row(db, "SELECT * FROM `LibraryVolume` WHERE `id` = :id", {"id": volume_id})
+    if not volume:
+        return 0
+    file = _row(db, "SELECT * FROM `LibraryFile` WHERE `volumeId` = :volume_id AND `kind` = 'COMIC' ORDER BY `sortOrder` ASC LIMIT 1", {"volume_id": volume_id})
+    if not file:
+        file = _row(db, "SELECT * FROM `LibraryFile` WHERE `editionId` = :edition_id AND `kind` = 'COMIC' ORDER BY `sortOrder` ASC LIMIT 1", {"edition_id": volume.get("editionId")})
+    archive_path = _stored_path((file or {}).get("path"), settings)
+    if not file or not archive_path:
+        return 0
+    try:
+        parsed = parse_comic_archive(archive_path, Path(file.get("path") or archive_path).name)
+    except Exception as exc:
+        logger.warning("failed to rebuild comic page index volume=%s file=%s error=%s", volume_id, file.get("id"), exc)
+        return 0
+    now = _now()
+    for page in parsed["pages"]:
+        _insert(
+            db,
+            "LibraryReadingUnit",
+            {
+                "id": f"py_{time_ns()}_{page['index']}",
+                "editionId": volume.get("editionId"),
+                "volumeId": volume_id,
+                "fileId": file.get("id"),
+                "unitType": "page",
+                "title": page["title"],
+                "href": page["entryPath"],
+                "mediaType": page["mediaType"],
+                "sortOrder": page["index"],
+                "size": page.get("size"),
+                "metadataJson": _json_text(
+                    {
+                        "zipEntryName": page["entryPath"],
+                        "originalName": Path(page["entryPath"]).name,
+                        "pageInVolume": page["index"],
+                        "pageInSection": page["index"],
+                        "volumeIndex": volume.get("volumeIndex"),
+                        "sourceFileName": Path(file.get("path") or archive_path).name,
+                    }
+                ),
+                "createdAt": now,
+                "updatedAt": now,
+            },
+        )
+    count = len(parsed["pages"])
+    _update(db, "LibraryVolume", volume_id, {"pageCount": count, "updatedAt": now})
+    if volume.get("editionId") and _has_table(db, "LibraryVolume") and _has_table(db, "LibraryEdition"):
+        total = db.execute(text("SELECT COALESCE(SUM(`pageCount`), 0) FROM `LibraryVolume` WHERE `editionId` = :edition_id"), {"edition_id": volume.get("editionId")}).scalar() or count
+        _update(db, "LibraryEdition", volume.get("editionId"), {"pageCount": int(total), "updatedAt": now})
+    return count
 
 
 def _list_table_response(db: Session, table: str, key: str, order: str = "`createdAt` DESC") -> Response:
     rows = _rows(db, f"SELECT * FROM `{table}` ORDER BY {order}") if _has_table(db, table) else []
     return ok({key: rows})
+
+
+def _serialize_metadata_suggestion(suggestion: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": suggestion.get("id"),
+        "field": suggestion.get("field"),
+        "currentValue": _parse_json(suggestion.get("currentValue"), suggestion.get("currentValue")),
+        "suggestedValue": _parse_json(suggestion.get("suggestedValue"), suggestion.get("suggestedValue")),
+        "source": suggestion.get("source") or "rule",
+        "confidence": suggestion.get("confidence") or 0,
+        "reason": suggestion.get("reason") or "",
+        "status": suggestion.get("status") or "PENDING",
+    }
+
+
+def _serialize_duplicate_candidate(duplicate: dict[str, Any]) -> dict[str, Any]:
+    reasons = _parse_json(duplicate.get("reasons"), [])
+    return {
+        "id": duplicate.get("id"),
+        "targetWorkId": duplicate.get("targetWorkId"),
+        "reasons": reasons if isinstance(reasons, list) else [],
+        "confidence": duplicate.get("confidence") or 0,
+        "suggestedAction": duplicate.get("suggestedAction") or "KEEP_SEPARATE",
+        "status": duplicate.get("status") or "PENDING",
+    }
+
+
+def _organize_job_view(db: Session, job: dict[str, Any], user_id: str | None, pending_only: bool = False) -> dict[str, Any] | None:
+    work = _get_work(db, str(job.get("workId") or ""))
+    if not work or work.get("hidden"):
+        return None
+    status_filter = " AND `status` = 'PENDING'" if pending_only else ""
+    suggestions = (
+        _rows(
+            db,
+            f"SELECT * FROM `MetadataSuggestion` WHERE `jobId` = :job_id{status_filter} ORDER BY `status` ASC, `confidence` DESC, `createdAt` ASC",
+            {"job_id": job.get("id")},
+        )
+        if _has_table(db, "MetadataSuggestion")
+        else []
+    )
+    duplicates = (
+        _rows(
+            db,
+            f"SELECT * FROM `DuplicateCandidate` WHERE `jobId` = :job_id{status_filter} ORDER BY `status` ASC, `confidence` DESC, `createdAt` ASC",
+            {"job_id": job.get("id")},
+        )
+        if _has_table(db, "DuplicateCandidate")
+        else []
+    )
+    return {
+        "id": job.get("id"),
+        "status": job.get("status") or "REVIEWING",
+        "issueCodes": _parse_json(job.get("issueCodes"), []),
+        "summary": job.get("summary"),
+        "errorSummary": job.get("errorSummary"),
+        "updatedAt": _dt(job.get("updatedAt")),
+        "book": _work_view(db, work, user_id),
+        "suggestions": [_serialize_metadata_suggestion(suggestion) for suggestion in suggestions],
+        "duplicates": [_serialize_duplicate_candidate(duplicate) for duplicate in duplicates],
+    }
+
+
+def _friendly_import_error(message: str | None) -> str | None:
+    text_value = message or ""
+    if re.search(r"EACCES|permission|权限", text_value, re.I):
+        return "权限不足：请确认容器用户可以读取该目录和文件。"
+    if re.search(r"ENOENT|not found|不存在", text_value, re.I):
+        return "文件不存在：可能已被移动、删除，或监控目录配置已变化。"
+    if re.search(r"unsupported|format|格式", text_value, re.I):
+        return "格式暂不支持：请确认文件是 EPUB、CBZ 或 ZIP。"
+    if re.search(r"zip|archive|corrupt|invalid|损坏", text_value, re.I):
+        return "压缩包可能损坏：请重新复制文件或用本地工具测试压缩包。"
+    return "导入失败：请检查文件完整性和格式。" if text_value else None
+
+
+def _display_path_name(value: Any) -> str:
+    text_value = str(value or "")
+    parts = [part for part in re.split(r"[\\/]+", text_value) if part]
+    return parts[-1] if parts else text_value
+
+
+def _serialize_import_log(log: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": log.get("id"),
+        "level": log.get("level") or "info",
+        "message": log.get("message") or "",
+        "createdAt": _dt(log.get("createdAt")),
+    }
+
+
+def _import_task_view(db: Session, task: dict[str, Any], log_limit: int = 20) -> dict[str, Any]:
+    monitor_folder = None
+    if task.get("monitorFolderId") and _has_table(db, "MonitorFolder"):
+        monitor_folder = _row(db, "SELECT * FROM `MonitorFolder` WHERE `id` = :id", {"id": task.get("monitorFolderId")})
+    book = None
+    if task.get("workId") and _has_table(db, "LibraryWork"):
+        work = _row(db, "SELECT `id`, `title` FROM `LibraryWork` WHERE `id` = :id", {"id": task.get("workId")})
+        if work:
+            book = {"id": work.get("id"), "title": work.get("title") or "未命名作品"}
+    logs = (
+        _rows(
+            db,
+            "SELECT * FROM `ImportLog` WHERE `importTaskId` = :task_id ORDER BY `createdAt` DESC LIMIT :limit",
+            {"task_id": task.get("id"), "limit": log_limit},
+        )
+        if _has_table(db, "ImportLog")
+        else []
+    )
+    view = dict(task)
+    view.update(
+        {
+            "sourcePath": _display_path_name(task.get("sourcePath")),
+            "managedFilePath": _display_path_name(task.get("managedFilePath")) if task.get("managedFilePath") else None,
+            "progress": task.get("progress") or 0,
+            "duplicate": bool(task.get("duplicate")),
+            "friendlyError": _friendly_import_error(task.get("errorSummary")),
+            "createdAt": _dt(task.get("createdAt")),
+            "finishedAt": _dt(task.get("finishedAt")),
+            "monitorFolder": monitor_folder,
+            "book": book,
+            "logs": [_serialize_import_log(log) for log in logs],
+        }
+    )
+    return view
 
 
 @router.get("/sources")
@@ -858,8 +1454,23 @@ def test_source(source_id: str, request: Request, db: Session = Depends(get_db),
     _user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    source = _update(db, "Source", source_id, {"lastTestAt": _now(), "lastTestStatus": "ok", "lastError": None})
-    return ok({"source": source, "status": "ok", "message": "来源配置可用"})
+    source = _row(db, "SELECT * FROM `Source` WHERE `id` = :id", {"id": source_id}) if _has_table(db, "Source") else None
+    if not source:
+        return fail("源不存在", status_code=404)
+    if not str(source.get("name") or "").strip():
+        result = {"status": "failed", "message": "源名称为空"}
+    elif source.get("providerType") not in PROVIDER_CAPABILITIES:
+        result = {"status": "failed", "message": f"源类型 {source.get('providerType')} 尚未实现 Provider。"}
+    else:
+        provider_result = test_source_provider(source)
+        result = {"status": "ok" if provider_result.ok else "failed", "message": provider_result.message, "details": provider_result.details}
+    updated = _update(
+        db,
+        "Source",
+        source_id,
+        {"lastTestAt": _now(), "lastTestStatus": result["status"], "lastError": None if result["status"] == "ok" else result["message"]},
+    )
+    return ok({"result": result, "source": updated})
 
 
 @router.post("/sources/{source_id}/search")
@@ -868,9 +1479,65 @@ async def search_source(source_id: str, request: Request, db: Session = Depends(
     if auth_error:
         return auth_error
     payload = await request.json()
-    query = payload.get("query") or payload.get("keyword") or ""
-    records = _rows(db, "SELECT * FROM `SourceSearchRecord` WHERE `sourceId` = :source_id AND `title` LIKE :term ORDER BY `createdAt` DESC LIMIT 50", {"source_id": source_id, "term": f"%{query}%"}) if _has_table(db, "SourceSearchRecord") else []
-    return ok({"records": records, "results": records, "query": query})
+    keyword = str(payload.get("keyword") or payload.get("query") or "").strip()
+    if not keyword:
+        return fail("请输入搜索关键词", status_code=400)
+    source = _row(db, "SELECT * FROM `Source` WHERE `id` = :id", {"id": source_id}) if _has_table(db, "Source") else None
+    if not source:
+        return fail("源不存在", status_code=404)
+    if source.get("enabled") is False:
+        return fail("源已禁用，请启用后再搜索", status_code=400)
+    try:
+        results, provider = search_source_provider(
+            source,
+            keyword,
+            kind=payload.get("kind"),
+            page=_positive_int(payload.get("page"), 1, 9999),
+            page_size=_positive_int(payload.get("pageSize"), 20, 100),
+        )
+    except ValueError as exc:
+        return fail(str(exc), status_code=400)
+    records = [_upsert_source_record(db, source, result, "saved") for result in results] if payload.get("saveResults") else []
+    return ok({"results": results, "records": records, "provider": provider})
+
+
+def _source_record_values(source: dict[str, Any], result: dict[str, Any], status: str) -> dict[str, Any]:
+    return {
+        "sourceId": source["id"],
+        "providerType": result.get("providerType") or source.get("providerType"),
+        "externalId": result.get("externalId"),
+        "title": (result.get("title") or "").strip(),
+        "subtitle": result.get("subtitle"),
+        "author": result.get("author"),
+        "description": result.get("description"),
+        "coverUrl": result.get("coverUrl"),
+        "externalUrl": result.get("externalUrl"),
+        "format": result.get("format"),
+        "size": result.get("size"),
+        "language": result.get("language"),
+        "publishedAt": result.get("publishedAt"),
+        "downloadAvailable": bool(result.get("downloadAvailable")),
+        "downloadMeta": _json_text(result.get("downloadMeta")) if result.get("downloadMeta") is not None else None,
+        "raw": _json_text(result.get("raw")) if result.get("raw") is not None else None,
+        "status": status,
+        "updatedAt": _now(),
+    }
+
+
+def _upsert_source_record(db: Session, source: dict[str, Any], result: dict[str, Any], status: str) -> dict[str, Any]:
+    if not _has_table(db, "SourceSearchRecord"):
+        return result
+    existing = _row(
+        db,
+        "SELECT * FROM `SourceSearchRecord` WHERE `sourceId` = :source_id AND `externalId` = :external_id",
+        {"source_id": source["id"], "external_id": result.get("externalId")},
+    )
+    values = _source_record_values(source, result, status)
+    if existing:
+        return _update(db, "SourceSearchRecord", existing["id"], values) or existing
+    values["id"] = f"py_{time_ns()}"
+    values["createdAt"] = _now()
+    return _insert(db, "SourceSearchRecord", values)
 
 
 @router.get("/source-search-records")
@@ -954,8 +1621,40 @@ def create_download_from_record(record_id: str, request: Request, db: Session = 
     record = _row(db, "SELECT * FROM `SourceSearchRecord` WHERE `id` = :id", {"id": record_id}) if _has_table(db, "SourceSearchRecord") else None
     if not record:
         return fail("搜索记录不存在", status_code=404)
-    task = _insert(db, "DownloadTask", {"id": f"py_{time_ns()}", "sourceId": record.get("sourceId"), "searchRecordId": record_id, "type": "source-record", "status": "PENDING", "displayName": record.get("title") or "下载任务", "remoteRef": _json_text(record), "createdAt": _now(), "updatedAt": _now()}) if _has_table(db, "DownloadTask") else {"id": None}
-    return ok({"task": task})
+    if not record.get("downloadAvailable"):
+        return fail("该搜索结果不可下载", status_code=400)
+    if not has_usable_download_meta(record.get("providerType") or "", record.get("downloadMeta")):
+        return fail("该搜索结果缺少可用下载信息", status_code=400)
+    existing = find_active_download_task(db, record_id)
+    if existing:
+        if record.get("status") != "download_created":
+            record = _update(db, "SourceSearchRecord", record_id, {"status": "download_created", "updatedAt": _now()}) or record
+        return ok({"task": existing, "record": record, "alreadyQueued": True})
+    remote_ref = create_remote_ref_from_search_record(record)
+    task_type = infer_download_task_type(record.get("providerType") or "", record.get("downloadMeta"))
+    task = (
+        _insert(
+            db,
+            "DownloadTask",
+            {
+                "id": f"py_{time_ns()}",
+                "sourceId": record.get("sourceId"),
+                "searchRecordId": record_id,
+                "type": task_type,
+                "status": "queued",
+                "displayName": record.get("title") or "下载任务",
+                "remoteRef": _json_text(remote_ref),
+                "savePath": str(settings.resolved_download_inbox_path),
+                "progress": 0,
+                "createdAt": _now(),
+                "updatedAt": _now(),
+            },
+        )
+        if _has_table(db, "DownloadTask")
+        else {"id": None}
+    )
+    record = _update(db, "SourceSearchRecord", record_id, {"status": "download_created", "updatedAt": _now()}) or record
+    return ok({"task": task, "record": record}, status_code=201)
 
 
 @router.get("/download-tasks")
@@ -972,7 +1671,7 @@ async def create_download_task(request: Request, db: Session = Depends(get_db), 
     if auth_error:
         return auth_error
     payload = await request.json()
-    task = _insert(db, "DownloadTask", {"id": f"py_{time_ns()}", "sourceId": payload.get("sourceId"), "searchRecordId": payload.get("searchRecordId"), "bookId": payload.get("bookId"), "type": payload.get("type") or "manual", "status": payload.get("status") or "PENDING", "displayName": payload.get("displayName") or payload.get("name") or "下载任务", "remoteRef": _json_text(payload.get("remoteRef", {})), "savePath": payload.get("savePath"), "filePath": payload.get("filePath"), "errorMessage": payload.get("errorMessage"), "progress": payload.get("progress"), "createdAt": _now(), "updatedAt": _now()}) if _has_table(db, "DownloadTask") else {"id": None}
+    task = _insert(db, "DownloadTask", {"id": f"py_{time_ns()}", "sourceId": payload.get("sourceId"), "searchRecordId": payload.get("searchRecordId"), "bookId": payload.get("bookId"), "type": payload.get("type") or "manual", "status": payload.get("status") or "queued", "displayName": payload.get("displayName") or payload.get("name") or "下载任务", "remoteRef": _json_text(payload.get("remoteRef", {})), "savePath": payload.get("savePath") or str(settings.resolved_download_inbox_path), "filePath": payload.get("filePath"), "errorMessage": payload.get("errorMessage"), "progress": payload.get("progress") if payload.get("progress") is not None else 0, "createdAt": _now(), "updatedAt": _now()}) if _has_table(db, "DownloadTask") else {"id": None}
     return ok({"task": task}, status_code=201)
 
 
@@ -1020,9 +1719,37 @@ def mutate_download_task(task_id: str, request: Request, db: Session = Depends(g
     if auth_error:
         return auth_error
     action = request.url.path.rsplit("/", 1)[-1]
-    status_by_action = {"start": "RUNNING", "retry": "PENDING", "cancel": "CANCELLED", "import": "IMPORTED"}
-    task = _update(db, "DownloadTask", task_id, {"status": status_by_action[action], "updatedAt": _now()})
-    return ok({"task": task, "action": action})
+    task = _row(db, "SELECT * FROM `DownloadTask` WHERE `id` = :id", {"id": task_id}) if _has_table(db, "DownloadTask") else None
+    if not task:
+        return fail("下载任务不存在", status_code=404)
+    if action in {"start", "retry"}:
+        if task.get("status") not in {"queued", "failed", "PENDING", "FAILED"}:
+            return fail("只有等待中或失败的任务可以开始下载", status_code=400)
+        if action == "retry":
+            _update(db, "DownloadTask", task_id, {"status": "queued", "progress": 0, "errorMessage": None, "updatedAt": _now()})
+        result = execute_download_task(db, settings, task_id)
+        return ok({"task": result.task, "action": action})
+    if action == "cancel":
+        task = _update(db, "DownloadTask", task_id, {"status": "cancelled", "updatedAt": _now()})
+        return ok({"task": task, "action": action})
+    try:
+        result = import_download_task(db, settings, task_id)
+    except ValueError as exc:
+        return fail(str(exc), status_code=400)
+    payload = {"task": result.task, "action": action}
+    if result.import_result:
+        payload["importResult"] = {
+            "bookId": result.import_result.book_id,
+            "workId": result.import_result.work_id,
+            "editionId": result.import_result.edition_id,
+            "volumeId": result.import_result.volume_id,
+            "title": result.import_result.title,
+            "type": result.import_result.type,
+            "format": result.import_result.format,
+            "totalUnits": result.import_result.total_units,
+            "importStatus": result.import_result.import_status,
+        }
+    return ok(payload, status_code=400 if result.task.get("status") == "failed" else 200)
 
 
 @router.get("/import-tasks")
@@ -1030,7 +1757,19 @@ def list_import_tasks(request: Request, db: Session = Depends(get_db), settings:
     _user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    return _list_table_response(db, "ImportTask", "tasks")
+    tasks = (
+        _rows(db, "SELECT * FROM `ImportTask` ORDER BY `createdAt` DESC LIMIT 50")
+        if _has_table(db, "ImportTask")
+        else []
+    )
+    views = [_import_task_view(db, task, log_limit=20) for task in tasks]
+    summary = {
+        "added": sum(1 for task in views if task.get("status") == "COMPLETED" and not task.get("duplicate")),
+        "updated": 0,
+        "skipped": sum(1 for task in views if task.get("duplicate")),
+        "failed": sum(1 for task in views if task.get("status") == "FAILED"),
+    }
+    return ok({"tasks": views, "summary": summary})
 
 
 @router.delete("/import-tasks")
@@ -1051,7 +1790,18 @@ def rescan_import_tasks(request: Request, db: Session = Depends(get_db), setting
     _user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    return ok({"queued": True})
+    requested_at = _now().isoformat()
+    if _has_table(db, "SystemSetting"):
+        existing = _row(db, "SELECT `key` FROM `SystemSetting` WHERE `key` = :key", {"key": "monitor.rescanRequestedAt"})
+        if existing:
+            db.execute(text("UPDATE `SystemSetting` SET `value` = :value, `updatedAt` = :updated_at WHERE `key` = :key"), {"key": "monitor.rescanRequestedAt", "value": requested_at, "updated_at": _now()})
+        else:
+            db.execute(
+                text("INSERT INTO `SystemSetting` (`key`, `value`, `createdAt`, `updatedAt`) VALUES (:key, :value, :created_at, :updated_at)"),
+                {"key": "monitor.rescanRequestedAt", "value": requested_at, "created_at": _now(), "updated_at": _now()},
+            )
+        db.commit()
+    return ok({"requestedAt": requested_at})
 
 
 @router.get("/import-tasks/{task_id}")
@@ -1062,7 +1812,7 @@ def get_import_task(task_id: str, request: Request, db: Session = Depends(get_db
     task = _row(db, "SELECT * FROM `ImportTask` WHERE `id` = :id", {"id": task_id}) if _has_table(db, "ImportTask") else None
     if not task:
         return fail("导入任务不存在", status_code=404)
-    return ok({"task": task})
+    return ok({"task": _import_task_view(db, task, log_limit=100)})
 
 
 @router.get("/import-tasks/{task_id}/logs")
@@ -1070,8 +1820,23 @@ def get_import_logs(task_id: str, request: Request, db: Session = Depends(get_db
     _user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    logs = _rows(db, "SELECT * FROM `ImportLog` WHERE `importTaskId` = :task_id ORDER BY `createdAt` ASC", {"task_id": task_id}) if _has_table(db, "ImportLog") else []
-    return ok({"logs": logs})
+    if not _has_table(db, "ImportTask") or not _row(db, "SELECT `id` FROM `ImportTask` WHERE `id` = :id", {"id": task_id}):
+        return fail("导入任务不存在", status_code=404)
+    page = _positive_int(request.query_params.get("page"), 1, 100000)
+    page_size = _positive_int(request.query_params.get("pageSize"), 100, 200)
+    level = request.query_params.get("level")
+    where = "`importTaskId` = :task_id"
+    params: dict[str, Any] = {"task_id": task_id, "limit": page_size, "offset": (page - 1) * page_size}
+    if level:
+        where += " AND `level` = :level"
+        params["level"] = level.lower()
+    total = _table_count(db, "ImportLog", where, params)
+    logs = (
+        _rows(db, f"SELECT * FROM `ImportLog` WHERE {where} ORDER BY `createdAt` DESC LIMIT :limit OFFSET :offset", params)
+        if _has_table(db, "ImportLog")
+        else []
+    )
+    return ok({"logs": [_serialize_import_log(log) for log in logs], "page": page, "pageSize": page_size, "total": total, "totalPages": max(1, (total + page_size - 1) // page_size)})
 
 
 @router.get("/shelves")
@@ -1131,44 +1896,109 @@ def delete_shelf(shelf_id: str, request: Request, db: Session = Depends(get_db),
 
 @router.get("/organize/jobs")
 def list_organize_jobs(request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    return _list_table_response(db, "OrganizeJob", "jobs", "`updatedAt` DESC")
+    page_size = _positive_int(request.query_params.get("pageSize"), 50, 200)
+    rows = (
+        _rows(
+            db,
+            """
+            SELECT j.* FROM `OrganizeJob` j
+            INNER JOIN `LibraryWork` w ON w.`id` = j.`workId`
+            WHERE j.`status` IN ('PENDING', 'REVIEWING', 'FAILED') AND COALESCE(w.`hidden`, 0) = 0
+            ORDER BY j.`updatedAt` DESC
+            LIMIT :limit
+            """,
+            {"limit": page_size},
+        )
+        if _has_table(db, "OrganizeJob") and _has_table(db, "LibraryWork")
+        else []
+    )
+    jobs = [view for row in rows if (view := _organize_job_view(db, row, getattr(user, "id", None), pending_only=True)) is not None]
+    return ok({"jobs": jobs, "books": [job["book"] for job in jobs], "total": len(jobs)})
 
 
 @router.get("/organize/pending")
 def list_pending_organize(request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    jobs = _rows(db, "SELECT * FROM `OrganizeJob` WHERE `status` = 'REVIEWING' ORDER BY `updatedAt` DESC") if _has_table(db, "OrganizeJob") else []
-    return ok({"jobs": jobs})
+    page_size = _positive_int(request.query_params.get("pageSize"), 50, 200)
+    rows = (
+        _rows(
+            db,
+            """
+            SELECT j.* FROM `OrganizeJob` j
+            INNER JOIN `LibraryWork` w ON w.`id` = j.`workId`
+            WHERE j.`status` = 'REVIEWING' AND COALESCE(w.`hidden`, 0) = 0
+            ORDER BY j.`updatedAt` DESC
+            LIMIT :limit
+            """,
+            {"limit": page_size},
+        )
+        if _has_table(db, "OrganizeJob") and _has_table(db, "LibraryWork")
+        else []
+    )
+    jobs = [view for row in rows if (view := _organize_job_view(db, row, getattr(user, "id", None), pending_only=True)) is not None]
+    return ok({"jobs": jobs, "books": [job["book"] for job in jobs], "total": len(jobs)})
 
 
 @router.get("/organize/jobs/{job_id}")
 def get_organize_job(job_id: str, request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
     job = _row(db, "SELECT * FROM `OrganizeJob` WHERE `id` = :id", {"id": job_id}) if _has_table(db, "OrganizeJob") else None
     if not job:
         return fail("整理任务不存在", status_code=404)
-    suggestions = _rows(db, "SELECT * FROM `MetadataSuggestion` WHERE `jobId` = :job_id", {"job_id": job_id}) if _has_table(db, "MetadataSuggestion") else []
-    duplicates = _rows(db, "SELECT * FROM `DuplicateCandidate` WHERE `jobId` = :job_id", {"job_id": job_id}) if _has_table(db, "DuplicateCandidate") else []
-    return ok({"job": {**job, "suggestions": suggestions, "duplicates": duplicates}})
+    view = _organize_job_view(db, job, getattr(user, "id", None))
+    if not view:
+        return fail("整理任务不存在", status_code=404)
+    return ok({"job": view})
 
 
 @router.post("/organize/jobs/{job_id}/apply")
 @router.post("/organize/jobs/{job_id}/refresh")
-def mutate_organize_job(job_id: str, request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+async def mutate_organize_job(job_id: str, request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
     _user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
     action = request.url.path.rsplit("/", 1)[-1]
-    status_value = "APPLIED" if action == "apply" else "REVIEWING"
-    job = _update(db, "OrganizeJob", job_id, {"status": status_value, "updatedAt": _now()})
-    return ok({"job": job, "action": action})
+    payload = await request.json()
+    try:
+        if action == "refresh":
+            providers = [str(provider) for provider in payload.get("providers") or [] if str(provider) in {"external", "ai"}]
+            if providers:
+                result = refresh_metadata_providers(db, job_id, providers, force=True)
+                disabled = all(not item.get("enabled") for item in result["results"])
+                errors = [item.get("error") for item in result["results"] if item.get("error")]
+                usable = any(item.get("enabled") and not item.get("error") for item in result["results"])
+                disabled_messages = [item.get("message") for item in result["results"] if item.get("message")]
+                message = (
+                    "；".join(disabled_messages) or "外部数据查询或 AI 识别尚未配置。"
+                    if disabled
+                    else f"元数据刷新失败：{'；'.join(errors)}"
+                    if not usable and errors
+                    else f"已刷新，新增 {result['added']} 条候选建议。"
+                )
+                return ok({**result, "enabled": usable, "message": message})
+            refreshed = refresh_organize_job(db, job_id)
+            return ok({"job": refreshed, "action": action, "enabled": True, "message": refreshed.get("summary") or "已刷新本地整理状态。"})
+        result = apply_organize_job(db, job_id, payload)
+        return ok(
+            {
+                "job": result.job,
+                "action": action,
+                "applied": result.applied,
+                "appliedExternal": result.applied_external,
+                "autoMarkedOrganized": result.auto_marked_organized,
+                "dismissed": result.dismissed,
+                "duplicateActionsApplied": result.duplicate_actions_applied,
+            }
+        )
+    except ValueError as exc:
+        return fail(str(exc), status_code=404 if "不存在" in str(exc) else 400)
 
 
 @router.post("/organize/jobs/bulk-apply")
@@ -1178,11 +2008,11 @@ async def bulk_apply_organize_jobs(request: Request, db: Session = Depends(get_d
         return auth_error
     payload = await request.json()
     ids = payload.get("ids") or payload.get("jobIds") or []
-    updated = 0
-    for job_id in ids:
-        if _update(db, "OrganizeJob", str(job_id), {"status": "APPLIED", "updatedAt": _now()}):
-            updated += 1
-    return ok({"updated": updated, "ids": ids})
+    try:
+        result = apply_organize_jobs_bulk(db, [str(job_id) for job_id in ids], payload)
+        return ok({**result, "ids": ids})
+    except ValueError as exc:
+        return fail(str(exc), status_code=400)
 
 
 @router.get("/backups")
@@ -1190,10 +2020,7 @@ def list_backups(request: Request, db: Session = Depends(get_db), settings: Sett
     _user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    backup_dir = settings.resolved_storage_root / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    backups = [{"id": path.stem, "name": path.name, "sizeBytes": path.stat().st_size, "createdAt": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()} for path in sorted(backup_dir.glob("*.zip"), key=lambda item: item.stat().st_mtime, reverse=True)]
-    return ok({"backups": backups})
+    return ok({"backups": list_backup_archives(settings)})
 
 
 @router.get("/backups/{backup_id}")
@@ -1204,7 +2031,8 @@ def get_backup(backup_id: str, request: Request, db: Session = Depends(get_db), 
     path = settings.resolved_storage_root / "backups" / f"{backup_id}.zip"
     if not path.exists():
         return fail("备份不存在", status_code=404)
-    return ok({"backup": {"id": backup_id, "name": path.name, "sizeBytes": path.stat().st_size, "createdAt": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()}})
+    backup = next((item for item in list_backup_archives(settings) if item["id"] == backup_id), None)
+    return ok({"backup": backup or {"id": backup_id, "name": path.name, "sizeBytes": path.stat().st_size, "createdAt": datetime.fromtimestamp(path.stat().st_mtime, timezone.utc).isoformat()}})
 
 
 @router.post("/backups")
@@ -1212,22 +2040,16 @@ def create_backup(request: Request, db: Session = Depends(get_db), settings: Set
     _user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    backup_dir = settings.resolved_storage_root / "backups"
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    backup_id = f"backup-{int(_now().timestamp())}"
-    path = backup_dir / f"{backup_id}.zip"
-    manifest = {"createdAt": _now().isoformat(), "service": "python-api", "formatVersion": 1}
-    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-        archive.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
-    return ok({"backup": {"id": backup_id, "name": path.name, "sizeBytes": path.stat().st_size, "createdAt": _now().isoformat()}}, status_code=201)
+    backup = create_backup_archive(db, settings)
+    return ok({"backup": {"id": backup.id, "name": backup.filename, "filename": backup.filename, "sizeBytes": backup.size_bytes, "createdAt": backup.created_at, "counts": backup.counts}}, status_code=201)
 
 
 @router.get("/backups/{backup_id}/download")
 def download_backup(backup_id: str, request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    return _send_file(settings.resolved_storage_root / "backups" / f"{backup_id}.zip")
+    return _send_file(settings.resolved_storage_root / "backups" / f"{backup_id}.zip", request, user.id, media_type="application/zip", name=f"{backup_id}.zip", route="backup-download", file_id=backup_id)
 
 
 @router.post("/backups/{backup_id}/restore")
@@ -1238,7 +2060,11 @@ def restore_backup(backup_id: str, request: Request, db: Session = Depends(get_d
     path = settings.resolved_storage_root / "backups" / f"{backup_id}.zip"
     if not path.exists():
         return fail("备份不存在", status_code=404)
-    return ok({"restored": False, "backupId": backup_id, "message": "Python API 已验证备份包存在；破坏性恢复需显式运维流程执行。"})
+    try:
+        result = restore_backup_archive(db, settings, backup_id)
+    except ValueError as exc:
+        return fail(str(exc), status_code=400)
+    return ok(result)
 
 
 @router.delete("/backups/{backup_id}")
@@ -1271,6 +2097,30 @@ async def compatible_work_action(work_id: str, request: Request, edition_id: str
     user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
+    if request.url.path.endswith("/metadata/refresh"):
+        payload = await request.json()
+        providers = [str(provider) for provider in payload.get("providers") or [] if str(provider) in {"external", "ai"}]
+        if not providers:
+            return fail("请选择要刷新的元数据来源", status_code=400)
+        job = ensure_organize_job_for_work(db, work_id)
+        if not job:
+            return fail("读物不存在或无权访问", status_code=404)
+        try:
+            result = refresh_metadata_providers(db, job["id"], providers, force=True)
+        except ValueError as exc:
+            return fail(str(exc), status_code=404 if "不存在" in str(exc) else 400)
+        disabled = all(not item.get("enabled") for item in result["results"])
+        errors = [item.get("error") for item in result["results"] if item.get("error")]
+        usable = any(item.get("enabled") and not item.get("error") for item in result["results"])
+        disabled_messages = [item.get("message") for item in result["results"] if item.get("message")]
+        message = (
+            "；".join(disabled_messages) or "外部数据查询或 AI 识别尚未配置。"
+            if disabled
+            else f"元数据刷新失败：{'；'.join(errors)}"
+            if not usable and errors
+            else f"已刷新，新增 {result['added']} 条候选建议。"
+        )
+        return ok({"jobId": job["id"], **result, "enabled": usable, "message": message})
     if request.url.path.endswith("/primary") and edition_id:
         _update(db, "LibraryWork", work_id, {"primaryEditionId": edition_id})
         _update(db, "LibraryEdition", edition_id, {"primary": True})

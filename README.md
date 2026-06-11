@@ -7,7 +7,7 @@ NAS 自托管读物管理系统。当前版本面向真实 NAS / 家庭服务器
 - Monorepo：pnpm workspace + Turborepo
 - Web：Next.js App Router + React + TypeScript + Tailwind CSS
 - ORM：Prisma + MySQL
-- Worker：独立导入 Worker，监听监控文件夹
+- 后端：Python FastAPI API + Python 导入 Worker
 - 部署：Docker Compose
 
 ## 本地开发
@@ -36,11 +36,10 @@ pnpm db:seed
 
 `pnpm db:seed` 只创建管理员用户和基础系统设置，不创建示例读物。
 
-4. 启动 Web 和 Worker：
+4. 启动 Web、Python API 和 Python Worker：
 
 ```bash
-pnpm dev
-pnpm --filter @shuku/scan-worker dev
+pnpm dev:test
 ```
 
 健康检查：<http://localhost:3000/api/health>
@@ -55,7 +54,7 @@ pnpm --filter @shuku/scan-worker dev
 
 ## 监控文件夹
 
-Docker 默认把项目根目录的 `./books` 挂载为容器内 `/books`。本地开发或 NAS 部署时，请把入站读物目录挂载、同步或软链接到 `./books`，然后在设置页保存 `/books` 作为监控文件夹。
+Docker 默认把项目根目录的 `./monitor` 挂载为容器内 `/monitor`。本地开发或 NAS 部署时，请把入站读物目录挂载、同步或软链接到 `./monitor`，然后在设置页保存 `/monitor` 作为监控文件夹。
 
 监控文件夹只是导入来源。手动上传会把 EPUB/CBZ/ZIP 复制到系统托管目录 `STORAGE_ROOT/library`；监控导入默认也会复制，也可以在设置页把单个监控文件夹改为“移动到项目文件夹”。阅读时使用系统托管目录中的文件，不再依赖原始入站路径。
 
@@ -87,24 +86,57 @@ docker compose up --build
 服务包含：
 
 - `mysql`：MySQL 8.4
-- `web`：Next.js Web/API，启动前执行 Prisma schema 同步和生产启动检查
-- `scan-worker`：监控文件夹导入 Worker
+- `web`：统一应用容器，同时运行 Next.js Web、Python FastAPI API 和 Python 导入 Worker
 
 默认访问：
 
 - Web：<http://localhost:3000>
 - 健康检查：<http://localhost:3000/api/health>
 
-容器内监控根路径：`/books`
+容器内监控根路径：`/monitor`
+切换验证：
+
+```bash
+pnpm verify:python-backend
+```
+
+只验证 FastAPI 独立进程启动和健康检查：
+
+```bash
+pnpm smoke:python-api
+```
+
+只验证 Python Worker 独立进程启动、ready 文件和退出清理：
+
+```bash
+pnpm smoke:python-worker
+```
+
+验证 Python Worker 监控目录导入、任务落库和阅读单元写入：
+
+```bash
+pnpm smoke:python-worker-import
+```
+
+验证 Python 后端样本导入和 reader/file/page HTTP 链路：
+
+```bash
+pnpm smoke:python-sample
+```
+
+对真实书库目录做抽样导入和 reader/file/page HTTP 验证：
+
+```bash
+PYTHON_REAL_LIBRARY_SAMPLE_DIR=/path/to/books pnpm smoke:python-real-library
+```
 
 ## 生产部署（Docker Compose）
 
-生产部署使用远端 `docker-compose.prod.yml`，包含 `web`、`scan-worker`、`migrate` 和 `mysql`。部署机直接从 Docker Hub 拉取生产镜像，不需要下载项目代码、安装 Node.js / pnpm，或执行本地 Docker build。
+生产部署使用远端 `docker-compose.prod.yml`，包含 `web`、`migrate` 和 `mysql`。部署机直接从 Docker Hub 拉取生产镜像，不需要下载项目代码、安装 Node.js / pnpm，或执行本地 Docker build。
 
 生产镜像均发布为 `linux/amd64`：
 
-- `gamersgu/shuku-starship-web:prod`：Next.js Web/API
-- `gamersgu/shuku-starship-scan-worker:prod`：扫描 Worker
+- `gamersgu/shuku-starship-web:prod`：统一应用镜像，同时运行 Next.js Web、Python FastAPI API 和 Python Worker
 - `gamersgu/shuku-starship-migrator:prod`：一次性 Prisma schema 同步任务
 
 最快启动方式：
@@ -124,7 +156,7 @@ env MYSQL_PASSWORD='change-me' MYSQL_ROOT_PASSWORD='change-root-me' SESSION_SECR
 如果不想把环境变量写在命令里，也可以在任意空目录创建 `.env`，然后运行同一条远端 compose 命令。生产 compose 默认读取当前目录的 `.env`，可配置项包括：
 
 - `WEB_PORT`：Web 端口，默认 `3000`
-- `PUID` / `PGID`：Web 和 Worker 运行用户，默认 `1000:1000`
+- `PUID` / `PGID`：统一应用容器运行用户，默认 `1000:1000`
 - `MYSQL_PASSWORD` / `MYSQL_ROOT_PASSWORD`，如需外部数据库可覆盖 `DATABASE_URL`
 - `SESSION_SECRET`
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD`
@@ -133,24 +165,24 @@ env MYSQL_PASSWORD='change-me' MYSQL_ROOT_PASSWORD='change-root-me' SESSION_SECR
 - `MONITOR_HOST_PATH`：宿主机监控目录，默认 `./monitor`
 - `MYSQL_DATA_PATH` / `STORAGE_PATH`：宿主机持久化目录，默认在当前目录的 `./data` 下
 
-生产容器默认不会以 root 身份运行，`web` 和 `scan-worker` 使用 `PUID` / `PGID`。请把它们设置为 NAS 上拥有 `MONITOR_HOST_PATH` 读取权限、并拥有 `STORAGE_PATH` 写入权限的用户和用户组 ID：
+生产容器默认不会以 root 身份运行，统一应用容器使用 `PUID` / `PGID`。请把它们设置为 NAS 上拥有 `MONITOR_HOST_PATH` 读取权限、并拥有 `STORAGE_PATH` 写入权限的用户和用户组 ID：
 
 ```bash
 id
 chown -R "$PUID:$PGID" data/storage "$MONITOR_HOST_PATH"
 ```
 
-MySQL 使用官方镜像自己的运行用户；不要让 `web` 或 `scan-worker` 以 root 运行，除非你明确接受容器写出的封面、索引和日志可能变成 root 拥有，从而导致 NAS 文件权限问题。
+MySQL 使用官方镜像自己的运行用户；不要让统一应用容器以 root 运行，除非你明确接受容器写出的封面、索引和日志可能变成 root 拥有，从而导致 NAS 文件权限问题。
 
 查看状态和日志：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/GMD170629/shuku-starship/main/docker-compose.prod.yml | docker compose -f - ps
-curl -fsSL https://raw.githubusercontent.com/GMD170629/shuku-starship/main/docker-compose.prod.yml | docker compose -f - logs -f web scan-worker
+curl -fsSL https://raw.githubusercontent.com/GMD170629/shuku-starship/main/docker-compose.prod.yml | docker compose -f - logs -f web
 ```
 
 默认访问 <http://localhost:3000>，健康检查为 <http://localhost:3000/api/health>。
-生产启动会先运行 `migrate` 服务同步 Prisma schema，然后启动 Web 和 Worker。Web/Worker 会检查 `DATABASE_URL`、`SESSION_SECRET`、`MONITOR_ROOT`、`MONITOR_ROOT` 可读性和 storage 可写性。数据库为空不会报错，页面显示空状态。
+生产启动会先运行 `migrate` 服务同步 Prisma schema，然后启动统一应用容器内的 Web、Python API 和 Python Worker。健康检查会通过 Next.js 命中 Python API。数据库为空不会报错，页面显示空状态。
 
 更新到最新生产镜像：
 

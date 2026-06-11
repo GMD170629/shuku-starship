@@ -1,0 +1,405 @@
+from __future__ import annotations
+
+import json
+import re
+import shutil
+import zipfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
+from secrets import token_hex
+from typing import Any
+
+from sqlalchemy import inspect, text
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
+
+from app.core.config import Settings
+
+
+BACKUP_TABLES: list[tuple[str, str]] = [
+    ("users", "User"),
+    ("monitorFolders", "MonitorFolder"),
+    ("works", "LibraryWork"),
+    ("editions", "LibraryEdition"),
+    ("volumes", "LibraryVolume"),
+    ("files", "LibraryFile"),
+    ("readingUnits", "LibraryReadingUnit"),
+    ("metadataItems", "LibraryMetadata"),
+    ("shelves", "Shelf"),
+    ("shelfWorks", "ShelfWork"),
+    ("readingProgresses", "LibraryReadingProgress"),
+    ("importTasks", "ImportTask"),
+    ("importLogs", "ImportLog"),
+]
+
+RESTORE_ORDER = [
+    "ImportLog",
+    "ImportTask",
+    "LibraryReadingProgress",
+    "ShelfWork",
+    "Shelf",
+    "LibraryMetadata",
+    "LibraryReadingUnit",
+    "LibraryFile",
+    "LibraryVolume",
+    "LibraryEdition",
+    "LibraryWork",
+    "MonitorFolder",
+]
+
+
+@dataclass(frozen=True)
+class BackupResult:
+    id: str
+    filename: str
+    size_bytes: int
+    created_at: str
+    counts: dict[str, int]
+
+
+def backup_dir(settings: Settings) -> Path:
+    path = settings.resolved_storage_root / "backups"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def state_path(settings: Settings) -> Path:
+    return backup_dir(settings) / ".automatic-state.json"
+
+
+def backup_id(kind: str = "manual", created_at: datetime | None = None) -> str:
+    date = created_at or datetime.now(timezone.utc)
+    return f"{kind}-{date.strftime('%Y%m%d-%H%M%S')}-{token_hex(3)}"
+
+
+def assert_backup_id(value: str) -> None:
+    if not re.fullmatch(r"(manual|automatic)-\d{8}-\d{6}-[a-z0-9]+|backup-\d+", value):
+        raise ValueError("INVALID_BACKUP_ID")
+
+
+def backup_path(settings: Settings, backup_id_value: str) -> Path:
+    assert_backup_id(backup_id_value)
+    return backup_dir(settings) / f"{backup_id_value}.zip"
+
+
+def table_names(db: Session) -> set[str]:
+    return set(inspect(db.get_bind()).get_table_names())
+
+
+def columns(db: Session, table: str) -> list[str]:
+    return [column["name"] for column in inspect(db.get_bind()).get_columns(table)]
+
+
+def fetch_table(db: Session, table: str) -> list[dict[str, Any]]:
+    if table not in table_names(db):
+        return []
+    order = "`createdAt` ASC" if "createdAt" in columns(db, table) else "1"
+    return [dict(row) for row in db.execute(text(f"SELECT * FROM `{table}` ORDER BY {order}")).mappings().all()]
+
+
+def json_default(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return str(value)
+
+
+def json_bytes(value: Any) -> bytes:
+    return json.dumps(value, ensure_ascii=False, indent=2, default=json_default).encode("utf-8")
+
+
+def counts_for_export(database_export: dict[str, list[dict[str, Any]]]) -> dict[str, int]:
+    return {
+        "users": len(database_export.get("users", [])),
+        "monitorFolders": len(database_export.get("monitorFolders", [])),
+        "works": len(database_export.get("works", [])),
+        "editions": len(database_export.get("editions", [])),
+        "volumes": len(database_export.get("volumes", [])),
+        "files": len(database_export.get("files", [])),
+        "readingUnits": len(database_export.get("readingUnits", [])),
+        "metadataItems": len(database_export.get("metadataItems", [])),
+        "shelves": len(database_export.get("shelves", [])),
+        "shelfWorks": len(database_export.get("shelfWorks", [])),
+        "readingProgresses": len(database_export.get("readingProgresses", [])),
+        "importTasks": len(database_export.get("importTasks", [])),
+        "importLogs": len(database_export.get("importLogs", [])),
+        "coverIndexEntries": len(database_export.get("coverIndex", [])),
+    }
+
+
+def storage_relative_path(settings: Settings, value: Any) -> Path | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    storage_root = settings.resolved_storage_root
+    try:
+        path = Path(value).expanduser().resolve()
+    except (OSError, RuntimeError):
+        return None
+    if path == storage_root or storage_root not in path.parents:
+        return None
+    if not path.exists() or not path.is_file():
+        return None
+    return path.relative_to(storage_root)
+
+
+def collect_library_file_manifest(settings: Settings, database_export: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
+    candidates: list[Any] = []
+    candidates.extend(file.get("path") for file in database_export.get("files", []))
+    candidates.extend(work.get("coverPath") for work in database_export.get("works", []))
+    candidates.extend(edition.get("coverPath") for edition in database_export.get("editions", []))
+    candidates.extend(volume.get("coverPath") for volume in database_export.get("volumes", []))
+
+    seen: set[str] = set()
+    manifest: list[dict[str, Any]] = []
+    for candidate in candidates:
+        relative = storage_relative_path(settings, candidate)
+        if relative is None:
+            continue
+        relative_posix = relative.as_posix()
+        if relative_posix in seen:
+            continue
+        seen.add(relative_posix)
+        absolute = settings.resolved_storage_root / relative
+        manifest.append(
+            {
+                "path": relative_posix,
+                "archivePath": f"library-files/{relative_posix}",
+                "sizeBytes": absolute.stat().st_size,
+            }
+        )
+    return manifest
+
+
+def restore_library_files(settings: Settings, archive: zipfile.ZipFile) -> int:
+    restored = 0
+    storage_root = settings.resolved_storage_root
+    storage_root.mkdir(parents=True, exist_ok=True)
+    for info in archive.infolist():
+        if info.is_dir() or not info.filename.startswith("library-files/"):
+            continue
+        relative_name = info.filename.removeprefix("library-files/")
+        relative = PurePosixPath(relative_name)
+        if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
+            raise ValueError("BACKUP_FILE_PATH_UNSAFE")
+        target = (storage_root / Path(*relative.parts)).resolve()
+        if target == storage_root or storage_root not in target.parents:
+            raise ValueError("BACKUP_FILE_PATH_UNSAFE")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with archive.open(info) as source, target.open("wb") as destination:
+            shutil.copyfileobj(source, destination)
+        restored += 1
+    return restored
+
+
+def create_backup(db: Session, settings: Settings, kind: str = "manual") -> BackupResult:
+    created_at = datetime.now(timezone.utc)
+    backup_id_value = backup_id(kind, created_at)
+    database_export = {export_key: fetch_table(db, table) for export_key, table in BACKUP_TABLES}
+    database_export["coverIndex"] = [
+        {"workId": work.get("id"), "coverPath": work.get("coverPath"), "coverStatus": work.get("coverStatus")}
+        for work in database_export.get("works", [])
+    ]
+    library_files = collect_library_file_manifest(settings, database_export)
+    counts = counts_for_export(database_export)
+    counts["libraryFiles"] = len(library_files)
+    metadata = {
+        "id": backup_id_value,
+        "kind": kind,
+        "app": "shuku-starship",
+        "version": 2,
+        "createdAt": created_at.isoformat(),
+        "format": "zip",
+        "contents": ["metadata.json", "database-export.json", "settings.json", "library-files.json", "library-files/"],
+        "scope": ["database-v2", "library-works", "library-editions", "library-files", "reading-metadata", "tags", "reading-progress", "monitor-folder-settings", "cover-cache-index"],
+        "counts": counts,
+    }
+    settings_export = {
+        "monitorFolders": database_export.get("monitorFolders", []),
+        "storageRoot": str(settings.resolved_storage_root),
+        "backupRoot": str(backup_dir(settings)),
+        "automaticBackup": {"time": "03:00", "retentionCount": 7},
+    }
+    path = backup_path(settings, backup_id_value)
+    with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("metadata.json", json_bytes(metadata))
+        archive.writestr("database-export.json", json_bytes(database_export))
+        archive.writestr("settings.json", json_bytes(settings_export))
+        archive.writestr("library-files.json", json_bytes(library_files))
+        for item in library_files:
+            archive.write(settings.resolved_storage_root / item["path"], item["archivePath"])
+    result = BackupResult(backup_id_value, path.name, path.stat().st_size, created_at.isoformat(), counts)
+    if kind == "automatic":
+        prune_automatic_backups(settings, 7)
+    return result
+
+
+def read_backup_metadata(path: Path) -> dict[str, Any] | None:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return json.loads(archive.read("metadata.json").decode("utf-8"))
+    except Exception:
+        return None
+
+
+def list_backups(settings: Settings) -> list[dict[str, Any]]:
+    backups = []
+    for path in backup_dir(settings).glob("*.zip"):
+        metadata = read_backup_metadata(path)
+        stat = path.stat()
+        backups.append(
+            {
+                "id": metadata.get("id") if metadata else path.stem,
+                "kind": metadata.get("kind") if metadata else "unknown",
+                "name": path.name,
+                "filename": path.name,
+                "sizeBytes": stat.st_size,
+                "createdAt": metadata.get("createdAt") if metadata else datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                "counts": metadata.get("counts") if metadata else None,
+            }
+        )
+    return sorted(backups, key=lambda item: str(item.get("createdAt") or ""), reverse=True)
+
+
+def delete_backup_file(settings: Settings, backup_id_value: str) -> bool:
+    path = backup_path(settings, backup_id_value)
+    if not path.exists():
+        return False
+    path.unlink()
+    return True
+
+
+def prune_automatic_backups(settings: Settings, retention_count: int = 7) -> list[str]:
+    if retention_count < 1:
+        retention_count = 1
+    automatic = [backup for backup in list_backups(settings) if backup.get("kind") == "automatic"]
+    stale = automatic[retention_count:]
+    deleted: list[str] = []
+    for backup in stale:
+        backup_id_value = str(backup.get("id") or "")
+        if backup_id_value and delete_backup_file(settings, backup_id_value):
+            deleted.append(backup_id_value)
+    return deleted
+
+
+def today_key(value: datetime) -> str:
+    return value.strftime("%Y-%m-%d")
+
+
+def has_passed_automatic_time(value: datetime) -> bool:
+    return value.hour > 3 or (value.hour == 3 and value.minute >= 0)
+
+
+def read_automatic_state(settings: Settings) -> dict[str, Any]:
+    try:
+        return json.loads(state_path(settings).read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def write_automatic_state(settings: Settings, state: dict[str, Any]) -> None:
+    state_path(settings).write_bytes(json_bytes(state))
+
+
+def ensure_automatic_backup(db: Session, settings: Settings, current_time: datetime | None = None) -> BackupResult | None:
+    current = current_time or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    if not has_passed_automatic_time(current):
+        return None
+    key = today_key(current)
+    state = read_automatic_state(settings)
+    if state.get("lastAutomaticBackupDate") == key:
+        return None
+    backup = create_backup(db, settings, "automatic")
+    write_automatic_state(
+        settings,
+        {
+            "lastAutomaticBackupDate": key,
+            "lastBackupId": backup.id,
+            "updatedAt": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    return backup
+
+
+def parse_backup(path: Path) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
+    with zipfile.ZipFile(path) as archive:
+        metadata = json.loads(archive.read("metadata.json").decode("utf-8"))
+        database_export = json.loads(archive.read("database-export.json").decode("utf-8"))
+    if metadata.get("app") != "shuku-starship" or metadata.get("version") != 2:
+        raise ValueError("BACKUP_VERSION_UNSUPPORTED")
+    return metadata, database_export
+
+
+def insert_records(db: Session, table: str, records: list[dict[str, Any]]) -> int:
+    if not records:
+        return 0
+    if table not in table_names(db):
+        return 0
+    allowed = set(columns(db, table))
+    inserted = 0
+    for record in records:
+        filtered = {key: value for key, value in record.items() if key in allowed}
+        if not filtered:
+            continue
+        keys = ", ".join(f"`{key}`" for key in filtered)
+        params = ", ".join(f":{key}" for key in filtered)
+        db.execute(text(f"INSERT INTO `{table}` ({keys}) VALUES ({params})"), filtered)
+        inserted += 1
+    db.commit()
+    return inserted
+
+
+def upsert_user_records(db: Session, records: list[dict[str, Any]]) -> int:
+    if not records:
+        return 0
+    if "User" not in table_names(db):
+        return 0
+    allowed = set(columns(db, "User"))
+    restored = 0
+    for record in records:
+        filtered = {key: value for key, value in record.items() if key in allowed}
+        if not filtered:
+            continue
+        existing = None
+        if filtered.get("id"):
+            existing = db.execute(text("SELECT `id` FROM `User` WHERE `id` = :id"), {"id": filtered["id"]}).scalar()
+        if not existing and filtered.get("email"):
+            existing = db.execute(text("SELECT `id` FROM `User` WHERE `email` = :email"), {"email": filtered["email"]}).scalar()
+        if existing:
+            assignments = ", ".join(f"`{key}` = :{key}" for key in filtered if key != "id")
+            if assignments:
+                db.execute(text(f"UPDATE `User` SET {assignments} WHERE `id` = :existing_id"), {**filtered, "existing_id": existing})
+            restored += 1
+            continue
+        keys = ", ".join(f"`{key}`" for key in filtered)
+        params = ", ".join(f":{key}" for key in filtered)
+        db.execute(text(f"INSERT INTO `User` ({keys}) VALUES ({params})"), filtered)
+        restored += 1
+    db.commit()
+    return restored
+
+
+def clear_table_if_present(db: Session, table: str) -> None:
+    try:
+        db.execute(text(f"DELETE FROM `{table}`"))
+        db.commit()
+    except SQLAlchemyError:
+        db.rollback()
+
+
+def restore_backup(db: Session, settings: Settings, backup_id_value: str) -> dict[str, Any]:
+    path = backup_path(settings, backup_id_value)
+    if not path.exists():
+        raise FileNotFoundError("备份不存在")
+    metadata, database_export = parse_backup(path)
+    for table in RESTORE_ORDER:
+        clear_table_if_present(db, table)
+    restored: dict[str, int] = {}
+    for export_key, table in BACKUP_TABLES:
+        restored[export_key] = upsert_user_records(db, database_export.get(export_key, [])) if table == "User" else insert_records(db, table, database_export.get(export_key, []))
+    db.commit()
+    with zipfile.ZipFile(path) as archive:
+        restored["libraryFiles"] = restore_library_files(settings, archive)
+    actual_counts = {export_key: len(fetch_table(db, table)) for export_key, table in BACKUP_TABLES}
+    return {"id": backup_id_value, "restored": True, "restoredAt": datetime.now(timezone.utc).isoformat(), "counts": metadata.get("counts"), "restoredCounts": restored, "actualCounts": actual_counts}

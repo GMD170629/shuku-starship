@@ -17,17 +17,17 @@ NEXT_PUBLIC_DEMO_MODE=false
 curl -fsSL https://raw.githubusercontent.com/GMD170629/shuku-starship/main/docker-compose.prod.yml | docker compose -f - up -d
 ```
 
-生产发布后不需要在部署机下载代码，也不需要安装 Node.js / pnpm。远端 compose 会直接拉取 `gamersgu/shuku-starship-web:prod`、`gamersgu/shuku-starship-scan-worker:prod` 和 `gamersgu/shuku-starship-migrator:prod`，先由 `migrate` 服务同步 Prisma schema，再启动 Web 和 Worker。
+生产发布后不需要在部署机下载代码，也不需要安装 Node.js / pnpm。远端 compose 会直接拉取 `gamersgu/shuku-starship-web:prod` 和 `gamersgu/shuku-starship-migrator:prod`，先由 `migrate` 服务同步 Prisma schema，再启动统一应用容器。统一应用容器内同时运行 Next.js Web、Python FastAPI API 和 Python Worker。
 
 第一次试运行可以直接使用默认值启动；正式部署请通过 `.env` 或一行命令里的 `env ... sh -c 'curl ... | docker compose -f - up -d'` 覆盖：
 
 - `MYSQL_PASSWORD` / `MYSQL_ROOT_PASSWORD`，如需外部数据库可覆盖 `DATABASE_URL`
 - `SESSION_SECRET`
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD`
-- `BOOKS_HOST_PATH`
+- `MONITOR_HOST_PATH`
 - `PUID` / `PGID`
 
-容器内监控根路径固定是 `/books`。`BOOKS_HOST_PATH` 是宿主机或 NAS 上的入站读物目录，默认 `./books`。
+容器内监控根路径固定是 `/monitor`。`MONITOR_HOST_PATH` 是宿主机或 NAS 上的入站读物目录，默认 `./monitor`。
 
 ## 迁移与初始化
 
@@ -41,7 +41,7 @@ DEMO_MODE=true pnpm db:seed:demo
 
 ## 启动检查
 
-Web 和 scan-worker 会检查：
+统一应用容器会检查：
 
 - `DATABASE_URL`
 - `SESSION_SECRET`

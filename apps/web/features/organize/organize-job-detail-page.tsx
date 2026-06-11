@@ -8,7 +8,7 @@ import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { PageTitle } from '../../components/ui/page-title';
 import { MetadataLookupModal } from '../works/metadata-lookup-modal';
-import type { OrganizeJobView } from './organize-page';
+import { normalizeOrganizeJob, type OrganizeJobView } from './organize-page';
 
 type JobResponse = {
   ok: boolean;
@@ -87,8 +87,10 @@ export function OrganizeJobDetailPage({ jobId }: { jobId: string }) {
       .then((response) => response.json() as Promise<JobResponse>)
       .then((payload) => {
         if (!payload.ok || !payload.data?.job) throw new Error(payload.error?.message ?? '读取整理任务失败');
-        setJob(payload.data.job);
-        setSelectedSuggestionIds((current) => current.filter((id) => payload.data?.job.suggestions.some((suggestion) => suggestion.id === id && suggestion.status === 'PENDING')));
+        const nextJob = normalizeOrganizeJob(payload.data.job);
+        if (!nextJob) throw new Error('整理任务缺少读物信息');
+        setJob(nextJob);
+        setSelectedSuggestionIds((current) => current.filter((id) => nextJob.suggestions.some((suggestion) => suggestion.id === id && suggestion.status === 'PENDING')));
         setError('');
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : '读取整理任务失败'))

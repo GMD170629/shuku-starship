@@ -16,14 +16,17 @@ services:
   web:
     build:
       context: .
-      dockerfile: apps/web/Dockerfile
+      dockerfile: apps/web/Dockerfile.prod
+      target: runner
     container_name: shuku-web
     depends_on:
       - mysql
     environment:
       DATABASE_URL: mysql://shuku:shuku@mysql:3306/shuku_starship
+      API_PYTHON_PORT: ${API_PYTHON_PORT:-8000}
       MONITOR_ROOT: /monitor
       STORAGE_ROOT: /app/storage
+      DOWNLOAD_INBOX_PATH: /app/storage/downloads/inbox
       EPUB_MAX_SIZE_BYTES: ${EPUB_MAX_SIZE_BYTES:-536870912}
       COMIC_MAX_ARCHIVE_SIZE_BYTES: ${COMIC_MAX_ARCHIVE_SIZE_BYTES:-2147483648}
       FILE_STREAMS_PER_USER: 4
@@ -31,30 +34,25 @@ services:
       ADMIN_EMAIL: admin@example.com
       ADMIN_PASSWORD: starshipnas
       SESSION_SECRET: dev-session-secret-change-me-at-least-32-chars
+      SECURE_COOKIES: "false"
+      RUN_DB_PUSH: "true"
+      RUN_SEED: "true"
+      QBITTORRENT_URL: ${QBITTORRENT_URL:-}
+      QBITTORRENT_USERNAME: ${QBITTORRENT_USERNAME:-}
+      QBITTORRENT_PASSWORD: ${QBITTORRENT_PASSWORD:-}
+      QBITTORRENT_CATEGORY: ${QBITTORRENT_CATEGORY:-shuku}
+      QBITTORRENT_SAVE_PATH: ${QBITTORRENT_SAVE_PATH:-}
     ports:
       - "${WEB_PORT:-3000}:3000"
     volumes:
       - ./monitor:/monitor:ro
       - ./storage:/app/storage
-    command: sh -c "pnpm --filter @shuku/database exec prisma db push --accept-data-loss && pnpm --filter @shuku/web exec tsx ../../scripts/seed.ts && pnpm start"
-
-  scan-worker:
-    build:
-      context: .
-      dockerfile: workers/scan-worker/Dockerfile
-    container_name: shuku-scan-worker
-    depends_on:
-      - mysql
-    environment:
-      DATABASE_URL: mysql://shuku:shuku@mysql:3306/shuku_starship
-      MONITOR_ROOT: /monitor
-      STORAGE_ROOT: /app/storage
-      EPUB_MAX_SIZE_BYTES: ${EPUB_MAX_SIZE_BYTES:-536870912}
-      COMIC_MAX_ARCHIVE_SIZE_BYTES: ${COMIC_MAX_ARCHIVE_SIZE_BYTES:-2147483648}
-      SESSION_SECRET: dev-session-secret-change-me-at-least-32-chars
-    volumes:
-      - ./monitor:/monitor:ro
-      - ./storage:/app/storage
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
 
 volumes:
   mysql_data:

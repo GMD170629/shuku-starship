@@ -29,6 +29,18 @@ type ImportTask = {
   logs: Array<{ id: string; level: string; message: string; createdAt: string }>;
 };
 
+const emptySummary = { added: 0, updated: 0, skipped: 0, failed: 0 };
+
+function normalizeImportTask(task: ImportTask): ImportTask {
+  return {
+    ...task,
+    sourcePath: task.sourcePath ?? '',
+    progress: Number.isFinite(task.progress) ? task.progress : 0,
+    duplicate: Boolean(task.duplicate),
+    logs: Array.isArray(task.logs) ? task.logs : []
+  };
+}
+
 function statusTone(status: ImportTask['status']) {
   if (status === 'COMPLETED') return 'green';
   if (status === 'FAILED') return 'red';
@@ -42,7 +54,7 @@ function statusLabel(status: ImportTask['status']) {
 
 export function ImportTasksPage() {
   const [tasks, setTasks] = useState<ImportTask[]>([]);
-  const [summary, setSummary] = useState({ added: 0, updated: 0, skipped: 0, failed: 0 });
+  const [summary, setSummary] = useState(emptySummary);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState<'clear' | 'rescan' | ''>('');
   const [message, setMessage] = useState('');
@@ -60,8 +72,8 @@ export function ImportTasksPage() {
       if (!response.ok) throw new Error(payload?.error?.message ?? `读取导入任务失败：HTTP ${response.status}`);
       if (!payload) throw new Error('读取导入任务失败：接口返回为空');
       if (!payload.ok) throw new Error(payload.error?.message ?? '读取导入任务失败');
-      setTasks(payload.data?.tasks ?? []);
-      setSummary(payload.data?.summary ?? { added: 0, updated: 0, skipped: 0, failed: 0 });
+      setTasks((payload.data?.tasks ?? []).map(normalizeImportTask));
+      setSummary({ ...emptySummary, ...(payload.data?.summary ?? {}) });
       setError('');
     } catch (reason) {
       const nextError = reason instanceof Error ? reason.message : '读取导入任务失败';

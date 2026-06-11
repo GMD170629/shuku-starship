@@ -3,7 +3,7 @@ const fs = require('fs');
 
 const repoRoot = path.join(__dirname, '../..');
 const rootEnvPath = path.join(repoRoot, '.env');
-if (fs.existsSync(rootEnvPath)) {
+if (process.env.SHUKU_SKIP_ROOT_ENV_LOAD !== 'true' && fs.existsSync(rootEnvPath)) {
   const rootEnv = fs.readFileSync(rootEnvPath, 'utf8');
   const overrideRootEnv = process.env.NODE_ENV !== 'production';
   for (const line of rootEnv.split(/\r?\n/)) {
@@ -22,6 +22,18 @@ if (fs.existsSync(rootEnvPath)) {
 const nextConfig = {
   output: 'standalone',
   transpilePackages: ['@shuku/database', '@shuku/scanner', '@shuku/shared', '@shuku/reader-core'],
+  async rewrites() {
+    const port = process.env.API_PYTHON_PORT || '8000';
+    const target = `http://127.0.0.1:${port}`;
+    return {
+      beforeFiles: [
+        {
+          source: '/api/:path*',
+          destination: `${target}/api/:path*`
+        }
+      ]
+    };
+  },
   webpack: (config) => {
     // Workspace packages use NodeNext-style emitted .js specifiers in TypeScript source.
     // Teach webpack to resolve those specifiers back to .ts files during Next's transpilation step.

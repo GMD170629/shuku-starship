@@ -1,5 +1,16 @@
+from functools import partial
+from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
+import json
+from threading import Thread
+from urllib.parse import parse_qs
+import zipfile
+
+from sqlalchemy import text
+
+from app.api.routes import compat
 from app.core.auth import hash_password
 from app.models.auth import User
+from tests.test_worker_importer import create_worker_tables, write_comic_fixture, write_epub_fixture, write_pdf_fixture
 
 
 def _login(client, db_session):
@@ -8,6 +19,321 @@ def _login(client, db_session):
     db_session.commit()
     response = client.post("/api/auth/login", json={"email": "admin@example.com", "password": "starshipnas"})
     assert response.status_code == 200
+
+
+def create_source_tables(db_session):
+    db_session.execute(
+        text(
+            """CREATE TABLE Source (
+                id TEXT PRIMARY KEY, name TEXT, kind TEXT, providerType TEXT, enabled BOOLEAN, priority INTEGER,
+                config TEXT, credentialsKey TEXT, capabilities TEXT, rateLimit TEXT, lastTestAt TEXT,
+                lastTestStatus TEXT, lastError TEXT, createdAt TEXT, updatedAt TEXT
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """CREATE TABLE SourceSearchRecord (
+                id TEXT PRIMARY KEY, sourceId TEXT, providerType TEXT, externalId TEXT, title TEXT,
+                subtitle TEXT, author TEXT, description TEXT, coverUrl TEXT, externalUrl TEXT, format TEXT,
+                size TEXT, language TEXT, publishedAt TEXT, downloadAvailable BOOLEAN, downloadMeta TEXT,
+                raw TEXT, status TEXT, createdAt TEXT, updatedAt TEXT, UNIQUE(sourceId, externalId)
+            )"""
+        )
+    )
+    db_session.commit()
+
+
+def create_download_tables(db_session):
+    db_session.execute(
+        text(
+            """CREATE TABLE DownloadTask (
+                id TEXT PRIMARY KEY, sourceId TEXT, searchRecordId TEXT, bookId TEXT, type TEXT, status TEXT,
+                displayName TEXT, remoteRef TEXT, savePath TEXT, filePath TEXT, errorMessage TEXT,
+                progress INTEGER, createdAt TEXT, updatedAt TEXT
+            )"""
+        )
+    )
+    db_session.commit()
+
+
+def create_organize_detail_tables(db_session):
+    db_session.execute(
+        text(
+            """CREATE TABLE MetadataSuggestion (
+                id TEXT PRIMARY KEY, jobId TEXT, field TEXT, currentValue TEXT, suggestedValue TEXT,
+                source TEXT, confidence REAL, reason TEXT, status TEXT, createdAt TEXT, updatedAt TEXT
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """CREATE TABLE DuplicateCandidate (
+                id TEXT PRIMARY KEY, jobId TEXT, targetWorkId TEXT, reasons TEXT, confidence REAL,
+                suggestedAction TEXT, status TEXT, createdAt TEXT, updatedAt TEXT
+            )"""
+        )
+    )
+    db_session.commit()
+
+
+def serve_directory(directory):
+    server = ThreadingHTTPServer(("127.0.0.1", 0), partial(SimpleHTTPRequestHandler, directory=str(directory)))
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
+
+
+def serve_qbittorrent_api():
+    requests = []
+
+    class QbitHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def do_POST(self):
+            length = int(self.headers.get("content-length") or "0")
+            body = self.rfile.read(length).decode("utf-8")
+            form = {key: values[0] for key, values in parse_qs(body).items()}
+            requests.append({"path": self.path, "form": form, "cookie": self.headers.get("cookie")})
+            if self.path == "/api/v2/auth/login":
+                self.send_response(200)
+                self.send_header("Set-Cookie", "SID=test-session")
+                self.end_headers()
+                self.wfile.write(b"Ok.")
+                return
+            if self.path == "/api/v2/torrents/add":
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"Ok.")
+                return
+            self.send_response(404)
+            self.end_headers()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), QbitHandler)
+    server.requests = requests
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return server
+
+
+def serve_telegram_gateway():
+    requests = []
+
+    class GatewayHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def do_POST(self):
+            length = int(self.headers.get("content-length", "0"))
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            requests.append(body)
+            payload = {
+                "results": [
+                    {
+                        "externalId": "book-1",
+                        "title": "Orbital Mechanics",
+                        "author": "Ada Example",
+                        "format": "epub",
+                        "size": "2 MB",
+                        "downloadUrl": f"http://127.0.0.1:{self.server.server_port}/orbital.epub",
+                    },
+                    {
+                        "title": "Message Only",
+                        "messageId": "msg-2",
+                        "format": "pdf",
+                    },
+                ]
+            }
+            encoded = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), GatewayHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    server.requests = requests
+    return server
+
+
+def serve_ai_metadata_gateway():
+    requests = []
+
+    class AiHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def do_POST(self):
+            length = int(self.headers.get("content-length", "0"))
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            requests.append({"path": self.path, "authorization": self.headers.get("authorization"), "body": body})
+            payload = {
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "suggestions": [
+                                        {"field": "title", "value": "AI Clean Title", "confidence": 0.91, "reason": "cleaned title"},
+                                        {"field": "tags", "value": ["space", "ai"], "confidence": 0.7, "reason": "inferred tags"},
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ]
+            }
+            encoded = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), AiHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    server.requests = requests
+    return server
+
+
+def serve_douban_api_gateway():
+    requests = []
+
+    class DoubanHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def do_GET(self):
+            requests.append({"path": self.path, "accept": self.headers.get("accept")})
+            payload = {
+                "id": "1234567",
+                "title": "Douban Clean Title",
+                "author": ["External Author"],
+                "summary": "External description",
+                "tags": [{"name": "fiction"}, {"name": "space"}],
+                "pubdate": "2024-05",
+            }
+            encoded = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), DoubanHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    server.requests = requests
+    return server
+
+
+def serve_douban_crawler_gateway():
+    requests = []
+
+    class DoubanCrawlerHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def do_GET(self):
+            requests.append({"path": self.path, "accept": self.headers.get("accept"), "user_agent": self.headers.get("user-agent")})
+            if self.path.startswith("/subject_search"):
+                body = """
+                <html><script>
+                window.__DATA__ = {"items":[
+                  {"tpl_name":"search_subject","id":4913064,"title":"活着","abstract":"余华 / 作家出版社 / 2012-8 / 28.00元","abstract_2":"","cover_url":"https://img.example/cover.jpg","url":"/subject/4913064/"}
+                ]};
+                </script></html>
+                """
+            elif self.path.startswith("/subject/4913064"):
+                body = """
+                <html>
+                  <script type="application/ld+json">{
+                    "@context":"http://schema.org",
+                    "@type":"Book",
+                    "name":"活着",
+                    "author":[{"@type":"Person","name":"余华"}],
+                    "url":"https://book.douban.test/subject/4913064/",
+                    "isbn":"9787506365437"
+                  }</script>
+                  <meta property="og:image" content="https://img.example/large.jpg" />
+                  <div id="info">
+                    <span class="pl">出版社:</span> 作家出版社<br/>
+                    <span class="pl">出版年:</span> 2012-8<br/>
+                    <span class="pl">ISBN:</span> 9787506365437<br/>
+                  </div>
+                  <h2><span>内容简介</span></h2>
+                  <div class="intro"><p>这是一本关于生命韧性的小说。</p></div>
+                </html>
+                """
+            else:
+                self.send_response(404)
+                self.end_headers()
+                return
+            encoded = body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "text/html; charset=utf-8")
+            self.send_header("content-length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), DoubanCrawlerHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    server.requests = requests
+    return server
+
+
+def serve_bangumi_api_gateway():
+    requests = []
+
+    class BangumiHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def do_POST(self):
+            length = int(self.headers.get("content-length", "0"))
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            requests.append(
+                {
+                    "path": self.path,
+                    "authorization": self.headers.get("authorization"),
+                    "user_agent": self.headers.get("user-agent"),
+                    "body": body,
+                }
+            )
+            payload = {
+                "data": [
+                    {
+                        "id": 42,
+                        "name": "Star Comic",
+                        "name_cn": "星舰漫画",
+                        "summary": "Bangumi description",
+                        "date": "2022-07-01",
+                        "tags": [{"name": "科幻"}, {"name": "漫画"}],
+                        "infobox": [
+                            {"key": "作者", "value": "漫画作者"},
+                            {"key": "出版社", "value": "出版社"},
+                            {"key": "册数", "value": "3"},
+                        ],
+                    }
+                ]
+            }
+            encoded = json.dumps(payload).encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", "application/json")
+            self.send_header("content-length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), BangumiHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    server.requests = requests
+    return server
 
 
 def test_core_compat_endpoints_return_envelopes(client, db_session, test_settings):
@@ -42,6 +368,148 @@ def test_core_compat_endpoints_return_envelopes(client, db_session, test_setting
         assert "data" in payload, endpoint
 
 
+def test_organize_jobs_return_frontend_contract(client, db_session):
+    create_worker_tables(db_session)
+    create_organize_detail_tables(db_session)
+    _login(client, db_session)
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryWork (
+                id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                mergeKey, createdAt, updatedAt
+            ) VALUES (
+                'work-contract', 'Contract Book', 'contractbook', '', '', 'EPUB', 'WANT', 'UNKNOWN', 'NOT_TRACKING',
+                '[]', 20, 'REVIEWING', 'PENDING', 0, 0, 'epub:contract:', '2026-06-11T00:00:00', '2026-06-11T00:00:00'
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO OrganizeJob (
+                id, workId, status, issueCodes, summary, createdAt, updatedAt
+            ) VALUES (
+                'job-contract', 'work-contract', 'REVIEWING', '["MISSING_AUTHOR","SUGGEST_TITLE"]',
+                'needs metadata', '2026-06-11T00:00:00', '2026-06-11T00:00:00'
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO MetadataSuggestion (
+                id, jobId, field, currentValue, suggestedValue, source, confidence, reason, status, createdAt, updatedAt
+            ) VALUES (
+                'suggest-contract', 'job-contract', 'title', '"Contract Book"', '"Better Contract Book"',
+                'filename', 0.91, 'clean filename', 'PENDING', '2026-06-11T00:00:00', '2026-06-11T00:00:00'
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO DuplicateCandidate (
+                id, jobId, targetWorkId, reasons, confidence, suggestedAction, status, createdAt, updatedAt
+            ) VALUES (
+                'dup-contract', 'job-contract', 'work-other', '["title"]', 0.82,
+                'KEEP_SEPARATE', 'PENDING', '2026-06-11T00:00:00', '2026-06-11T00:00:00'
+            )"""
+        )
+    )
+    db_session.commit()
+
+    listed = client.get("/api/organize/jobs?pageSize=100")
+    assert listed.status_code == 200
+    list_payload = listed.json()["data"]
+    job = next(item for item in list_payload["jobs"] if item["id"] == "job-contract")
+    assert list_payload["books"][0]["id"] == "work-contract"
+    assert list_payload["total"] == 1
+    assert job["book"]["id"] == "work-contract"
+    assert job["issueCodes"] == ["MISSING_AUTHOR", "SUGGEST_TITLE"]
+    assert job["suggestions"][0]["suggestedValue"] == "Better Contract Book"
+    assert job["duplicates"][0]["reasons"] == ["title"]
+
+    detail = client.get("/api/organize/jobs/job-contract")
+    assert detail.status_code == 200
+    detail_job = detail.json()["data"]["job"]
+    assert detail_job["book"]["title"] == "Contract Book"
+    assert isinstance(detail_job["suggestions"], list)
+    assert isinstance(detail_job["duplicates"], list)
+
+
+def test_import_tasks_return_logs_summary_and_rescan_contract(client, db_session):
+    create_worker_tables(db_session)
+    _login(client, db_session)
+    db_session.execute(
+        text(
+            """CREATE TABLE IF NOT EXISTS MonitorFolder (
+                id TEXT PRIMARY KEY, name TEXT, rootPath TEXT, enabled BOOLEAN, importMode TEXT,
+                ignorePatterns TEXT, ignoreHidden BOOLEAN, minFileSizeBytes INTEGER, description TEXT,
+                createdAt TEXT, updatedAt TEXT
+            )"""
+        )
+    )
+    db_session.execute(text("CREATE TABLE IF NOT EXISTS SystemSetting (`key` TEXT PRIMARY KEY, `value` TEXT, `createdAt` TEXT, `updatedAt` TEXT)"))
+    db_session.execute(
+        text(
+            """INSERT INTO MonitorFolder (
+                id, name, rootPath, enabled, importMode, ignoreHidden, minFileSizeBytes, createdAt, updatedAt
+            ) VALUES (
+                'folder-1', 'Inbox', '/books/inbox', 1, 'COPY', 1, 1024, '2026-06-11T00:00:00', '2026-06-11T00:00:00'
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryWork (
+                id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                mergeKey, createdAt, updatedAt
+            ) VALUES (
+                'work-import', 'Imported Book', 'importedbook', 'Author', 'author', 'EPUB', 'WANT', 'UNKNOWN',
+                'NOT_TRACKING', '[]', 80, 'APPLIED', 'READY', 0, 1, 'epub:import:', '2026-06-11T00:00:00', '2026-06-11T00:00:00'
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO ImportTask (
+                id, monitorFolderId, workId, origin, status, originalName, sourcePath, managedFilePath,
+                contentHash, progress, duplicate, errorSummary, message, createdAt, updatedAt
+            ) VALUES (
+                'import-1', 'folder-1', 'work-import', 'WATCH', 'FAILED', 'bad.zip',
+                '/books/inbox/bad.zip', '/storage/library/bad.zip', 'hash-1', 100, 0,
+                'invalid zip archive', '导入失败，详情见错误信息', '2026-06-11T00:00:00', '2026-06-11T00:00:00'
+            )"""
+        )
+    )
+    db_session.execute(text("INSERT INTO ImportLog (id, importTaskId, level, message, createdAt) VALUES ('log-1', 'import-1', 'error', 'invalid zip archive', '2026-06-11T00:00:01')"))
+    db_session.commit()
+
+    listed = client.get("/api/import-tasks")
+    assert listed.status_code == 200
+    data = listed.json()["data"]
+    task = data["tasks"][0]
+    assert data["summary"]["failed"] == 1
+    assert task["sourcePath"] == "bad.zip"
+    assert task["managedFilePath"] == "bad.zip"
+    assert task["friendlyError"] == "压缩包可能损坏：请重新复制文件或用本地工具测试压缩包。"
+    assert task["monitorFolder"]["name"] == "Inbox"
+    assert task["book"] == {"id": "work-import", "title": "Imported Book"}
+    assert task["logs"][0]["message"] == "invalid zip archive"
+
+    detail = client.get("/api/import-tasks/import-1")
+    assert detail.status_code == 200
+    assert isinstance(detail.json()["data"]["task"]["logs"], list)
+
+    logs = client.get("/api/import-tasks/import-1/logs?pageSize=1")
+    assert logs.status_code == 200
+    assert logs.json()["data"]["total"] == 1
+
+    rescan = client.post("/api/import-tasks/rescan")
+    assert rescan.status_code == 200
+    assert rescan.json()["data"]["requestedAt"]
+    assert db_session.execute(text("SELECT `value` FROM SystemSetting WHERE `key` = 'monitor.rescanRequestedAt'")).scalar()
+
+
 def test_monitor_folder_and_system_settings_mutations(client, db_session, test_settings):
     test_settings.resolved_monitor_root.mkdir(parents=True)
     _login(client, db_session)
@@ -60,3 +528,1284 @@ def test_monitor_folder_and_system_settings_mutations(client, db_session, test_s
     settings = client.put("/api/system-settings", json={"settings": {"readerTheme": "dark"}})
     assert settings.status_code == 200
     assert settings.json()["data"]["settings"]["readerTheme"] == "dark"
+
+
+def test_source_manual_and_http_providers_execute_search_and_save_records(client, db_session):
+    create_source_tables(db_session)
+    _login(client, db_session)
+
+    manual = client.post(
+        "/api/sources",
+        json={
+            "name": "Manual shelf",
+            "kind": "mixed",
+            "providerType": "manual",
+            "config": {
+                "items": [
+                    {"externalId": "m-1", "title": "Star Manual", "author": "Guide", "format": "EPUB"},
+                    {"externalId": "m-2", "title": "Other Book", "author": "Guide"},
+                ]
+            },
+        },
+    )
+    assert manual.status_code == 201
+    manual_id = manual.json()["data"]["source"]["id"]
+
+    tested = client.post(f"/api/sources/{manual_id}/test")
+    assert tested.status_code == 200
+    assert tested.json()["data"]["result"]["status"] == "ok"
+    assert "可搜索 2 条" in tested.json()["data"]["result"]["message"]
+
+    searched = client.post(f"/api/sources/{manual_id}/search", json={"keyword": "star", "saveResults": True})
+    assert searched.status_code == 200
+    search_data = searched.json()["data"]
+    assert search_data["provider"]["providerType"] == "manual"
+    assert len(search_data["results"]) == 1
+    assert search_data["results"][0]["externalId"] == "m-1"
+    assert search_data["records"][0]["status"] == "saved"
+
+    repeated = client.post(f"/api/sources/{manual_id}/search", json={"keyword": "star", "saveResults": True})
+    assert repeated.status_code == 200
+    assert db_session.execute(text("SELECT COUNT(*) FROM SourceSearchRecord WHERE sourceId = :source_id"), {"source_id": manual_id}).scalar() == 1
+
+    http_source = client.post(
+        "/api/sources",
+        json={
+            "name": "HTTP shelf",
+            "providerType": "http",
+            "config": {
+                "items": [
+                    {"externalId": "h-1", "title": "Space PDF", "downloadUrl": "https://example.com/space.pdf", "format": "PDF"},
+                    {"externalId": "h-2", "title": "Bad URL", "downloadUrl": "ftp://example.com/bad.pdf"},
+                ]
+            },
+        },
+    )
+    assert http_source.status_code == 201
+    http_id = http_source.json()["data"]["source"]["id"]
+
+    http_test = client.post(f"/api/sources/{http_id}/test")
+    assert http_test.status_code == 200
+    assert http_test.json()["data"]["result"]["status"] == "failed"
+    assert "有效 downloadUrl" in http_test.json()["data"]["result"]["message"]
+
+    http_search = client.post(f"/api/sources/{http_id}/search", json={"keyword": "space"})
+    assert http_search.status_code == 200
+    assert http_search.json()["data"]["results"][0]["downloadMeta"]["type"] == "http"
+
+
+def test_pt_rss_provider_search_saves_record_and_creates_download_task(client, db_session, tmp_path):
+    create_source_tables(db_session)
+    create_download_tables(db_session)
+    _login(client, db_session)
+    feed_dir = tmp_path / "rss"
+    feed_dir.mkdir()
+    (feed_dir / "feed.xml").write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Star Volume 01</title>
+      <link>http://tracker.example/details/1?passkey=secret&amp;view=full</link>
+      <guid>torrent-1</guid>
+      <pubDate>Tue, 01 Jan 2030 10:00:00 GMT</pubDate>
+      <category>Manga</category>
+      <enclosure url="http://tracker.example/download/1.torrent?passkey=secret" type="application/x-bittorrent" length="1234" />
+    </item>
+    <item>
+      <title>Star Skip Volume</title>
+      <link>http://tracker.example/details/skip</link>
+      <guid>torrent-skip</guid>
+      <category>Manga</category>
+    </item>
+    <item>
+      <title>Star Volume Novel</title>
+      <link>http://tracker.example/details/novel</link>
+      <guid>torrent-novel</guid>
+      <category>Novel</category>
+    </item>
+  </channel>
+</rss>
+""",
+        encoding="utf-8",
+    )
+    server = serve_directory(feed_dir)
+    try:
+        source = client.post(
+            "/api/sources",
+            json={
+                "name": "PT feed",
+                "providerType": "pt_rss",
+                "config": {
+                    "rssUrl": f"http://127.0.0.1:{server.server_port}/feed.xml",
+                    "keywordInclude": ["Star"],
+                    "keywordExclude": ["Skip"],
+                    "category": "Manga",
+                    "defaultType": "comic",
+                },
+            },
+        )
+        assert source.status_code == 201
+        source_id = source.json()["data"]["source"]["id"]
+
+        tested = client.post(f"/api/sources/{source_id}/test")
+        assert tested.status_code == 200
+        test_result = tested.json()["data"]["result"]
+        assert test_result["status"] == "ok"
+        assert "RSS 可读取" in test_result["message"]
+        assert len(test_result["details"]["preview"]) == 3
+
+        searched = client.post(f"/api/sources/{source_id}/search", json={"keyword": "Star", "saveResults": True})
+        assert searched.status_code == 200
+        data = searched.json()["data"]
+        assert data["provider"]["providerType"] == "pt_rss"
+        assert len(data["results"]) == 1
+        result = data["results"][0]
+        assert result["externalId"] == "torrent-1"
+        assert result["format"] == "comic"
+        assert result["externalUrl"] == "http://tracker.example/details/1?passkey=REDACTED&view=full"
+        assert result["downloadAvailable"] is True
+        assert result["downloadMeta"]["kind"] == "torrent"
+        assert result["downloadMeta"]["downloadUrl"].endswith("/1.torrent?passkey=secret")
+
+        record = data["records"][0]
+        assert record["status"] == "saved"
+        assert json.loads(record["downloadMeta"])["kind"] == "torrent"
+
+        task_response = client.post(f"/api/source-search-records/{record['id']}/create-download-task")
+        assert task_response.status_code == 201
+        task = task_response.json()["data"]["task"]
+        assert task["type"] == "http"
+        assert task["sourceId"] == source_id
+        assert task["searchRecordId"] == record["id"]
+        assert json.loads(task["remoteRef"])["downloadMeta"]["kind"] == "torrent"
+    finally:
+        server.shutdown()
+
+
+def test_generic_rss_and_comic_api_providers_create_download_tasks(client, db_session, tmp_path):
+    create_source_tables(db_session)
+    create_download_tables(db_session)
+    _login(client, db_session)
+    feed_dir = tmp_path / "generic-rss"
+    feed_dir.mkdir()
+    (feed_dir / "feed.xml").write_text(
+        """<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>Orbital EPUB Dispatch</title>
+      <link>http://example.test/books/orbital</link>
+      <guid>rss-book-1</guid>
+      <pubDate>Wed, 02 Jan 2030 10:00:00 GMT</pubDate>
+      <category>Novel</category>
+      <enclosure url="http://example.test/downloads/orbital.epub" type="application/epub+zip" length="4096" />
+    </item>
+    <item>
+      <title>Other Dispatch</title>
+      <link>http://example.test/books/other</link>
+      <guid>rss-book-2</guid>
+      <category>Novel</category>
+    </item>
+  </channel>
+</rss>
+""",
+        encoding="utf-8",
+    )
+    server = serve_directory(feed_dir)
+    try:
+        rss_source = client.post(
+            "/api/sources",
+            json={"name": "Generic RSS", "kind": "novel", "providerType": "rss", "config": {"rssUrl": f"http://127.0.0.1:{server.server_port}/feed.xml"}},
+        )
+        assert rss_source.status_code == 201
+        rss_id = rss_source.json()["data"]["source"]["id"]
+
+        rss_test = client.post(f"/api/sources/{rss_id}/test")
+        assert rss_test.status_code == 200
+        assert rss_test.json()["data"]["result"]["status"] == "ok"
+
+        rss_search = client.post(f"/api/sources/{rss_id}/search", json={"keyword": "Orbital", "saveResults": True})
+        assert rss_search.status_code == 200
+        rss_data = rss_search.json()["data"]
+        assert rss_data["provider"]["providerType"] == "rss"
+        assert rss_data["results"][0]["format"] == "ebook"
+        assert rss_data["results"][0]["downloadMeta"]["type"] == "http"
+        assert rss_data["results"][0]["downloadMeta"]["downloadUrl"].endswith("/orbital.epub")
+
+        rss_record = rss_data["records"][0]
+        rss_task = client.post(f"/api/source-search-records/{rss_record['id']}/create-download-task")
+        assert rss_task.status_code == 201
+        assert rss_task.json()["data"]["task"]["type"] == "http"
+
+        comic_source = client.post(
+            "/api/sources",
+            json={
+                "name": "Comic API",
+                "kind": "comic",
+                "providerType": "comic_api",
+                "config": {
+                    "items": [
+                        {"id": "comic-1", "title": "Orbital Frames 01", "series": "Orbital Frames", "downloadUrl": "https://example.test/comics/orbital-01.cbz"},
+                        {"id": "comic-2", "title": "Quiet Frames", "downloadUrl": "https://example.test/comics/quiet.cbz"},
+                    ]
+                },
+            },
+        )
+        assert comic_source.status_code == 201
+        comic_id = comic_source.json()["data"]["source"]["id"]
+
+        comic_test = client.post(f"/api/sources/{comic_id}/test")
+        assert comic_test.status_code == 200
+        assert comic_test.json()["data"]["result"]["status"] == "ok"
+
+        comic_search = client.post(f"/api/sources/{comic_id}/search", json={"keyword": "Orbital", "saveResults": True})
+        assert comic_search.status_code == 200
+        comic_data = comic_search.json()["data"]
+        assert comic_data["provider"]["providerType"] == "comic_api"
+        assert comic_data["provider"]["capabilities"]["api"] is True
+        assert comic_data["results"][0]["externalId"] == "comic-1"
+        assert comic_data["results"][0]["format"] == "comic"
+        assert comic_data["results"][0]["downloadMeta"]["downloadUrl"].endswith("/orbital-01.cbz")
+
+        comic_record = comic_data["records"][0]
+        comic_task = client.post(f"/api/source-search-records/{comic_record['id']}/create-download-task")
+        assert comic_task.status_code == 201
+        assert comic_task.json()["data"]["task"]["type"] == "http"
+    finally:
+        server.shutdown()
+
+
+def test_telegram_provider_handoff_and_gateway_results_create_download_tasks(client, db_session):
+    create_source_tables(db_session)
+    create_download_tables(db_session)
+    _login(client, db_session)
+
+    handoff_source = client.post(
+        "/api/sources",
+        json={"name": "Telegram handoff", "kind": "novel", "providerType": "telegram", "config": {"botUsername": "@zlib_test_bot"}},
+    )
+    assert handoff_source.status_code == 201
+    handoff_id = handoff_source.json()["data"]["source"]["id"]
+
+    handoff_test = client.post(f"/api/sources/{handoff_id}/test")
+    assert handoff_test.status_code == 200
+    assert handoff_test.json()["data"]["result"]["status"] == "ok"
+    assert "handoff" in handoff_test.json()["data"]["result"]["message"]
+
+    handoff_search = client.post(f"/api/sources/{handoff_id}/search", json={"keyword": "星际远航", "kind": "novel"})
+    assert handoff_search.status_code == 200
+    handoff_result = handoff_search.json()["data"]["results"][0]
+    assert handoff_result["providerType"] == "telegram"
+    assert handoff_result["downloadAvailable"] is False
+    assert handoff_result["externalUrl"] == "https://t.me/zlib_test_bot"
+    assert handoff_result["format"] == "ebook"
+
+    gateway = serve_telegram_gateway()
+    try:
+        gateway_source = client.post(
+            "/api/sources",
+            json={
+                "name": "Telegram gateway",
+                "kind": "novel",
+                "providerType": "telegram",
+                "config": {
+                    "botUsername": "zlib_test_bot",
+                    "gatewayUrl": f"http://127.0.0.1:{gateway.server_port}/search",
+                    "downloadEnabled": True,
+                },
+            },
+        )
+        assert gateway_source.status_code == 201
+        gateway_id = gateway_source.json()["data"]["source"]["id"]
+
+        gateway_test = client.post(f"/api/sources/{gateway_id}/test")
+        assert gateway_test.status_code == 200
+        assert gateway_test.json()["data"]["result"]["details"]["gatewayConfigured"] is True
+
+        searched = client.post(f"/api/sources/{gateway_id}/search", json={"keyword": "orbital mechanics", "kind": "novel", "saveResults": True})
+        assert searched.status_code == 200
+        assert gateway.requests[0]["provider"] == "zlibrary_telegram_bot"
+        assert gateway.requests[0]["keyword"] == "orbital mechanics"
+        assert gateway.requests[0]["page"] == 1
+        data = searched.json()["data"]
+        assert data["provider"]["capabilities"]["telegram"] is True
+        assert len(data["results"]) == 2
+        direct = data["results"][0]
+        assert direct["externalId"] == "book-1"
+        assert direct["downloadAvailable"] is True
+        assert direct["downloadMeta"]["type"] == "telegram_zlibrary"
+        assert direct["downloadMeta"]["downloadUrl"].endswith("/orbital.epub")
+        message_only = data["results"][1]
+        assert message_only["downloadAvailable"] is True
+        assert message_only["downloadMeta"]["messageId"] == "msg-2"
+
+        direct_record = data["records"][0]
+        direct_task = client.post(f"/api/source-search-records/{direct_record['id']}/create-download-task")
+        assert direct_task.status_code == 201
+        assert direct_task.json()["data"]["task"]["type"] == "http"
+
+        message_record = data["records"][1]
+        message_task = client.post(f"/api/source-search-records/{message_record['id']}/create-download-task")
+        assert message_task.status_code == 201
+        assert message_task.json()["data"]["task"]["type"] == "telegram"
+    finally:
+        gateway.shutdown()
+
+
+def test_download_task_http_start_downloads_file(client, db_session, test_settings, tmp_path):
+    create_download_tables(db_session)
+    test_settings.resolved_download_inbox_path.mkdir(parents=True)
+    _login(client, db_session)
+    source_dir = tmp_path / "http"
+    source_dir.mkdir()
+    (source_dir / "book.epub").write_bytes(b"downloaded-book")
+    server = serve_directory(source_dir)
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/book.epub"
+        created = client.post(
+            "/api/download-tasks",
+            json={"type": "http", "displayName": "book.epub", "remoteRef": {"downloadUrl": url}},
+        )
+        assert created.status_code == 201
+        task_id = created.json()["data"]["task"]["id"]
+
+        started = client.post(f"/api/download-tasks/{task_id}/start")
+        assert started.status_code == 200
+        task = started.json()["data"]["task"]
+        assert task["status"] == "downloaded"
+        assert task["progress"] == 100
+        assert task["filePath"].endswith("book.epub")
+        assert test_settings.resolved_download_inbox_path.joinpath("book.epub").read_bytes() == b"downloaded-book"
+    finally:
+        server.shutdown()
+
+
+def test_download_task_torrent_and_telegram_handoff_execution(client, db_session, test_settings, tmp_path):
+    create_download_tables(db_session)
+    test_settings.resolved_download_inbox_path.mkdir(parents=True)
+    _login(client, db_session)
+    torrent_dir = tmp_path / "torrent"
+    torrent_dir.mkdir()
+    (torrent_dir / "book.torrent").write_bytes(b"d8:announce")
+    server = serve_directory(torrent_dir)
+    try:
+        torrent_url = f"http://127.0.0.1:{server.server_port}/book.torrent"
+        torrent_task = client.post(
+            "/api/download-tasks",
+            json={"type": "torrent", "displayName": "book", "remoteRef": {"torrentUrl": torrent_url, "filename": "book.torrent"}},
+        )
+        assert torrent_task.status_code == 201
+        torrent_started = client.post(f"/api/download-tasks/{torrent_task.json()['data']['task']['id']}/start")
+        assert torrent_started.status_code == 200
+        torrent_payload = torrent_started.json()["data"]["task"]
+        assert torrent_payload["status"] == "downloaded"
+        assert torrent_payload["filePath"].endswith("book.torrent")
+        assert test_settings.resolved_download_inbox_path.joinpath("book.torrent").read_bytes() == b"d8:announce"
+
+        magnet_task = client.post(
+            "/api/download-tasks",
+            json={"type": "torrent", "displayName": "magnet-book", "remoteRef": {"magnetUrl": "magnet:?xt=urn:btih:abc123"}},
+        )
+        assert magnet_task.status_code == 201
+        magnet_started = client.post(f"/api/download-tasks/{magnet_task.json()['data']['task']['id']}/start")
+        assert magnet_started.status_code == 200
+        magnet_payload = magnet_started.json()["data"]["task"]
+        assert magnet_payload["status"] == "downloaded"
+        assert magnet_payload["filePath"].endswith(".magnet")
+        assert "magnet:?xt=urn:btih:abc123" in test_settings.resolved_download_inbox_path.joinpath("magnet-book.magnet").read_text(encoding="utf-8")
+
+        telegram_task = client.post(
+            "/api/download-tasks",
+            json={
+                "type": "telegram",
+                "displayName": "telegram-book",
+                "remoteRef": {"botUsername": "zlib_test_bot", "messageId": "msg-1", "externalUrl": "https://t.me/zlib_test_bot"},
+            },
+        )
+        assert telegram_task.status_code == 201
+        telegram_started = client.post(f"/api/download-tasks/{telegram_task.json()['data']['task']['id']}/start")
+        assert telegram_started.status_code == 200
+        telegram_payload = telegram_started.json()["data"]["task"]
+        assert telegram_payload["status"] == "downloaded"
+        assert telegram_payload["filePath"].endswith(".telegram.txt")
+        handoff = json.loads(test_settings.resolved_download_inbox_path.joinpath("telegram-book.telegram.txt").read_text(encoding="utf-8"))
+        assert handoff["messageId"] == "msg-1"
+        assert handoff["botUsername"] == "zlib_test_bot"
+    finally:
+        server.shutdown()
+
+
+def test_download_task_torrent_submits_to_qbittorrent_when_configured(client, db_session, test_settings):
+    create_download_tables(db_session)
+    test_settings.resolved_download_inbox_path.mkdir(parents=True)
+    _login(client, db_session)
+    qbit = serve_qbittorrent_api()
+    test_settings.qbittorrent_url = f"http://127.0.0.1:{qbit.server_port}"
+    test_settings.qbittorrent_username = "admin"
+    test_settings.qbittorrent_password = "secret"
+    test_settings.qbittorrent_category = "shuku"
+    test_settings.qbittorrent_save_path = "/downloads/books"
+    try:
+        magnet_task = client.post(
+            "/api/download-tasks",
+            json={"type": "torrent", "displayName": "magnet-book", "remoteRef": {"magnetUrl": "magnet:?xt=urn:btih:abc123"}},
+        )
+
+        assert magnet_task.status_code == 201
+        magnet_started = client.post(f"/api/download-tasks/{magnet_task.json()['data']['task']['id']}/start")
+
+        assert magnet_started.status_code == 200
+        task = magnet_started.json()["data"]["task"]
+        assert task["status"] == "downloaded"
+        assert task["filePath"].endswith(".qbittorrent.json")
+        assert qbit.requests[0]["path"] == "/api/v2/auth/login"
+        assert qbit.requests[0]["form"] == {"username": "admin", "password": "secret"}
+        assert qbit.requests[1]["path"] == "/api/v2/torrents/add"
+        assert qbit.requests[1]["cookie"] == "SID=test-session"
+        assert qbit.requests[1]["form"]["urls"] == "magnet:?xt=urn:btih:abc123"
+        assert qbit.requests[1]["form"]["category"] == "shuku"
+        assert qbit.requests[1]["form"]["savepath"] == "/downloads/books"
+        manifest = json.loads(test_settings.resolved_download_inbox_path.joinpath("magnet-book.qbittorrent.json").read_text(encoding="utf-8"))
+        assert manifest["type"] == "qbittorrent_submission"
+        assert manifest["refType"] == "magnetUrl"
+        assert manifest["category"] == "shuku"
+    finally:
+        qbit.shutdown()
+
+
+def test_download_task_qbittorrent_completed_file_imports_with_python_importer(client, db_session, test_settings, tmp_path):
+    create_worker_tables(db_session)
+    create_download_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    test_settings.resolved_download_inbox_path.mkdir(parents=True)
+    qbit_save = tmp_path / "qbit-completed"
+    qbit_save.mkdir()
+    test_settings.qbittorrent_save_path = str(qbit_save)
+    _login(client, db_session)
+    completed = qbit_save / "magnet-book.epub"
+    write_epub_fixture(completed)
+    manifest = test_settings.resolved_download_inbox_path / "magnet-book.qbittorrent.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "type": "qbittorrent_submission",
+                "taskId": "task-qbit",
+                "title": "magnet-book",
+                "refType": "magnetUrl",
+                "ref": "magnet:?xt=urn:btih:abc123",
+                "savePath": str(qbit_save),
+                "expectedName": "magnet-book",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    created = client.post(
+        "/api/download-tasks",
+        json={"type": "torrent", "status": "downloaded", "displayName": "magnet-book", "filePath": str(manifest)},
+    )
+    assert created.status_code == 201
+    task_id = created.json()["data"]["task"]["id"]
+
+    imported = client.post(f"/api/download-tasks/{task_id}/import")
+
+    assert imported.status_code == 200
+    payload = imported.json()["data"]
+    assert payload["task"]["status"] == "completed"
+    assert payload["task"]["filePath"].endswith("magnet-book.epub")
+    assert payload["importResult"]["type"] == "ebook"
+    assert (test_settings.resolved_download_inbox_path / "magnet-book.epub").exists()
+    assert db_session.execute(text("SELECT COUNT(*) FROM LibraryWork")).scalar() == 1
+
+
+def test_download_task_import_uses_python_importer(client, db_session, test_settings, tmp_path):
+    create_worker_tables(db_session)
+    create_download_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    test_settings.resolved_download_inbox_path.mkdir(parents=True)
+    _login(client, db_session)
+    epub = test_settings.resolved_download_inbox_path / "downloaded.epub"
+    write_epub_fixture(epub)
+
+    created = client.post(
+        "/api/download-tasks",
+        json={"type": "http", "status": "downloaded", "displayName": "downloaded.epub", "filePath": str(epub)},
+    )
+    assert created.status_code == 201
+    task_id = created.json()["data"]["task"]["id"]
+
+    imported = client.post(f"/api/download-tasks/{task_id}/import")
+    assert imported.status_code == 200
+    payload = imported.json()["data"]
+    assert payload["task"]["status"] == "completed"
+    assert payload["task"]["bookId"] == payload["importResult"]["bookId"]
+    assert payload["importResult"]["type"] == "ebook"
+    assert db_session.execute(text("SELECT COUNT(*) FROM LibraryWork")).scalar() == 1
+
+
+def test_download_task_import_pdf_uses_python_importer(client, db_session, test_settings):
+    create_worker_tables(db_session)
+    create_download_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    test_settings.resolved_download_inbox_path.mkdir(parents=True)
+    _login(client, db_session)
+    pdf = test_settings.resolved_download_inbox_path / "downloaded.pdf"
+    write_pdf_fixture(pdf)
+
+    created = client.post(
+        "/api/download-tasks",
+        json={"type": "http", "status": "downloaded", "displayName": "downloaded.pdf", "filePath": str(pdf)},
+    )
+    assert created.status_code == 201
+    task_id = created.json()["data"]["task"]["id"]
+
+    imported = client.post(f"/api/download-tasks/{task_id}/import")
+    assert imported.status_code == 200
+    payload = imported.json()["data"]
+    assert payload["task"]["status"] == "completed"
+    assert payload["importResult"]["format"] == "pdf"
+    assert db_session.execute(text("SELECT mimeType FROM LibraryFile")).scalar() == "application/pdf"
+
+
+def test_organize_apply_updates_work_from_metadata_suggestions(client, db_session):
+    create_worker_tables(db_session)
+    create_organize_detail_tables(db_session)
+    _login(client, db_session)
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryWork (
+                id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                mergeKey, createdAt, updatedAt
+            ) VALUES (
+                'work-1', 'old.pdf', 'oldpdf', '', '', 'PDF', 'WANT', 'UNKNOWN', 'NOT_TRACKING',
+                '[]', 0, 'REVIEWING', 'PENDING', 0, 0, 'pdf:old:', 'now', 'now'
+            )"""
+        )
+    )
+    db_session.execute(text("INSERT INTO OrganizeJob (id, workId, status, issueCodes, createdAt, updatedAt) VALUES ('job-1', 'work-1', 'REVIEWING', '[]', 'now', 'now')"))
+    db_session.execute(text("INSERT INTO MetadataSuggestion (id, jobId, field, currentValue, suggestedValue, source, confidence, reason, status, createdAt, updatedAt) VALUES ('s-title', 'job-1', 'title', 'old.pdf', 'New Title', 'filename', 0.95, 'clean filename', 'PENDING', 'now', 'now')"))
+    db_session.execute(text("INSERT INTO MetadataSuggestion (id, jobId, field, currentValue, suggestedValue, source, confidence, reason, status, createdAt, updatedAt) VALUES ('s-author', 'job-1', 'author', '', 'Author A', 'embedded', 0.90, 'metadata', 'PENDING', 'now', 'now')"))
+    db_session.commit()
+
+    applied = client.post("/api/organize/jobs/job-1/apply", json={"highConfidenceOnly": True, "markOrganized": True})
+
+    assert applied.status_code == 200
+    payload = applied.json()["data"]
+    assert payload["applied"] == 2
+    work = db_session.execute(text("SELECT title, author, organized, organizeStatus FROM LibraryWork WHERE id = 'work-1'")).mappings().first()
+    assert dict(work) == {"title": "New Title", "author": "Author A", "organized": 1, "organizeStatus": "APPLIED"}
+    assert db_session.execute(text("SELECT COUNT(*) FROM MetadataSuggestion WHERE status = 'APPLIED'")).scalar() == 2
+
+
+def test_organize_apply_duplicate_actions_merge_versions_and_hide_sources(client, db_session):
+    create_worker_tables(db_session)
+    create_organize_detail_tables(db_session)
+    _login(client, db_session)
+    for work_id, title in [("work-main", "Main Title"), ("work-merge", "Merge Candidate"), ("work-hide", "Hide Candidate")]:
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryWork (
+                    id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                    trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                    primaryEditionId, mergeKey, createdAt, updatedAt
+                ) VALUES (
+                    :id, :title, :normalized, '', '', 'EPUB', 'WANT', 'UNKNOWN', 'NOT_TRACKING',
+                    '[]', 0, 'REVIEWING', 'PENDING', 0, 0, :primary_edition_id, :merge_key, 'now', 'now'
+                )"""
+            ),
+            {
+                "id": work_id,
+                "title": title,
+                "normalized": title.lower().replace(" ", ""),
+                "primary_edition_id": f"edition-{work_id}",
+                "merge_key": f"epub:{work_id}",
+            },
+        )
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryEdition (
+                    id, workId, origin, format, versionName, versionKey, importStatus, sizeBytes, "primary", hidden, createdAt, updatedAt
+                ) VALUES (:id, :work_id, 'MANUAL', 'EPUB', :version_name, :version_key, 'IMPORTED', 10, 1, 0, 'now', 'now')"""
+            ),
+            {"id": f"edition-{work_id}", "work_id": work_id, "version_name": title, "version_key": f"version-{work_id}"},
+        )
+    db_session.execute(text("INSERT INTO OrganizeJob (id, workId, editionId, status, issueCodes, createdAt, updatedAt) VALUES ('job-dup', 'work-main', 'edition-work-main', 'REVIEWING', '[]', 'now', 'now')"))
+    db_session.execute(text("INSERT INTO DuplicateCandidate (id, jobId, targetWorkId, reasons, confidence, suggestedAction, status, createdAt, updatedAt) VALUES ('dup-merge', 'job-dup', 'work-merge', '[\"title\"]', 0.84, 'MERGE_AS_VERSION', 'PENDING', 'now', 'now')"))
+    db_session.execute(text("INSERT INTO DuplicateCandidate (id, jobId, targetWorkId, reasons, confidence, suggestedAction, status, createdAt, updatedAt) VALUES ('dup-hide', 'job-dup', 'work-hide', '[\"hash\"]', 1.0, 'HIDE_DUPLICATE', 'PENDING', 'now', 'now')"))
+    db_session.commit()
+
+    applied = client.post("/api/organize/jobs/job-dup/apply", json={"duplicateIds": ["dup-merge", "dup-hide"]})
+
+    assert applied.status_code == 200
+    payload = applied.json()["data"]
+    assert payload["duplicateActionsApplied"] == 2
+    assert db_session.execute(text("SELECT workId FROM LibraryEdition WHERE id = 'edition-work-merge'")).scalar() == "work-main"
+    assert db_session.execute(text("SELECT \"primary\" FROM LibraryEdition WHERE id = 'edition-work-merge'")).scalar() == 0
+    assert db_session.execute(text("SELECT hidden FROM LibraryWork WHERE id = 'work-merge'")).scalar() == 1
+    assert db_session.execute(text("SELECT hidden FROM LibraryWork WHERE id = 'work-hide'")).scalar() == 1
+    assert db_session.execute(text("SELECT COUNT(*) FROM DuplicateCandidate WHERE status = 'APPLIED'")).scalar() == 2
+
+
+def test_organize_refresh_recomputes_issues_and_duplicates(client, db_session):
+    create_worker_tables(db_session)
+    create_organize_detail_tables(db_session)
+    _login(client, db_session)
+    for work_id, title in [("work-a", "Same Title"), ("work-b", "Same Title")]:
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryWork (
+                    id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                    trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                    mergeKey, createdAt, updatedAt
+                ) VALUES (
+                    :id, :title, :normalized, '', '', 'EPUB', 'WANT', 'UNKNOWN', 'NOT_TRACKING',
+                    '[]', 0, 'REVIEWING', 'PENDING', 0, 0, :merge_key, 'now', 'now'
+                )"""
+            ),
+            {"id": work_id, "title": title, "normalized": title.lower().replace(" ", ""), "merge_key": f"epub:{work_id}"},
+        )
+    db_session.execute(text("INSERT INTO OrganizeJob (id, workId, status, issueCodes, createdAt, updatedAt) VALUES ('job-refresh', 'work-a', 'REVIEWING', '[]', 'now', 'now')"))
+    db_session.commit()
+
+    refreshed = client.post("/api/organize/jobs/job-refresh/refresh", json={})
+
+    assert refreshed.status_code == 200
+    data = refreshed.json()["data"]
+    assert data["job"]["duplicateCount"] == 1
+    assert "DUPLICATE" in data["job"]["issueCodes"]
+    assert db_session.execute(text("SELECT COUNT(*) FROM DuplicateCandidate WHERE jobId = 'job-refresh' AND targetWorkId = 'work-b'")).scalar() == 1
+
+
+def test_work_metadata_refresh_runs_ai_provider_and_persists_suggestions(client, db_session):
+    create_worker_tables(db_session)
+    create_organize_detail_tables(db_session)
+    db_session.execute(text("CREATE TABLE IF NOT EXISTS SystemSetting (`key` TEXT PRIMARY KEY, `value` TEXT, `createdAt` TEXT, `updatedAt` TEXT)"))
+    ai = serve_ai_metadata_gateway()
+    try:
+        for key, value in {
+            "metadata.ai.baseUrl": f"http://127.0.0.1:{ai.server_port}",
+            "metadata.ai.apiKey": "test-key",
+            "metadata.ai.model": "test-model",
+        }.items():
+            db_session.execute(
+                text("INSERT INTO SystemSetting (`key`, `value`, `createdAt`, `updatedAt`) VALUES (:key, :value, 'now', 'now')"),
+                {"key": key, "value": value},
+            )
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryWork (
+                    id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                    trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                    mergeKey, createdAt, updatedAt
+                ) VALUES (
+                    'work-ai', 'messy_file.epub', 'messyfileepub', '', '', 'EPUB', 'WANT', 'UNKNOWN',
+                    'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', 0, 0, 'epub:ai', 'now', 'now'
+                )"""
+            )
+        )
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryEdition (
+                    id, workId, origin, format, importStatus, sizeBytes, "primary", hidden, createdAt, updatedAt
+                ) VALUES ('edition-ai', 'work-ai', 'MANUAL', 'EPUB', 'IMPORTED', 10, 1, 0, 'now', 'now')"""
+            )
+        )
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryFile (
+                    id, editionId, path, kind, mimeType, sizeBytes, sortOrder, createdAt, updatedAt
+                ) VALUES ('file-ai', 'edition-ai', '/library/messy_file.epub', 'EPUB', 'application/epub+zip', 10, 0, 'now', 'now')"""
+            )
+        )
+        db_session.commit()
+        _login(client, db_session)
+
+        refreshed = client.post("/api/works/work-ai/metadata/refresh", json={"providers": ["ai"]})
+
+        assert refreshed.status_code == 200
+        payload = refreshed.json()["data"]
+        assert payload["enabled"] is True
+        assert payload["added"] == 2
+        assert "已刷新，新增 2 条" in payload["message"]
+        assert ai.requests[0]["path"] == "/chat/completions"
+        assert ai.requests[0]["authorization"] == "Bearer test-key"
+        assert ai.requests[0]["body"]["model"] == "test-model"
+        assert ai.requests[0]["body"]["response_format"] == {"type": "json_object"}
+        assert json.loads(ai.requests[0]["body"]["messages"][1]["content"])["title"] == "messy_file.epub"
+
+        job_id = payload["jobId"]
+        assert db_session.execute(text("SELECT summary FROM OrganizeJob WHERE id = :id"), {"id": job_id}).scalar() == "新增 2 条外部/AI 元数据建议"
+        suggestions = db_session.execute(text("SELECT field, source, suggestedValue, confidence FROM MetadataSuggestion WHERE jobId = :job_id ORDER BY field"), {"job_id": job_id}).mappings().all()
+        assert [dict(item) for item in suggestions] == [
+            {"field": "tags", "source": "ai", "suggestedValue": '["space", "ai"]', "confidence": 0.7},
+            {"field": "title", "source": "ai", "suggestedValue": "AI Clean Title", "confidence": 0.74},
+        ]
+
+        repeated = client.post(f"/api/organize/jobs/{job_id}/refresh", json={"providers": ["ai"]})
+        assert repeated.status_code == 200
+        assert repeated.json()["data"]["added"] == 0
+        assert db_session.execute(text("SELECT COUNT(*) FROM MetadataSuggestion WHERE jobId = :job_id"), {"job_id": job_id}).scalar() == 2
+    finally:
+        ai.shutdown()
+
+
+def test_work_metadata_refresh_runs_douban_api_external_provider(client, db_session):
+    create_worker_tables(db_session)
+    create_organize_detail_tables(db_session)
+    db_session.execute(text("CREATE TABLE IF NOT EXISTS SystemSetting (`key` TEXT PRIMARY KEY, `value` TEXT, `createdAt` TEXT, `updatedAt` TEXT)"))
+    douban = serve_douban_api_gateway()
+    try:
+        for key, value in {
+            "metadata.douban.mode": "api",
+            "metadata.douban.baseUrl": f"http://127.0.0.1:{douban.server_port}",
+            "metadata.douban.apiKey": "douban-key",
+        }.items():
+            db_session.execute(
+                text("INSERT INTO SystemSetting (`key`, `value`, `createdAt`, `updatedAt`) VALUES (:key, :value, 'now', 'now')"),
+                {"key": key, "value": value},
+            )
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryWork (
+                    id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                    trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                    mergeKey, createdAt, updatedAt
+                ) VALUES (
+                    'work-douban', 'Local Messy Title', 'localmessytitle', '', '', 'EPUB', 'WANT', 'UNKNOWN',
+                    'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', 0, 0, 'epub:douban', 'now', 'now'
+                )"""
+            )
+        )
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryEdition (
+                    id, workId, origin, format, importStatus, identifier, isbn, sizeBytes, "primary", hidden, createdAt, updatedAt
+                ) VALUES ('edition-douban', 'work-douban', 'MANUAL', 'EPUB', 'IMPORTED', NULL, '9787111111111', 10, 1, 0, 'now', 'now')"""
+            )
+        )
+        db_session.commit()
+        _login(client, db_session)
+
+        refreshed = client.post("/api/works/work-douban/metadata/refresh", json={"providers": ["external"]})
+
+        assert refreshed.status_code == 200
+        payload = refreshed.json()["data"]
+        assert payload["enabled"] is True
+        assert payload["added"] == 5
+        assert payload["results"][0]["provider"] == "external"
+        assert douban.requests[0]["path"] == "/v2/book/isbn/9787111111111?apikey=douban-key"
+        assert douban.requests[0]["accept"] == "application/json"
+        suggestions = db_session.execute(
+            text("SELECT field, source, suggestedValue, confidence FROM MetadataSuggestion WHERE jobId = :job_id ORDER BY field"),
+            {"job_id": payload["jobId"]},
+        ).mappings().all()
+        assert [dict(item) for item in suggestions] == [
+            {"field": "author", "source": "external", "suggestedValue": "External Author", "confidence": 0.92},
+            {"field": "description", "source": "external", "suggestedValue": "External description", "confidence": 0.82},
+            {"field": "publishedYear", "source": "external", "suggestedValue": "2024", "confidence": 0.82},
+            {"field": "tags", "source": "external", "suggestedValue": '["fiction", "space"]', "confidence": 0.76},
+            {"field": "title", "source": "external", "suggestedValue": "Douban Clean Title", "confidence": 0.92},
+        ]
+    finally:
+        douban.shutdown()
+
+
+def test_work_metadata_refresh_runs_douban_crawler_external_provider(client, db_session):
+    create_worker_tables(db_session)
+    create_organize_detail_tables(db_session)
+    db_session.execute(text("CREATE TABLE IF NOT EXISTS SystemSetting (`key` TEXT PRIMARY KEY, `value` TEXT, `createdAt` TEXT, `updatedAt` TEXT)"))
+    douban = serve_douban_crawler_gateway()
+    try:
+        for key, value in {
+            "metadata.douban.mode": "crawler",
+            "metadata.douban.baseUrl": f"http://127.0.0.1:{douban.server_port}",
+            "metadata.douban.userAgent": "ShukuCrawlerTest/1.0",
+        }.items():
+            db_session.execute(
+                text("INSERT INTO SystemSetting (`key`, `value`, `createdAt`, `updatedAt`) VALUES (:key, :value, 'now', 'now')"),
+                {"key": key, "value": value},
+            )
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryWork (
+                    id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                    trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                    mergeKey, createdAt, updatedAt
+                ) VALUES (
+                    'work-douban-crawler', '活着', '活着', '余华', '余华', 'EPUB', 'WANT', 'UNKNOWN',
+                    'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', 0, 0, 'epub:douban-crawler', 'now', 'now'
+                )"""
+            )
+        )
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryEdition (
+                    id, workId, origin, format, importStatus, sizeBytes, "primary", hidden, createdAt, updatedAt
+                ) VALUES ('edition-douban-crawler', 'work-douban-crawler', 'MANUAL', 'EPUB', 'IMPORTED', 10, 1, 0, 'now', 'now')"""
+            )
+        )
+        db_session.commit()
+        _login(client, db_session)
+
+        refreshed = client.post("/api/works/work-douban-crawler/metadata/refresh", json={"providers": ["external"]})
+
+        assert refreshed.status_code == 200
+        payload = refreshed.json()["data"]
+        assert payload["enabled"] is True
+        assert payload["added"] == 4
+        assert douban.requests[0]["path"].startswith("/subject_search?search_text=")
+        assert douban.requests[0]["user_agent"] == "ShukuCrawlerTest/1.0"
+        assert douban.requests[1]["path"] == "/subject/4913064/"
+        suggestions = db_session.execute(
+            text("SELECT field, source, suggestedValue, confidence FROM MetadataSuggestion WHERE jobId = :job_id ORDER BY field"),
+            {"job_id": payload["jobId"]},
+        ).mappings().all()
+        assert [dict(item) for item in suggestions] == [
+            {"field": "author", "source": "external", "suggestedValue": "余华", "confidence": 0.8},
+            {"field": "description", "source": "external", "suggestedValue": "这是一本关于生命韧性的小说。", "confidence": 0.8},
+            {"field": "publishedYear", "source": "external", "suggestedValue": "2012", "confidence": 0.8},
+            {"field": "title", "source": "external", "suggestedValue": "活着", "confidence": 0.8},
+        ]
+    finally:
+        douban.shutdown()
+
+
+def test_work_metadata_refresh_runs_bangumi_external_provider(client, db_session):
+    create_worker_tables(db_session)
+    create_organize_detail_tables(db_session)
+    db_session.execute(text("CREATE TABLE IF NOT EXISTS SystemSetting (`key` TEXT PRIMARY KEY, `value` TEXT, `createdAt` TEXT, `updatedAt` TEXT)"))
+    bangumi = serve_bangumi_api_gateway()
+    try:
+        for key, value in {
+            "metadata.bangumi.baseUrl": f"http://127.0.0.1:{bangumi.server_port}",
+            "metadata.bangumi.accessToken": "bangumi-token",
+            "metadata.bangumi.userAgent": "ShukuTest/1.0",
+        }.items():
+            db_session.execute(
+                text("INSERT INTO SystemSetting (`key`, `value`, `createdAt`, `updatedAt`) VALUES (:key, :value, 'now', 'now')"),
+                {"key": key, "value": value},
+            )
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryWork (
+                    id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                    trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                    mergeKey, createdAt, updatedAt
+                ) VALUES (
+                    'work-bangumi', 'Star Comic Vol.1', 'starcomicvol1', '', '', 'COMIC', 'WANT', 'UNKNOWN',
+                    'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', 0, 0, 'comic:bangumi', 'now', 'now'
+                )"""
+            )
+        )
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryEdition (
+                    id, workId, origin, format, importStatus, sizeBytes, "primary", hidden, createdAt, updatedAt
+                ) VALUES ('edition-bangumi', 'work-bangumi', 'MANUAL', 'CBZ', 'IMPORTED', 10, 1, 0, 'now', 'now')"""
+            )
+        )
+        db_session.commit()
+        _login(client, db_session)
+
+        refreshed = client.post("/api/works/work-bangumi/metadata/refresh", json={"providers": ["external"]})
+
+        assert refreshed.status_code == 200
+        payload = refreshed.json()["data"]
+        assert payload["enabled"] is True
+        assert payload["added"] == 6
+        assert bangumi.requests[0]["path"] == "/v0/search/subjects"
+        assert bangumi.requests[0]["authorization"] == "Bearer bangumi-token"
+        assert bangumi.requests[0]["user_agent"] == "ShukuTest/1.0"
+        assert bangumi.requests[0]["body"] == {"keyword": "Star Comic Vol.1", "sort": "match", "filter": {"type": [1]}}
+        suggestions = db_session.execute(
+            text("SELECT field, source, suggestedValue, confidence FROM MetadataSuggestion WHERE jobId = :job_id ORDER BY field"),
+            {"job_id": payload["jobId"]},
+        ).mappings().all()
+        assert [dict(item) for item in suggestions] == [
+            {"field": "author", "source": "external", "suggestedValue": "漫画作者", "confidence": 0.78},
+            {"field": "description", "source": "external", "suggestedValue": "Bangumi description", "confidence": 0.8},
+            {"field": "publishedYear", "source": "external", "suggestedValue": "2022", "confidence": 0.78},
+            {"field": "seriesName", "source": "external", "suggestedValue": "星舰漫画", "confidence": 0.82},
+            {"field": "tags", "source": "external", "suggestedValue": '["科幻", "漫画"]', "confidence": 0.72},
+            {"field": "title", "source": "external", "suggestedValue": "星舰漫画", "confidence": 0.82},
+        ]
+    finally:
+        bangumi.shutdown()
+
+
+def test_backup_create_download_and_restore_database_export(client, db_session, test_settings):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    _login(client, db_session)
+    stored_file = test_settings.resolved_storage_root / "books" / "backup-work" / "edition-1" / "book.epub"
+    stored_file.parent.mkdir(parents=True)
+    stored_file.write_bytes(b"backup-file-content")
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryWork (
+                id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                mergeKey, createdAt, updatedAt
+            ) VALUES (
+                'backup-work', 'Backup Book', 'backupbook', 'Author', 'author', 'EPUB', 'WANT', 'UNKNOWN',
+                'NOT_TRACKING', '[]', 80, 'APPLIED', 'PENDING', 0, 1, 'epub:backup:author', 'now', 'now'
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryEdition (
+                id, workId, origin, format, versionName, importStatus, sizeBytes, chapterCount,
+                coverStatus, "primary", hidden, createdAt, updatedAt
+            ) VALUES (
+                'backup-edition', 'backup-work', 'MANUAL', 'EPUB', 'EPUB 1', 'COMPLETED', 19, 1,
+                'PENDING', 1, 0, 'now', 'now'
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryVolume (
+                id, editionId, title, sortOrder, chapterCount, createdAt, updatedAt
+            ) VALUES (
+                'backup-volume', 'backup-edition', '正文', 0, 1, 'now', 'now'
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryFile (
+                id, editionId, volumeId, path, filePathHash, hashStatus, mtimeMs, kind, mimeType,
+                sizeBytes, sortOrder, createdAt, updatedAt
+            ) VALUES (
+                'backup-file', 'backup-edition', 'backup-volume', :path, 'hash', 'PARTIAL_PENDING',
+                1, 'EPUB', 'application/epub+zip', 19, 0, 'now', 'now'
+            )"""
+        ),
+        {"path": str(stored_file)},
+    )
+    db_session.commit()
+
+    created = client.post("/api/backups")
+
+    assert created.status_code == 201
+    backup = created.json()["data"]["backup"]
+    assert backup["counts"]["works"] == 1
+    backup_path = test_settings.resolved_storage_root / "backups" / backup["filename"]
+    with zipfile.ZipFile(backup_path) as archive:
+        names = set(archive.namelist())
+        assert set(["metadata.json", "database-export.json", "settings.json", "library-files.json"]).issubset(names)
+        assert "library-files/books/backup-work/edition-1/book.epub" in names
+        assert json.loads(archive.read("metadata.json").decode("utf-8"))["counts"]["libraryFiles"] == 1
+
+    downloaded = client.get(f"/api/backups/{backup['id']}/download", headers={"Range": "bytes=0-3"})
+    assert downloaded.status_code == 206
+    assert downloaded.content == b"PK\x03\x04"
+
+    stored_file.unlink()
+    db_session.execute(text("DELETE FROM LibraryWork WHERE id = 'backup-work'"))
+    db_session.commit()
+    assert db_session.execute(text("SELECT COUNT(*) FROM LibraryWork WHERE id = 'backup-work'")).scalar() == 0
+    assert not stored_file.exists()
+
+    restored = client.post(f"/api/backups/{backup['id']}/restore")
+
+    assert restored.status_code == 200
+    assert restored.json()["data"]["restored"] is True
+    assert restored.json()["data"]["restoredCounts"]["works"] == 1
+    assert restored.json()["data"]["restoredCounts"]["libraryFiles"] == 1
+    assert restored.json()["data"]["actualCounts"]["works"] == 1
+    db_session.commit()
+    restored_rows = db_session.execute(text("SELECT id, title FROM LibraryWork")).mappings().all()
+    assert restored_rows
+    assert db_session.execute(text("SELECT title FROM LibraryWork WHERE id = 'backup-work'")).scalar() == "Backup Book"
+    assert stored_file.read_bytes() == b"backup-file-content"
+
+
+def test_backup_automatic_schedule_and_retention(client, db_session, test_settings):
+    from datetime import datetime, timezone
+
+    from app.services.backup_service import ensure_automatic_backup, list_backups, prune_automatic_backups, state_path
+
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryWork (
+                id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                mergeKey, createdAt, updatedAt
+            ) VALUES (
+                'auto-backup-work', 'Auto Backup Book', 'autobackupbook', '', '', 'EPUB', 'WANT', 'UNKNOWN',
+                'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', 0, 0, 'epub:auto-backup', 'now', 'now'
+            )"""
+        )
+    )
+    db_session.commit()
+
+    before_window = ensure_automatic_backup(db_session, test_settings, datetime(2026, 6, 10, 2, 59, tzinfo=timezone.utc))
+    assert before_window is None
+
+    first = ensure_automatic_backup(db_session, test_settings, datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc))
+    assert first is not None
+    assert first.id.startswith("automatic-")
+    assert state_path(test_settings).exists()
+    state = json.loads(state_path(test_settings).read_text(encoding="utf-8"))
+    assert state["lastAutomaticBackupDate"] == "2026-06-10"
+    assert state["lastBackupId"] == first.id
+
+    repeated = ensure_automatic_backup(db_session, test_settings, datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc))
+    assert repeated is None
+    second_day = ensure_automatic_backup(db_session, test_settings, datetime(2026, 6, 11, 3, 1, tzinfo=timezone.utc))
+    assert second_day is not None
+    assert second_day.id != first.id
+
+    backups = list_backups(test_settings)
+    assert len([backup for backup in backups if backup["kind"] == "automatic"]) == 2
+
+    manual_id = "manual-20260612-030000-keepme"
+    automatic_ids = [f"automatic-2026061{day}-030000-old00{day}" for day in range(2, 6)]
+    backup_root = test_settings.resolved_storage_root / "backups"
+    with zipfile.ZipFile(backup_root / f"{manual_id}.zip", "w") as archive:
+        archive.writestr("metadata.json", json.dumps({"id": manual_id, "kind": "manual", "app": "shuku-starship", "version": 2, "createdAt": "2026-06-12T03:00:00+00:00", "counts": {}}))
+    for day, backup_id in enumerate(automatic_ids, start=2):
+        with zipfile.ZipFile(backup_root / f"{backup_id}.zip", "w") as archive:
+            archive.writestr("metadata.json", json.dumps({"id": backup_id, "kind": "automatic", "app": "shuku-starship", "version": 2, "createdAt": f"2026-06-1{day}T03:00:00+00:00", "counts": {}}))
+
+    deleted = prune_automatic_backups(test_settings, 3)
+
+    remaining = list_backups(test_settings)
+    remaining_ids = {backup["id"] for backup in remaining}
+    assert manual_id in remaining_ids
+    assert len([backup for backup in remaining if backup["kind"] == "automatic"]) == 3
+    assert deleted
+    assert all(deleted_id.startswith("automatic-") for deleted_id in deleted)
+
+
+def test_manual_epub_upload_imports_book(client, db_session, test_settings, tmp_path):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    _login(client, db_session)
+    epub = tmp_path / "manual.epub"
+    write_epub_fixture(epub)
+
+    with epub.open("rb") as handle:
+        response = client.post("/api/works/import", files={"file": ("manual.epub", handle, "application/epub+zip")})
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["imported"] == 1
+    assert payload["results"][0]["type"] == "ebook"
+    assert payload["tasks"][0]["status"] == "COMPLETED"
+
+    works = client.get("/api/works")
+    assert works.status_code == 200
+    assert works.json()["data"]["total"] == 1
+
+    edition_id = payload["results"][0]["editionId"]
+    partial = client.get(f"/api/editions/{edition_id}/file", headers={"Range": "bytes=0-3"})
+    assert partial.status_code == 206
+    assert partial.headers["accept-ranges"] == "bytes"
+    assert partial.headers["content-range"].startswith("bytes 0-3/")
+    assert partial.content == epub.read_bytes()[:4]
+
+    cached = client.get(f"/api/editions/{edition_id}/file", headers={"If-None-Match": partial.headers["etag"]})
+    assert cached.status_code == 304
+
+    invalid = client.get(f"/api/editions/{edition_id}/file", headers={"Range": "bytes=999999-1000000"})
+    assert invalid.status_code == 416
+    assert invalid.headers["content-range"].startswith("bytes */")
+
+
+def test_reader_bootstrap_matches_node_shapes_for_epub_and_comic(client, db_session, test_settings, tmp_path):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    _login(client, db_session)
+    epub = tmp_path / "manual.epub"
+    comic = tmp_path / "comic.zip"
+    write_epub_fixture(epub)
+    write_comic_fixture(comic)
+
+    with epub.open("rb") as handle:
+        epub_imported = client.post("/api/works/import", files={"file": ("manual.epub", handle, "application/epub+zip")})
+    with comic.open("rb") as handle:
+        comic_imported = client.post("/api/works/import", files={"file": ("comic.zip", handle, "application/zip")})
+
+    epub_payload = epub_imported.json()["data"]["results"][0]
+    epub_bootstrap = client.get(f"/api/reader/{epub_payload['editionId']}/bootstrap")
+    assert epub_bootstrap.status_code == 200
+    epub_data = epub_bootstrap.json()["data"]
+    assert epub_data["readerType"] == "ebook"
+    assert epub_data["book"]["editionId"] == epub_payload["editionId"]
+    assert epub_data["book"]["formatValue"] == "EPUB"
+    assert epub_data["totalUnits"] == 2
+    assert [unit["title"] for unit in epub_data["readingUnits"]] == ["第一节", "第二节"]
+    assert isinstance(epub_data["readingUnits"][0]["metadataJson"], dict)
+
+    comic_payload = comic_imported.json()["data"]["results"][0]
+    comic_bootstrap = client.get(f"/api/reader/{comic_payload['editionId']}/bootstrap")
+    assert comic_bootstrap.status_code == 200
+    comic_data = comic_bootstrap.json()["data"]
+    assert comic_data["readerType"] == "comic"
+    assert comic_data["book"]["editionId"] == comic_payload["editionId"]
+    assert comic_data["book"]["formatValue"] == "COMIC"
+    assert comic_data["section"]["id"] == comic_payload["volumeId"]
+    assert comic_data["sections"] == [{"id": comic_payload["volumeId"], "title": "第 1 卷", "pageCount": 2}]
+    assert comic_data["pageCount"] == 2
+    assert [page["pageIndex"] for page in comic_data["pages"]] == [1, 2]
+
+
+def test_file_streams_are_limited_per_user(client, db_session, test_settings, tmp_path, monkeypatch):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    _login(client, db_session)
+    epub = tmp_path / "manual.epub"
+    write_epub_fixture(epub)
+
+    with epub.open("rb") as handle:
+        response = client.post("/api/works/import", files={"file": ("manual.epub", handle, "application/epub+zip")})
+
+    assert response.status_code == 200
+    edition_id = response.json()["data"]["results"][0]["editionId"]
+    user_id = db_session.execute(text("SELECT id FROM User WHERE email = 'admin@example.com'")).scalar()
+    monkeypatch.setenv("FILE_STREAMS_PER_USER", "1")
+    with compat._active_file_streams_lock:
+        compat._active_file_streams_by_user[user_id] = 1
+    try:
+        limited = client.get(f"/api/editions/{edition_id}/file")
+        assert limited.status_code == 429
+        assert limited.json()["error"]["message"] == "同时文件流请求过多，请稍后重试"
+    finally:
+        with compat._active_file_streams_lock:
+            compat._active_file_streams_by_user.pop(user_id, None)
+
+
+def test_file_streams_log_slow_requests(client, db_session, test_settings, tmp_path, monkeypatch, caplog):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    _login(client, db_session)
+    epub = tmp_path / "manual.epub"
+    write_epub_fixture(epub)
+
+    with epub.open("rb") as handle:
+        response = client.post("/api/works/import", files={"file": ("manual.epub", handle, "application/epub+zip")})
+
+    assert response.status_code == 200
+    edition_id = response.json()["data"]["results"][0]["editionId"]
+    monkeypatch.setenv("SLOW_FILE_REQUEST_MS", "0")
+    with caplog.at_level("WARNING", logger="app.api.routes.compat"):
+        streamed = client.get(f"/api/editions/{edition_id}/file", headers={"Range": "bytes=0-3"})
+
+    assert streamed.status_code == 206
+    assert any("[slow-file-request]" in record.message and "route=edition-file" in record.message for record in caplog.records)
+
+
+def test_manual_pdf_upload_imports_book(client, db_session, test_settings, tmp_path):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    _login(client, db_session)
+    pdf = tmp_path / "manual.pdf"
+    write_pdf_fixture(pdf)
+
+    with pdf.open("rb") as handle:
+        response = client.post("/api/works/import", files={"file": ("manual.pdf", handle, "application/pdf")})
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["imported"] == 1
+    assert payload["results"][0]["format"] == "pdf"
+    edition_id = payload["results"][0]["editionId"]
+
+    file_response = client.get(f"/api/editions/{edition_id}/file", headers={"Range": "bytes=0-4"})
+    assert file_response.status_code == 206
+    assert file_response.headers["content-type"].startswith("application/pdf")
+    assert file_response.content == b"%PDF-"
+
+
+def test_manual_comic_upload_serves_archive_page(client, db_session, test_settings, tmp_path):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    _login(client, db_session)
+    comic = tmp_path / "comic.zip"
+    write_comic_fixture(comic)
+
+    with comic.open("rb") as handle:
+        imported = client.post("/api/works/import", files={"file": ("comic.zip", handle, "application/zip")})
+
+    assert imported.status_code == 200
+    volume_id = imported.json()["data"]["results"][0]["volumeId"]
+    page = client.get(f"/api/volumes/{volume_id}/pages/1")
+
+    assert page.status_code == 200
+    assert page.content == b"one"
+    assert page.headers["content-type"].startswith("image/jpeg")
+
+    ranged = client.get(f"/api/volumes/{volume_id}/pages/1", headers={"Range": "bytes=1-2"})
+    assert ranged.status_code == 206
+    assert ranged.content == b"ne"
+    assert ranged.headers["content-range"] == "bytes 1-2/3"
+
+    cached = client.get(f"/api/volumes/{volume_id}/pages/1", headers={"If-None-Match": page.headers["etag"]})
+    assert cached.status_code == 304
+
+
+def test_volume_pages_rebuilds_missing_comic_page_index(client, db_session, test_settings, tmp_path):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    _login(client, db_session)
+    comic = tmp_path / "comic.zip"
+    write_comic_fixture(comic)
+
+    with comic.open("rb") as handle:
+        imported = client.post("/api/works/import", files={"file": ("comic.zip", handle, "application/zip")})
+
+    assert imported.status_code == 200
+    volume_id = imported.json()["data"]["results"][0]["volumeId"]
+    db_session.execute(text("DELETE FROM LibraryReadingUnit WHERE volumeId = :volume_id"), {"volume_id": volume_id})
+    db_session.execute(text("UPDATE LibraryVolume SET pageCount = NULL WHERE id = :volume_id"), {"volume_id": volume_id})
+    db_session.commit()
+
+    listed = client.get(f"/api/volumes/{volume_id}/pages")
+    assert listed.status_code == 200
+    pages = listed.json()["data"]["pages"]
+    assert [page["href"] for page in pages] == ["001.jpg", "002.jpg"]
+    assert db_session.execute(text("SELECT COUNT(*) FROM LibraryReadingUnit WHERE volumeId = :volume_id"), {"volume_id": volume_id}).scalar() == 2
+    assert db_session.execute(text("SELECT pageCount FROM LibraryVolume WHERE id = :volume_id"), {"volume_id": volume_id}).scalar() == 2
+
+    page = client.get(f"/api/volumes/{volume_id}/pages/2")
+    assert page.status_code == 200
+    assert page.content == b"two"
+
+
+def test_archive_page_streams_are_limited_and_logged(client, db_session, test_settings, tmp_path, monkeypatch, caplog):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    _login(client, db_session)
+    comic = tmp_path / "comic.zip"
+    write_comic_fixture(comic)
+
+    with comic.open("rb") as handle:
+        imported = client.post("/api/works/import", files={"file": ("comic.zip", handle, "application/zip")})
+
+    assert imported.status_code == 200
+    volume_id = imported.json()["data"]["results"][0]["volumeId"]
+    user_id = db_session.execute(text("SELECT id FROM User WHERE email = 'admin@example.com'")).scalar()
+    monkeypatch.setenv("FILE_STREAMS_PER_USER", "1")
+    with compat._active_file_streams_lock:
+        compat._active_file_streams_by_user[user_id] = 1
+    try:
+        limited = client.get(f"/api/volumes/{volume_id}/pages/1")
+        assert limited.status_code == 429
+    finally:
+        with compat._active_file_streams_lock:
+            compat._active_file_streams_by_user.pop(user_id, None)
+
+    monkeypatch.setenv("SLOW_FILE_REQUEST_MS", "0")
+    with caplog.at_level("WARNING", logger="app.api.routes.compat"):
+        streamed = client.get(f"/api/volumes/{volume_id}/pages/1", headers={"Range": "bytes=0-1"})
+
+    assert streamed.status_code == 206
+    assert streamed.content == b"on"
+    assert any("[slow-file-request]" in record.message and "route=volume-page-zip" in record.message for record in caplog.records)

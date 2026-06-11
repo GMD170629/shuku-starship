@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     session_secret: str | None = None
     monitor_root: str | None = None
     storage_root: str = "./storage"
+    download_inbox_path: str = "./downloads/inbox"
     demo_mode: bool = False
     next_public_demo_mode: bool = False
     admin_email: str = "admin@example.com"
@@ -20,6 +21,14 @@ class Settings(BaseSettings):
     file_streams_per_user: int = Field(default=4, ge=1)
     slow_file_request_ms: int = Field(default=1500, ge=1)
     secure_cookies: bool = False
+    automatic_backup_enabled: bool = True
+    automatic_backup_check_on_startup: bool = True
+    automatic_backup_interval_seconds: int = Field(default=3600, ge=60)
+    qbittorrent_url: str | None = None
+    qbittorrent_username: str | None = None
+    qbittorrent_password: str | None = None
+    qbittorrent_category: str | None = None
+    qbittorrent_save_path: str | None = None
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -30,6 +39,10 @@ class Settings(BaseSettings):
     @property
     def resolved_storage_root(self) -> Path:
         return Path(self.storage_root).expanduser().resolve()
+
+    @property
+    def resolved_download_inbox_path(self) -> Path:
+        return Path(self.download_inbox_path).expanduser().resolve()
 
     @property
     def resolved_monitor_root(self) -> Path | None:

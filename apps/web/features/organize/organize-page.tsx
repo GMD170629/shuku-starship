@@ -47,6 +47,22 @@ type JobsResponse = {
   error?: { message: string };
 };
 
+export function normalizeOrganizeJob(job: OrganizeJobView): OrganizeJobView | null {
+  if (!job?.book) return null;
+  return {
+    ...job,
+    issueCodes: Array.isArray(job.issueCodes) ? job.issueCodes : [],
+    suggestions: Array.isArray(job.suggestions) ? job.suggestions : [],
+    duplicates: Array.isArray(job.duplicates) ? job.duplicates : [],
+    book: {
+      ...job.book,
+      title: job.book.title ?? '未命名作品',
+      author: job.book.author ?? '未知作者',
+      tags: Array.isArray(job.book.tags) ? job.book.tags : []
+    }
+  };
+}
+
 function parseTags(value: string) {
   return [...new Set(value.split(/[,，\n]/).map((tag) => tag.trim()).filter(Boolean))];
 }
@@ -104,7 +120,9 @@ export function OrganizePage() {
       .then((response) => response.json() as Promise<JobsResponse>)
       .then((payload) => {
         if (!payload.ok) throw new Error(payload.error?.message ?? '读取待整理任务失败');
-        const nextJobs = payload.data?.jobs ?? [];
+        const nextJobs = (payload.data?.jobs ?? [])
+          .map((job) => normalizeOrganizeJob(job))
+          .filter((job): job is OrganizeJobView => job !== null);
         setJobs(nextJobs);
         setSelectedJobIds((current) => current.filter((id) => nextJobs.some((job) => job.id === id)));
         setError('');

@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+import os
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from pathlib import Path
+from tempfile import mkdtemp
+
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+API_ROOT = REPO_ROOT / "apps" / "api-python"
+sys.path.insert(0, str(API_ROOT))
+
+from app.db.base import Base  # noqa: E402
+from app.models import auth, settings  # noqa: F401,E402
+from tests.test_worker_importer import create_worker_tables, write_epub_fixture  # noqa: E402
+
+
+def setup_database(database_url: str, monitor_root: Path) -> None:
+    engine = create_engine(database_url)
+    Base.metadata.create_all(bind=engine)
+    SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False)
+    with SessionLocal() as db:
+        create_worker_tables(db)
+        db.execute(
+            text(
+                """INSERT INTO MonitorFolder (
+                    id, name, rootPath, enabled, importMode, ignoreHidden, minFileSizeBytes,
+                    createdAt, updatedAt
+                ) VALUES (
+                    'monitor-smoke', 'Smoke Monitor', :root_path, 1, 'COPY', 1, 1,
+                    CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                )"""
+            ),
+            {"root_path": str(monitor_root)},
+        )
+        db.commit()
+    engine.dispose()
+
+
+def wait_for_ready(ready_file: Path, process: subprocess.Popen[str]) -> None:
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        if process.poll() is not None:
+            raise RuntimeError(f"worker exited early with code {process.returncode}")
+        if ready_file.exists() and ready_file.read_text(encoding="utf-8").strip().isdigit():
+            return
+        time.sleep(0.2)
+    raise RuntimeError("worker did not create ready file")
+
+
+def wait_for_import(database_url: str, source_path: Path) -> None:
+    engine = create_engine(database_url)
+    deadline = time.time() + 20
+    last_state = None
+    try:
+        while time.time() < deadline:
+            with engine.connect() as conn:
+                task = conn.execute(text("SELECT status, message, errorSummary FROM ImportTask WHERE sourcePath = :source_path ORDER BY createdAt DESC LIMIT 1"), {"source_path": str(source_path)}).mappings().first()
+                work_count = conn.execute(text("SELECT COUNT(*) FROM LibraryWork WHERE origin = 'WATCH'")).scalar() or 0
+                unit_count = conn.execute(text("SELECT COUNT(*) FROM LibraryReadingUnit")).scalar() or 0
+                last_state = {"task": dict(task) if task else None, "workCount": work_count, "unitCount": unit_count}
+                if task and task["status"] == "COMPLETED" and work_count == 1 and unit_count == 2:
+                    return
+                if task and task["status"] == "FAILED":
+                    raise RuntimeError(f"worker import failed: {task}")
+            time.sleep(0.25)
+    finally:
+        engine.dispose()
+    raise RuntimeError(f"worker did not import monitored EPUB in time: {last_state}")
+
+
+def main() -> None:
+    temp_parent = REPO_ROOT / "tmp-worker-smoke"
+    temp_parent.mkdir(exist_ok=True)
+    root = Path(mkdtemp(prefix="worker-import-smoke-", dir=temp_parent))
+    try:
+        monitor_root = root / "monitor"
+        storage_root = root / "storage"
+        inbox = root / "downloads" / "inbox"
+        ready_file = root / "scan-worker-ready"
+        for path in [monitor_root, storage_root, inbox]:
+            path.mkdir(parents=True, exist_ok=True)
+
+        database_url = f"sqlite+pysqlite:///{root / 'worker-import-smoke.sqlite'}"
+        setup_database(database_url, monitor_root)
+        env = {
+            **os.environ,
+            "DATABASE_URL": database_url,
+            "SESSION_SECRET": "runtime-smoke-session-secret-32chars",
+            "MONITOR_ROOT": str(monitor_root),
+            "STORAGE_ROOT": str(storage_root),
+            "DOWNLOAD_INBOX_PATH": str(inbox),
+            "SCAN_WORKER_READY_FILE": str(ready_file),
+            "MONITOR_REFRESH_INTERVAL_MS": "1000",
+            "MONITOR_FILE_STABLE_DELAY_MS": "100",
+            "AUTOMATIC_BACKUP_ENABLED": "false",
+        }
+
+        process = subprocess.Popen(
+            ["uv", "run", "--extra", "dev", "python", "-m", "app.worker.main"],
+            cwd=API_ROOT,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        try:
+            wait_for_ready(ready_file, process)
+            source = monitor_root / "watched.epub"
+            write_epub_fixture(source)
+            wait_for_import(database_url, source)
+            print("Python worker monitored-import smoke ok")
+        finally:
+            if process.poll() is None:
+                process.send_signal(signal.SIGTERM)
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
+            output = process.stdout.read() if process.stdout else ""
+            interesting = "\n".join(line for line in output.splitlines() if "[import-worker]" in line).strip()
+            if interesting:
+                print(interesting)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    main()

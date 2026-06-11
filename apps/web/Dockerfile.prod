@@ -1,6 +1,8 @@
-FROM node:20-alpine AS deps
+FROM node:20-bookworm-slim AS deps
 WORKDIR /app
-RUN apk add --no-cache libc6-compat openssl \
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
   && corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
@@ -23,9 +25,11 @@ RUN pnpm --filter @shuku/database prisma:generate \
   && mkdir -p "$(dirname "$standalone_sharp_pkg_dir")/@img" \
   && cp -RL "$sharp_pkg_dir"/../@img/* "$(dirname "$standalone_sharp_pkg_dir")/@img/"
 
-FROM node:20-alpine AS migrator-deps
+FROM node:20-bookworm-slim AS migrator-deps
 WORKDIR /app
-RUN apk add --no-cache libc6-compat openssl \
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/* \
   && corepack enable
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
@@ -36,21 +40,34 @@ FROM migrator-deps AS migrator
 COPY packages/database ./packages/database
 CMD ["pnpm", "--filter", "@shuku/database", "exec", "prisma", "db", "push", "--skip-generate"]
 
-FROM node:20-alpine AS runner
+FROM node:20-bookworm-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production \
   NEXT_TELEMETRY_DISABLED=1 \
   HOSTNAME=0.0.0.0 \
-  PORT=3000
+  PORT=3000 \
+  PYTHONDONTWRITEBYTECODE=1 \
+  PYTHONUNBUFFERED=1 \
+  PATH=/opt/shuku-python/bin:$PATH
 
-RUN apk add --no-cache libc6-compat openssl
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl ca-certificates python3 python3-venv \
+  && rm -rf /var/lib/apt/lists/* \
+  && corepack enable
 
 COPY --from=builder /app/scripts/require-env.sh ./scripts/require-env.sh
 COPY --from=builder /app/scripts/seed.mjs ./scripts/seed.mjs
+COPY --from=builder /app/scripts/start-unified-app.sh ./scripts/start-unified-app.sh
 COPY --from=builder /app/apps/web/.next/standalone ./
 COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
-RUN chmod +x ./scripts/require-env.sh \
+COPY --from=migrator-deps /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./migrator/
+COPY --from=migrator-deps /app/node_modules ./migrator/node_modules
+COPY --from=builder /app/packages/database ./migrator/packages/database
+COPY --from=builder /app/apps/api-python ./apps/api-python
+RUN python3 -m venv /opt/shuku-python \
+  && /opt/shuku-python/bin/pip install --no-cache-dir ./apps/api-python \
+  && chmod +x ./scripts/require-env.sh ./scripts/start-unified-app.sh \
   && mkdir -p /app/storage/covers /app/storage/indexes /app/storage/temp /app/storage/logs /books
 
 EXPOSE 3000
-CMD ["node", "apps/web/server.js"]
+CMD ["./scripts/start-unified-app.sh"]
