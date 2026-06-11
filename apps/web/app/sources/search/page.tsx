@@ -1,7 +1,10 @@
-import { requirePageUser } from '../../../lib/auth';
+import { Suspense } from 'react';
 import { SourceSearchPage } from '../../../features/sources/source-search-page';
 
-export default async function Page() {
-  await requirePageUser();
-  return <SourceSearchPage />;
+export default function Page() {
+  return (
+    <Suspense fallback={null}>
+      <SourceSearchPage />
+    </Suspense>
+  );
 }

@@ -7,7 +7,7 @@ import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
 import { PageTitle } from '../../components/ui/page-title';
-import type { WorkView } from '../../lib/books';
+import type { WorkView } from '../../types/work';
 
 type ShelfView = {
   id: string;

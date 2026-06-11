@@ -55,8 +55,6 @@ export HOSTNAME="${HOSTNAME:-0.0.0.0}"
 export PORT="$WEB_PORT"
 export PYTHON_DATABASE_URL="$(derive_python_database_url)"
 
-node "$ROOT_DIR/scripts/seed.mjs"
-
 (
   cd "$PYTHON_API_DIR"
   DATABASE_URL="$PYTHON_DATABASE_URL" uvicorn app.main:app --host 127.0.0.1 --port "$PYTHON_API_PORT"

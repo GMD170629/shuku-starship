@@ -104,8 +104,13 @@ if [ "${SKIP_DOCKER_MYSQL:-false}" != "true" ]; then
   docker exec shuku-mysql mysql -uroot -proot -e "CREATE DATABASE IF NOT EXISTS shuku_starship_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci; GRANT ALL PRIVILEGES ON shuku_starship_test.* TO 'shuku'@'%'; FLUSH PRIVILEGES;"
 fi
 
-pnpm --filter @shuku/database prisma:push
-pnpm db:seed
+(
+  cd apps/api-python
+  DATABASE_URL="$TEST_PYTHON_DATABASE_URL" \
+    ADMIN_EMAIL="${ADMIN_EMAIL:-admin@example.com}" \
+    ADMIN_PASSWORD="${ADMIN_PASSWORD:-starshipnas}" \
+    uv run python -m app.db.bootstrap
+)
 
 echo "Starting test service:"
 echo "  Web:          http://localhost:$WEB_PORT"

@@ -2,7 +2,7 @@
 
 import { Eye, Trash2 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import type { WorkView } from '../../lib/books';
+import type { WorkView } from '../../types/work';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Progress } from '../ui/progress';

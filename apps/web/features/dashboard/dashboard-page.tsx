@@ -9,7 +9,7 @@ import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { Progress } from '../../components/ui/progress';
 import { StatCard } from '../../components/ui/stat-card';
-import type { WorkView } from '../../lib/books';
+import type { WorkView } from '../../types/work';
 
 type Summary = {
   totalBooks: number;

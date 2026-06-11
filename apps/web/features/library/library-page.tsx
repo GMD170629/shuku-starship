@@ -10,7 +10,7 @@ import { cn } from '../../components/ui/cn';
 import { useConfirm, useToast } from '../../components/ui/feedback';
 import { PageTitle } from '../../components/ui/page-title';
 import { Select } from '../../components/ui/select';
-import type { WorkView } from '../../lib/books';
+import type { WorkView } from '../../types/work';
 
 type BooksResponse = {
   ok: boolean;

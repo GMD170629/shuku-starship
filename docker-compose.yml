@@ -19,19 +19,6 @@ services:
       retries: 10
       start_period: 30s
 
-  migrate:
-    build:
-      context: .
-      dockerfile: apps/web/Dockerfile.prod
-      target: migrator
-    container_name: shuku-migrate
-    depends_on:
-      mysql:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: mysql://shuku:shuku@mysql:3306/shuku_starship
-    command: ["pnpm", "--filter", "@shuku/database", "exec", "prisma", "db", "push", "--skip-generate"]
-
   web:
     build:
       context: .
@@ -41,10 +28,9 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     environment:
       DATABASE_URL: mysql://shuku:shuku@mysql:3306/shuku_starship
+      PYTHON_DATABASE_URL: mysql+pymysql://shuku:shuku@mysql:3306/shuku_starship
       STORAGE_ROOT: /app/storage
       DOWNLOAD_INBOX_PATH: /app/storage/downloads/inbox
       ADMIN_EMAIL: admin@example.com

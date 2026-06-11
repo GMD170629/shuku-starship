@@ -103,14 +103,14 @@ runQuiet('docker', ['compose', '-f', 'docker-compose.prod.yml', 'config'], { suc
 expectServices(
   'dev unified topology',
   capture('docker', ['compose', '-f', 'docker-compose.yml', 'config', '--services'], { env: composeEnv }),
-  ['mysql', 'migrate', 'web'],
-  ['api-python', 'scan-worker-python', 'scan-worker']
+  ['mysql', 'web'],
+  ['migrate', 'api-python', 'scan-worker-python', 'scan-worker']
 );
 expectServices(
   'prod unified topology',
   capture('docker', ['compose', '-f', 'docker-compose.prod.yml', 'config', '--services'], { env: composeEnv }),
-  ['mysql', 'migrate', 'web'],
-  ['api-python', 'scan-worker-python', 'scan-worker']
+  ['mysql', 'web'],
+  ['migrate', 'api-python', 'scan-worker-python', 'scan-worker']
 );
 run('bash', ['-n', 'scripts/publish-docker-hub.sh']);
 run('sh', ['-n', 'scripts/start-unified-app.sh']);
@@ -122,6 +122,8 @@ expectIncludes('scripts/dev-test.sh', 'uv run --extra dev python -m app.worker.m
 expectNotIncludes('scripts/dev-test.sh', 'pnpm --filter @shuku/scan-worker dev');
 expectIncludes('apps/web/Dockerfile.prod', 'scripts/start-unified-app.sh');
 expectIncludes('apps/web/Dockerfile.prod', 'pip install --no-cache-dir ./apps/api-python');
+expectIncludes('apps/web/Dockerfile.prod', 'apps/api-python/app');
+expectNotIncludes('apps/web/Dockerfile.prod', 'AS migrator');
 expectNotIncludes('docker-compose.yml', 'API_PYTHON_PORT');
 expectNotIncludes('docker-compose.prod.yml', 'API_PYTHON_PORT');
 expectIncludes('docker-compose.prod.yml', 'scripts/start-unified-app.sh');
@@ -135,6 +137,7 @@ expectNotIncludes('docker-compose.prod.yml', 'scan-worker-python:');
 expectNotIncludes('docker-compose.prod.yml', 'scan-worker:');
 expectNotIncludes('scripts/publish-docker-hub.sh', 'shuku-starship-api-python');
 expectNotIncludes('scripts/publish-docker-hub.sh', 'shuku-starship-scan-worker');
+expectNotIncludes('scripts/publish-docker-hub.sh', 'shuku-starship-migrator');
 expectNotIncludes('apps/web/next.config.js', 'PYTHON_API_PROXY_TARGET');
 
 if (process.env.VERIFY_DOCKER_BUILD === 'true') {

@@ -18,6 +18,8 @@ def test_python_api_covers_next_api_route_contracts():
     next_api_root = repo_root / "apps" / "web" / "app" / "api"
     expected: set[tuple[str, str]] = set()
 
+    assert not next_api_root.exists(), "Next.js API routes should not contain backend logic; /api is served by Python."
+
     for route_file in next_api_root.rglob("route.ts"):
         source = route_file.read_text(encoding="utf-8")
         methods = set(re.findall(r"export\s+async\s+function\s+(GET|POST|PUT|PATCH|DELETE)\b", source))

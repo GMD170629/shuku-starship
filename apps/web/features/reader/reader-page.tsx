@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { WorkView } from '../../lib/books';
+import type { WorkView } from '../../types/work';
 import { enqueuePreference, enqueueProgress, flushPreferenceQueue, flushProgressQueue } from '../../lib/pwa/progressQueue';
 import { ComicReader, type ComicImageFit, type ComicMode, type ComicPageMeta } from './comic-reader';
 import { EbookReader } from './epub-reader';

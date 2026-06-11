@@ -1,7 +1,7 @@
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -33,6 +33,13 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @field_validator("database_url", mode="before")
+    @classmethod
+    def normalize_database_url(cls, value: str | None) -> str | None:
+        if isinstance(value, str) and value.startswith("mysql://"):
+            return f"mysql+pymysql://{value.removeprefix('mysql://')}"
+        return value
 
     @property
     def resolved_storage_root(self) -> Path:

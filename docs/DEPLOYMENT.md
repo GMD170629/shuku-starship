@@ -17,7 +17,7 @@ NEXT_PUBLIC_DEMO_MODE=false
 curl -fsSL https://raw.githubusercontent.com/GMD170629/shuku-starship/main/docker-compose.prod.yml | docker compose -f - up -d
 ```
 
-生产发布后不需要在部署机下载代码，也不需要安装 Node.js / pnpm。远端 compose 会直接拉取 `gamersgu/shuku-starship-web:prod` 和 `gamersgu/shuku-starship-migrator:prod`，先由 `migrate` 服务同步 Prisma schema，再启动统一应用容器。统一应用容器内同时运行 Next.js Web、Python FastAPI API 和 Python Worker。
+生产发布后不需要在部署机下载代码，也不需要安装 Node.js / pnpm。远端 compose 会直接拉取 `gamersgu/shuku-starship-web:prod`；统一应用容器内同时运行 Next.js Web、Python FastAPI API 和 Python Worker，Python API 启动时自动初始化数据库 schema 和基础数据。
 
 第一次试运行可以直接使用默认值启动；正式部署请通过 `.env` 或一行命令里的 `env ... sh -c 'curl ... | docker compose -f - up -d'` 覆盖：
 
@@ -30,7 +30,7 @@ curl -fsSL https://raw.githubusercontent.com/GMD170629/shuku-starship/main/docke
 
 ## 迁移与初始化
 
-生产环境的 schema 同步和管理员初始化都由 compose 内部完成：`migrate` 服务执行 Prisma schema 同步，`web` 启动前执行生产 seed，只创建管理员用户和基础 `SystemSetting`，不会创建示例书。需要演示数据时只能在开发环境单独运行：
+生产环境的 schema 同步和管理员初始化都由 Python API 启动流程完成：自动创建缺失表、初始化管理员用户和基础 `SystemSetting`，不会创建示例书。需要演示数据时只能在开发环境单独运行：
 
 ```bash
 DEMO_MODE=true pnpm db:seed:demo
@@ -43,8 +43,6 @@ DEMO_MODE=true pnpm db:seed:demo
 统一应用容器会检查：
 
 - `DATABASE_URL`
-- `MONITOR_ROOT`
-- `MONITOR_ROOT` 是否可读
 - `STORAGE_ROOT` 是否可写
 
 `/api/system/health` 和 `/api/health` 会返回检查结果。`DEMO_MODE=false` 且数据库为空是合法状态。

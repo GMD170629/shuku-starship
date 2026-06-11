@@ -10,6 +10,7 @@ datasource db {
 enum ReadingFormat {
   COMIC
   EPUB
+  PDF
 }
 
 enum ReadingStatus {

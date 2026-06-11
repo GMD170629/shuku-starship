@@ -6,7 +6,7 @@ import { Badge } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
 import { Select } from '../../components/ui/select';
-import type { WorkView } from '../../lib/books';
+import type { WorkView } from '../../types/work';
 
 type MetadataSource = 'bangumi' | 'douban' | 'ai';
 type MetadataField = 'coverUrl' | 'title' | 'author' | 'publisher' | 'description' | 'tags' | 'seriesName' | 'seriesIndex' | 'publishedYear';

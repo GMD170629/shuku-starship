@@ -6,7 +6,9 @@ from sqlalchemy.orm import Session
 
 from app.api.router import api_router
 from app.core.config import Settings, get_settings
+from app.db.bootstrap import bootstrap_database
 from app.db.session import SessionLocal
+from app.db.session import engine
 from app.services.backup_scheduler import start_automatic_backup_scheduler
 
 
@@ -16,6 +18,8 @@ def create_app(settings_override: Settings | None = None, session_factory: Calla
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        if session_factory is None:
+            bootstrap_database(engine, settings)
         scheduler = start_automatic_backup_scheduler(factory, settings)
         app.state.automatic_backup_scheduler = scheduler
         try:

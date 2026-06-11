@@ -19,18 +19,6 @@ services:
       retries: 10
       start_period: 30s
 
-  migrate:
-    image: gamersgu/shuku-starship-migrator:prod
-    platform: linux/amd64
-    pull_policy: always
-    container_name: shuku-prod-migrate
-    depends_on:
-      mysql:
-        condition: service_healthy
-    environment:
-      DATABASE_URL: ${DATABASE_URL:-mysql://${MYSQL_USER:-shuku}:${MYSQL_PASSWORD:-change-me}@mysql:3306/${MYSQL_DATABASE:-shuku_starship}}
-    command: ["pnpm", "--filter", "@shuku/database", "exec", "prisma", "db", "push", "--skip-generate"]
-
   web:
     image: gamersgu/shuku-starship-web:prod
     platform: linux/amd64
@@ -41,8 +29,6 @@ services:
     depends_on:
       mysql:
         condition: service_healthy
-      migrate:
-        condition: service_completed_successfully
     environment:
       DATABASE_URL: ${DATABASE_URL:-mysql://${MYSQL_USER:-shuku}:${MYSQL_PASSWORD:-change-me}@mysql:3306/${MYSQL_DATABASE:-shuku_starship}}
       PYTHON_DATABASE_URL: ${PYTHON_DATABASE_URL:-mysql+pymysql://${MYSQL_USER:-shuku}:${MYSQL_PASSWORD:-change-me}@mysql:3306/${MYSQL_DATABASE:-shuku_starship}}

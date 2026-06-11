@@ -59,15 +59,15 @@
 实现内容：
 - 使用 pnpm workspace 管理 `apps/*`、`packages/*`、`workers/*`。
 - 使用 Turborepo 串联 `dev`、`build`、`lint`、`typecheck` 等基础命令。
-- 保留 `apps/web` 作为 Next.js Web 与 API 入口。
-- 保留 `packages/database`、`packages/shared`、`packages/ui`、`packages/scanner`、`packages/reader-core` 作为 MVP 共享包边界。
+- 保留 `apps/web` 作为 Next.js 前端入口，API 由 Python 后端提供。
+- 保留 `packages/database`、`packages/shared`、`packages/ui`、`packages/reader-core` 作为 MVP 共享包边界。
 - 使用 Python watchdog worker 作为扫描任务 Worker 入口。
 
 验收标准：
 - 根目录可以通过 `pnpm install` 安装依赖。
 - 根目录可以通过 `pnpm dev` 启动开发服务。
 - 根目录可以通过 `pnpm build` 执行构建任务。
-- `apps/web/app/api/health/route.ts` 可返回健康检查结果。
+- Python `/api/health` 可返回健康检查结果。
 
 ### Task 02：迁移高保真原型为 Next.js 页面
 
@@ -168,11 +168,11 @@
 
 状态：`[x] 已完成`
 
-目标：实现后台扫描 Worker，从配置的 NAS 目录中发现读物文件并写入数据库。
+目标：实现 Python 后台扫描 Worker，从配置的 NAS 目录中发现读物文件并写入数据库。
 
 实现内容：
-- 基于 BullMQ 消费扫描任务队列。
-- 在 `packages/scanner` 中实现目录遍历、文件类型识别和基础元数据提取。
+- 基于 Python watchdog 监听监控目录。
+- 在 Python Worker 中实现目录遍历、文件类型识别和基础元数据提取。
 - 支持 TXT、PDF、图片目录、漫画压缩包或图片集合的 MVP 文件识别。
 - 将扫描结果 upsert 到数据库，避免重复入库。
 - 记录扫描进度、发现数量、跳过数量、错误日志和完成状态。

@@ -125,8 +125,6 @@ fi
 
 run_checks() {
   echo "==> Running checks"
-  pnpm --filter @shuku/scanner test
-  pnpm --filter @shuku/scanner typecheck
   pnpm --filter @shuku/web typecheck
   pnpm --filter @shuku/web test
   pnpm --filter @shuku/web build
@@ -162,12 +160,9 @@ else
 fi
 
 build_image "shuku-starship-web" "apps/web/Dockerfile.prod" "runner"
-build_image "shuku-starship-migrator" "apps/web/Dockerfile.prod" "migrator"
 
 cat <<EOF
 ==> Published:
   ${IMAGE_PREFIX}/shuku-starship-web:${CHANNEL_TAG}
   ${IMAGE_PREFIX}/shuku-starship-web:${VERSION_TAG}
-  ${IMAGE_PREFIX}/shuku-starship-migrator:${CHANNEL_TAG}
-  ${IMAGE_PREFIX}/shuku-starship-migrator:${VERSION_TAG}
 EOF

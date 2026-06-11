@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type TouchEvent } from 'react';
 import { cn } from '../../components/ui/cn';
-import type { WorkView } from '../../lib/books';
+import type { WorkView } from '../../types/work';
 import type { ReaderControls, ReaderProgress } from './reader-shell';
 
 export type ComicMode = 'single' | 'double' | 'continuous';

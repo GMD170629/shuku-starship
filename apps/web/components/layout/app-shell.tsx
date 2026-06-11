@@ -19,7 +19,7 @@ import {
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
-import type { WorkView } from '../../lib/books';
+import type { WorkView } from '../../types/work';
 import { Cover } from '../book/cover';
 import { PwaClient, clearPrivatePwaStorage } from '../system/pwa-client';
 import { Badge } from '../ui/badge';

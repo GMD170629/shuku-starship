@@ -2,7 +2,7 @@
 
 import { Archive, BookMarked, BookOpen, CheckCircle2, ChevronLeft, ChevronRight, Download, Home, Moon, Search, Settings, User, Wifi } from 'lucide-react';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import type { WorkView } from '../../lib/books';
+import type { WorkView } from '../../types/work';
 import { Cover } from '../book/cover';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';

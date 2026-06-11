@@ -18,7 +18,7 @@ import {
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
-import type { WorkView } from '../../lib/books';
+import type { WorkView } from '../../types/work';
 import { Cover } from '../book/cover';
 import { cn } from '../ui/cn';
 

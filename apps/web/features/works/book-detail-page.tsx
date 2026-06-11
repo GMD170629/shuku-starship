@@ -10,7 +10,7 @@ import { cn } from '../../components/ui/cn';
 import { useConfirm, useToast } from '../../components/ui/feedback';
 import { Progress } from '../../components/ui/progress';
 import { Select } from '../../components/ui/select';
-import type { WorkView } from '../../lib/books';
+import type { WorkView } from '../../types/work';
 import { MetadataLookupModal } from './metadata-lookup-modal';
 
 function Info({ label, value, green = false }: { label: string; value: string; green?: boolean }) {
