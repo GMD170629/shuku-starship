@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from sqlalchemy import DateTime, ForeignKey, String, func
@@ -13,6 +13,10 @@ def cuid() -> str:
     return f"py_{uuid4().hex}"
 
 
+def db_timestamp() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 class User(Base):
     __tablename__ = "User"
 
@@ -21,8 +25,8 @@ class User(Base):
     name: Mapped[str] = mapped_column(String(191), nullable=False)
     password_hash: Mapped[str] = mapped_column("passwordHash", String(191), nullable=False)
     role: Mapped[str] = mapped_column(String(191), nullable=False, default="admin")
-    created_at: Mapped[datetime] = mapped_column("createdAt", DateTime, nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column("updatedAt", DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+    created_at: Mapped[datetime] = mapped_column("createdAt", DateTime, nullable=False, default=db_timestamp, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column("updatedAt", DateTime, nullable=False, default=db_timestamp, onupdate=db_timestamp, server_default=func.now())
 
     sessions: Mapped[list[Session]] = relationship("Session", back_populates="user", cascade="all, delete-orphan")
 
@@ -42,7 +46,7 @@ class Session(Base):
     token_hash: Mapped[str] = mapped_column("tokenHash", String(191), unique=True, nullable=False)
     user_id: Mapped[str] = mapped_column("userId", String(191), ForeignKey("User.id", ondelete="CASCADE"), nullable=False)
     expires_at: Mapped[datetime] = mapped_column("expiresAt", DateTime, nullable=False)
-    created_at: Mapped[datetime] = mapped_column("createdAt", DateTime, nullable=False, server_default=func.now())
-    updated_at: Mapped[datetime] = mapped_column("updatedAt", DateTime, nullable=False, server_default=func.now(), onupdate=func.now())
+    created_at: Mapped[datetime] = mapped_column("createdAt", DateTime, nullable=False, default=db_timestamp, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column("updatedAt", DateTime, nullable=False, default=db_timestamp, onupdate=db_timestamp, server_default=func.now())
 
     user: Mapped[User] = relationship("User", back_populates="sessions")
