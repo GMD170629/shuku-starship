@@ -136,6 +136,73 @@ def _json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+SOURCE_PROVIDER_LABELS = {
+    "manual": "手动源",
+    "http": "HTTP",
+    "pt_rss": "PT RSS",
+    "zlibrary": "Z-Library",
+    "rss": "RSS",
+    "comic_api": "漫画 API",
+}
+
+SOURCE_KIND_LABELS = {
+    "novel": "小说",
+    "comic": "漫画",
+    "mixed": "混合",
+    "metadata": "元数据",
+    "search": "搜索",
+}
+
+MASKED_SECRET = "********"
+
+
+def _masked_secret(value: Any) -> dict[str, Any] | None:
+    return {"configured": True, "masked": MASKED_SECRET} if isinstance(value, str) and value.strip() else None
+
+
+def _is_masked_secret(value: Any) -> bool:
+    if isinstance(value, dict):
+        return value.get("configured") is True
+    return isinstance(value, str) and value.strip() == MASKED_SECRET
+
+
+def _source_config_for_client(source: dict[str, Any]) -> dict[str, Any]:
+    config = _parse_json(source.get("config"), {})
+    if not isinstance(config, dict):
+        return {}
+    if source.get("providerType") == "zlibrary" and config.get("password"):
+        config = {**config, "password": _masked_secret(config.get("password"))}
+    return config
+
+
+def _source_view(source: dict[str, Any]) -> dict[str, Any]:
+    provider_type = source.get("providerType") or "manual"
+    kind = source.get("kind") or "mixed"
+    return {
+        **source,
+        "config": _source_config_for_client(source),
+        "capabilities": _parse_json(source.get("capabilities"), {}),
+        "rateLimit": _parse_json(source.get("rateLimit"), {}),
+        "providerTypeLabel": SOURCE_PROVIDER_LABELS.get(provider_type, str(provider_type)),
+        "kindLabel": SOURCE_KIND_LABELS.get(kind, str(kind)),
+    }
+
+
+def _merge_source_config_for_write(existing: dict[str, Any] | None, provider_type: str, incoming: Any) -> Any:
+    config = _parse_json(incoming, {}) if not isinstance(incoming, dict) else incoming
+    if not isinstance(config, dict):
+        return config
+    if provider_type != "zlibrary":
+        return config
+    password = config.get("password")
+    if password is None or password == "" or _is_masked_secret(password):
+        existing_config = _parse_json((existing or {}).get("config"), {})
+        if isinstance(existing_config, dict) and existing_config.get("password"):
+            return {**config, "password": existing_config.get("password")}
+        return {key: value for key, value in config.items() if key != "password"}
+    return config
+
+
 def _positive_int(value: Any, fallback: int, maximum: int) -> int:
     try:
         parsed = int(value)
@@ -1405,7 +1472,8 @@ def list_sources(request: Request, db: Session = Depends(get_db), settings: Sett
     _user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    return _list_table_response(db, "Source", "sources", "`priority` ASC, `createdAt` DESC")
+    sources = _rows(db, "SELECT * FROM `Source` ORDER BY `priority` ASC, `createdAt` DESC") if _has_table(db, "Source") else []
+    return ok({"sources": [_source_view(source) for source in sources]})
 
 
 @router.post("/sources")
@@ -1414,8 +1482,10 @@ async def create_source(request: Request, db: Session = Depends(get_db), setting
     if auth_error:
         return auth_error
     payload = await request.json()
-    source = _insert(db, "Source", {"id": f"py_{time_ns()}", "name": payload.get("name") or "新来源", "kind": payload.get("kind") or "search", "providerType": payload.get("providerType") or payload.get("type") or "manual", "enabled": bool(payload.get("enabled", True)), "priority": int(payload.get("priority", 100)), "config": _json_text(payload.get("config", {})), "credentialsKey": payload.get("credentialsKey"), "capabilities": _json_text(payload.get("capabilities", {})), "rateLimit": _json_text(payload.get("rateLimit", {})), "createdAt": _now(), "updatedAt": _now()})
-    return ok({"source": source}, status_code=201)
+    provider_type = payload.get("providerType") or payload.get("type") or "manual"
+    config = _merge_source_config_for_write(None, provider_type, payload.get("config", {}))
+    source = _insert(db, "Source", {"id": f"py_{time_ns()}", "name": payload.get("name") or "新来源", "kind": payload.get("kind") or "search", "providerType": provider_type, "enabled": bool(payload.get("enabled", True)), "priority": int(payload.get("priority", 100)), "config": _json_text(config), "credentialsKey": payload.get("credentialsKey"), "capabilities": _json_text(payload.get("capabilities", {})), "rateLimit": _json_text(payload.get("rateLimit", {})), "createdAt": _now(), "updatedAt": _now()})
+    return ok({"source": _source_view(source)}, status_code=201)
 
 
 @router.put("/sources/{source_id}")
@@ -1425,11 +1495,22 @@ async def update_source(source_id: str, request: Request, db: Session = Depends(
     if auth_error:
         return auth_error
     payload = await request.json()
-    values = {key: (_json_text(value) if key in {"config", "capabilities", "rateLimit"} else value) for key, value in payload.items()}
+    existing = _row(db, "SELECT * FROM `Source` WHERE `id` = :id", {"id": source_id}) if _has_table(db, "Source") else None
+    if not existing:
+        return fail("来源不存在", status_code=404)
+    next_provider_type = payload.get("providerType") or existing.get("providerType") or "manual"
+    values = {}
+    for key, value in payload.items():
+        if key == "config":
+            values[key] = _json_text(_merge_source_config_for_write(existing, next_provider_type, value))
+        elif key in {"capabilities", "rateLimit"}:
+            values[key] = _json_text(value)
+        else:
+            values[key] = value
     source = _update(db, "Source", source_id, values)
     if not source:
         return fail("来源不存在", status_code=404)
-    return ok({"source": source})
+    return ok({"source": _source_view(source)})
 
 
 @router.get("/sources/{source_id}")
@@ -1440,7 +1521,7 @@ def get_source(source_id: str, request: Request, db: Session = Depends(get_db), 
     source = _row(db, "SELECT * FROM `Source` WHERE `id` = :id", {"id": source_id}) if _has_table(db, "Source") else None
     if not source:
         return fail("来源不存在", status_code=404)
-    return ok({"source": source})
+    return ok({"source": _source_view(source)})
 
 
 @router.delete("/sources/{source_id}")
@@ -1472,7 +1553,7 @@ def test_source(source_id: str, request: Request, db: Session = Depends(get_db),
         source_id,
         {"lastTestAt": _now(), "lastTestStatus": result["status"], "lastError": None if result["status"] == "ok" else result["message"]},
     )
-    return ok({"result": result, "source": updated})
+    return ok({"result": result, "source": _source_view(updated) if updated else None})
 
 
 @router.post("/sources/{source_id}/search")
@@ -1542,6 +1623,19 @@ def _upsert_source_record(db: Session, source: dict[str, Any], result: dict[str,
     return _insert(db, "SourceSearchRecord", values)
 
 
+def _source_record_view(db: Session, record: dict[str, Any]) -> dict[str, Any]:
+    source_name = None
+    if record.get("sourceId") and _has_table(db, "Source"):
+        source = _row(db, "SELECT `name` FROM `Source` WHERE `id` = :id", {"id": record.get("sourceId")})
+        source_name = (source or {}).get("name")
+    return {
+        **record,
+        "downloadMeta": _parse_json(record.get("downloadMeta"), record.get("downloadMeta")),
+        "raw": _parse_json(record.get("raw"), record.get("raw")),
+        "sourceName": source_name,
+    }
+
+
 @router.get("/source-search-records")
 def list_source_records(request: Request, sourceId: str | None = None, status: str | None = None, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
     _user, auth_error = _auth(db, request, settings)
@@ -1554,12 +1648,20 @@ def list_source_records(request: Request, sourceId: str | None = None, status: s
     if sourceId:
         where.append("`sourceId` = :source_id")
         params["source_id"] = sourceId
+    provider_type = request.query_params.get("providerType")
+    keyword = (request.query_params.get("keyword") or "").strip()
     if status:
         where.append("`status` = :status")
         params["status"] = status
+    if provider_type and provider_type != "all":
+        where.append("`providerType` = :provider_type")
+        params["provider_type"] = provider_type
+    if keyword:
+        where.append("(`title` LIKE :keyword OR `author` LIKE :keyword)")
+        params["keyword"] = f"%{keyword}%"
     sql_where = f" WHERE {' AND '.join(where)}" if where else ""
     records = _rows(db, f"SELECT * FROM `SourceSearchRecord`{sql_where} ORDER BY `createdAt` DESC LIMIT 100", params)
-    return ok({"records": records, "total": len(records)})
+    return ok({"records": [_source_record_view(db, record) for record in records], "total": len(records)})
 
 
 @router.post("/source-search-records")
@@ -1664,7 +1766,13 @@ def list_download_tasks(request: Request, db: Session = Depends(get_db), setting
     _user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    return _list_table_response(db, "DownloadTask", "tasks")
+    tasks = _rows(db, "SELECT * FROM `DownloadTask` ORDER BY `createdAt` DESC") if _has_table(db, "DownloadTask") else []
+    source_names: dict[str, str] = {}
+    if _has_table(db, "Source"):
+        for source in _rows(db, "SELECT `id`, `name` FROM `Source`"):
+            if source.get("id"):
+                source_names[str(source["id"])] = str(source.get("name") or "")
+    return ok({"tasks": [{**task, "remoteRef": _parse_json(task.get("remoteRef"), task.get("remoteRef")), "sourceName": source_names.get(str(task.get("sourceId")))} for task in tasks]})
 
 
 @router.post("/download-tasks")
@@ -1725,10 +1833,13 @@ def mutate_download_task(task_id: str, request: Request, db: Session = Depends(g
     if not task:
         return fail("下载任务不存在", status_code=404)
     if action in {"start", "retry"}:
+        if action == "retry":
+            if task.get("status") not in {"queued", "failed", "cancelled", "PENDING", "FAILED", "CANCELLED"}:
+                return fail("只有等待中、失败或已取消的任务可以重新排队", status_code=400)
+            task = _update(db, "DownloadTask", task_id, {"status": "queued", "progress": 0, "errorMessage": None, "updatedAt": _now()})
+            return ok({"task": task, "action": action})
         if task.get("status") not in {"queued", "failed", "PENDING", "FAILED"}:
             return fail("只有等待中或失败的任务可以开始下载", status_code=400)
-        if action == "retry":
-            _update(db, "DownloadTask", task_id, {"status": "queued", "progress": 0, "errorMessage": None, "updatedAt": _now()})
         result = execute_download_task(db, settings, task_id)
         return ok({"task": result.task, "action": action})
     if action == "cancel":

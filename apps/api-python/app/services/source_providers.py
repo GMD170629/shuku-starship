@@ -7,12 +7,15 @@ from html import unescape
 import json
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from urllib.request import Request as UrlRequest
 from urllib.request import urlopen
 from xml.etree import ElementTree as ET
+
+from app.services.zlibrary_eapi import login_with_config, normalize_base_url
 
 
 @dataclass(frozen=True)
@@ -26,7 +29,7 @@ PROVIDER_CAPABILITIES: dict[str, dict[str, bool]] = {
     "manual": {"search": True, "download": False},
     "http": {"search": True, "download": True},
     "pt_rss": {"search": True, "download": False, "rss": True, "torrent": True, "requiresAuth": True},
-    "telegram": {"search": True, "download": False, "telegram": True, "requiresAuth": True},
+    "zlibrary": {"search": True, "download": True, "requiresAuth": True},
     "rss": {"search": True, "download": True, "rss": True},
     "comic_api": {"search": True, "download": True, "api": True},
 }
@@ -72,29 +75,6 @@ def _matches_keyword(item: dict[str, Any], keyword: str, fields: list[str]) -> b
 
 def _is_http_url(value: str | None) -> bool:
     return bool(value and (value.startswith("http://") or value.startswith("https://")))
-
-
-def _is_valid_bot_username(value: str | None) -> bool:
-    return bool(value and re.fullmatch(r"[A-Za-z0-9_]{3,64}", value))
-
-
-def _telegram_config(source: dict[str, Any]) -> dict[str, Any]:
-    config = source_config(source)
-    bot_username = string_value(config.get("botUsername"))
-    if bot_username:
-        bot_username = bot_username.removeprefix("@").strip() or None
-    return {
-        "botUsername": bot_username,
-        "mode": string_value(config.get("mode")) or "zlibrary_bot",
-        "gatewayUrl": string_value(config.get("gatewayUrl")),
-        "searchCommand": string_value(config.get("searchCommand")) or "/search",
-        "resultParseMode": string_value(config.get("resultParseMode")) or "zlibrary_text",
-        "downloadEnabled": config.get("downloadEnabled") is True,
-    }
-
-
-def _telegram_bot_url(bot_username: str) -> str:
-    return f"https://t.me/{bot_username}"
 
 
 def _source_kind(source: dict[str, Any], kind: str | None = None) -> str:
@@ -154,6 +134,8 @@ def _fetch_rss_items(url: str) -> list[dict[str, Any]]:
 def _date_iso(value: str | None) -> str | None:
     if not value:
         return None
+    if re.fullmatch(r"\d{4}", value.strip()):
+        return f"{value.strip()}-01-01T00:00:00+00:00"
     try:
         parsed = parsedate_to_datetime(value)
         if parsed.tzinfo is None:
@@ -305,36 +287,12 @@ def _generic_rss_matches(item: dict[str, Any], keyword: str, config: dict[str, A
     return True
 
 
-def _telegram_handoff_results(source: dict[str, Any], keyword: str, config: dict[str, Any], kind: str) -> list[dict[str, Any]]:
-    bot_username = string_value(config.get("botUsername"))
-    if not bot_username:
-        raise ValueError("请配置 Z-Library Telegram Bot 用户名")
-    external_ref = f"{source['id']}:{bot_username}:{keyword}"
-    return [
-        {
-            "sourceId": source["id"],
-            "providerType": "telegram",
-            "externalId": f"zlib_tg:{_hash_ref(external_ref)}",
-            "title": f"在 Z-Library Telegram Bot 搜索：{keyword}",
-            "subtitle": f"@{bot_username} · {config.get('searchCommand') or '/search'}",
-            "author": None,
-            "description": "当前源未配置 Telegram gateway。请打开外部链接，在 Telegram 中向 Z-Library Bot 发送搜索关键词。",
-            "coverUrl": None,
-            "externalUrl": _telegram_bot_url(bot_username),
-            "format": "comic" if kind == "comic" else "ebook",
-            "size": None,
-            "language": None,
-            "publishedAt": None,
-            "downloadAvailable": False,
-            "downloadMeta": {
-                "type": "telegram_zlibrary_handoff",
-                "botUsername": bot_username,
-                "searchCommand": config.get("searchCommand"),
-                "keyword": keyword,
-            },
-            "raw": {"telegramZLibrary": True, "handoff": True},
-        }
-    ]
+def _positive_config_int(value: Any, fallback: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return fallback
+    return min(max(parsed, 1), maximum)
 
 
 def _gateway_items(payload: Any) -> list[dict[str, Any]]:
@@ -342,79 +300,102 @@ def _gateway_items(payload: Any) -> list[dict[str, Any]]:
     return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
-def _gateway_item_to_result(source: dict[str, Any], item: dict[str, Any], index: int, config: dict[str, Any]) -> dict[str, Any] | None:
-    title = string_value(item.get("title"))
-    if not title:
-        return None
-    download_url = string_value(item.get("downloadUrl"))
-    file_id = string_value(item.get("fileId"))
-    message_id = string_value(item.get("messageId"))
-    bot_username = string_value(config.get("botUsername"))
-    external_url = string_value(item.get("externalUrl")) or string_value(item.get("telegramUrl")) or (_telegram_bot_url(bot_username) if bot_username else None)
-    external_ref = f"{source['id']}:{title}:{file_id or message_id or index}"
-    external_id = string_value(item.get("externalId")) or f"zlib_tg:{_hash_ref(external_ref)}"
-    can_download = bool(config.get("downloadEnabled") and (_is_http_url(download_url) or file_id or message_id))
+def _zlibrary_config(source: dict[str, Any]) -> dict[str, Any]:
+    config = source_config(source)
+    base_url = normalize_base_url(string_value(config.get("baseUrl"))) if string_value(config.get("baseUrl")) else None
     return {
-        "sourceId": source["id"],
-        "providerType": "telegram",
-        "externalId": external_id,
-        "title": title,
-        "subtitle": string_value(item.get("subtitle")),
-        "author": string_value(item.get("author")),
-        "description": string_value(item.get("description")),
-        "coverUrl": string_value(item.get("coverUrl")),
-        "externalUrl": external_url,
-        "format": string_value(item.get("format")) or "ebook",
-        "size": string_value(item.get("size")),
-        "language": string_value(item.get("language")),
-        "publishedAt": string_value(item.get("publishedAt")),
-        "downloadAvailable": can_download,
-        "downloadMeta": {
-            "type": "telegram_zlibrary",
-            "botUsername": bot_username,
-            "fileId": file_id,
-            "messageId": message_id,
-            "downloadUrl": download_url if _is_http_url(download_url) else None,
-        }
-        if can_download
-        else None,
-        "raw": {"telegramZLibrary": True, "gateway": True, "item": item.get("raw", item)},
+        "email": string_value(config.get("email")),
+        "password": string_value(config.get("password")),
+        "baseUrl": base_url,
+        "languages": array_value(config.get("languages")),
+        "extensions": [item.upper() for item in array_value(config.get("extensions"))],
+        "exact": config.get("exact") is True,
+        "pageSize": _positive_config_int(config.get("pageSize"), 20, 50),
     }
 
 
-def _search_telegram_gateway(source: dict[str, Any], keyword: str, config: dict[str, Any], kind: str, page: int, page_size: int) -> list[dict[str, Any]]:
-    gateway_url = string_value(config.get("gatewayUrl"))
-    if not _is_http_url(gateway_url):
-        raise ValueError("Z-Library Telegram gatewayUrl 必须是 http/https URL")
-    request = UrlRequest(
-        gateway_url,
-        data=json.dumps(
-            {
-                "provider": "zlibrary_telegram_bot",
-                "botUsername": config.get("botUsername"),
-                "searchCommand": config.get("searchCommand"),
-                "resultParseMode": config.get("resultParseMode"),
-                "keyword": keyword,
-                "kind": kind,
-                "page": page,
-                "pageSize": page_size,
-            }
-        ).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
-        method="POST",
+def _authors_text(value: Any) -> str | None:
+    if isinstance(value, list):
+        names: list[str] = []
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                names.append(item.strip())
+            elif isinstance(item, dict) and string_value(item.get("author")):
+                names.append(string_value(item.get("author")) or "")
+        return "; ".join(names) if names else None
+    return string_value(value)
+
+
+def _zlibrary_filename(book: dict[str, Any], title: str) -> str:
+    extension = (string_value(book.get("extension")) or "epub").lower().lstrip(".")
+    return f"{Path(title).stem or 'zlibrary-book'}.{extension}"
+
+
+def _zlibrary_item_to_result(source: dict[str, Any], book: dict[str, Any], base_url: str) -> dict[str, Any] | None:
+    title = string_value(book.get("title")) or string_value(book.get("name"))
+    if not title:
+        return None
+    book_id = str(book.get("id") or "").strip() or _hash_ref(string_value(book.get("href")) or title)
+    book_hash = string_value(book.get("hash"))
+    extension = string_value(book.get("extension"))
+    href = string_value(book.get("href"))
+    filename = _zlibrary_filename(book, title)
+    return {
+        "sourceId": source["id"],
+        "providerType": "zlibrary",
+        "externalId": f"zlibrary:{book_id}",
+        "title": title,
+        "subtitle": string_value(book.get("publisher")) or string_value(book.get("series")),
+        "author": _authors_text(book.get("authors")) or string_value(book.get("author")),
+        "description": string_value(book.get("description")),
+        "coverUrl": string_value(book.get("cover")),
+        "externalUrl": href,
+        "format": extension.lower() if extension else "ebook",
+        "size": string_value(book.get("filesizeString")) or string_value(book.get("filesize")),
+        "language": string_value(book.get("language")),
+        "publishedAt": _date_iso(string_value(book.get("year"))),
+        "downloadAvailable": bool(book_id and book_hash),
+        "downloadMeta": {
+            "type": "zlibrary_eapi",
+            "filename": filename,
+            "zlibraryBookId": book_id,
+            "zlibraryBookHash": book_hash,
+            "href": href,
+            "baseUrl": base_url,
+            "extension": extension,
+            "filesize": book.get("filesize"),
+            "filesizeString": string_value(book.get("filesizeString")),
+        }
+        if book_id and book_hash
+        else None,
+        "raw": {"zlibrary": True, "book": {key: value for key, value in book.items() if key not in {"dl", "readOnlineUrl"}}},
+    }
+
+
+def _search_zlibrary(source: dict[str, Any], keyword: str, page: int, page_size: int) -> list[dict[str, Any]]:
+    config = _zlibrary_config(source)
+    client, session = login_with_config(config)
+    payload = client.search(
+        session,
+        keyword,
+        languages=config.get("languages") or [],
+        extensions=config.get("extensions") or [],
+        exact=bool(config.get("exact")),
+        page=page,
+        limit=page_size,
     )
-    try:
-        with urlopen(request, timeout=30) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except HTTPError as exc:
-        raise ValueError(f"Z-Library Telegram gateway 搜索失败：HTTP {exc.code}") from exc
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"Z-Library Telegram gateway 返回了无效 JSON：{exc}") from exc
-    return [
-        result
-        for index, item in enumerate(_gateway_items(payload))
-        if (result := _gateway_item_to_result(source, item, index, config)) is not None
-    ]
+    books = payload.get("books")
+    if not isinstance(books, list):
+        exact_match = payload.get("exactMatch")
+        books = exact_match.get("books") if isinstance(exact_match, dict) else []
+    results: list[dict[str, Any]] = []
+    for book in books:
+        if not isinstance(book, dict):
+            continue
+        result = _zlibrary_item_to_result(source, book, session.base_url)
+        if result:
+            results.append(result)
+    return results
 
 
 def _manual_item_to_result(source: dict[str, Any], item: dict[str, Any], index: int) -> dict[str, Any] | None:
@@ -595,24 +576,24 @@ def test_source_provider(source: dict[str, Any]) -> ProviderResult:
             return ProviderResult(False, "漫画 API 源需要配置 searchUrl/apiUrl，或在 config.items 中配置至少一条结果。")
         return ProviderResult(True, f"漫画 API 静态配置有效，可搜索 {len(items)} 条结果。", {"apiConfigured": False})
 
-    if provider_type == "telegram":
-        config = _telegram_config(source)
-        bot_username = string_value(config.get("botUsername"))
-        gateway_url = string_value(config.get("gatewayUrl"))
-        if not bot_username and not gateway_url:
-            return ProviderResult(False, "请配置 Z-Library Telegram Bot 用户名，或配置自建 gatewayUrl。")
-        if bot_username and not _is_valid_bot_username(bot_username):
-            return ProviderResult(False, "Z-Library Telegram Bot 用户名格式不正确。")
-        if gateway_url and not _is_http_url(gateway_url):
-            return ProviderResult(False, "gatewayUrl 必须是 http/https URL。")
+    if provider_type == "zlibrary":
+        config = _zlibrary_config(source)
+        if not config.get("email") or not config.get("password"):
+            return ProviderResult(False, "请配置 Z-Library singlelogin 邮箱和密码。")
+        try:
+            client, session = login_with_config(config)
+        except ValueError as exc:
+            return ProviderResult(False, str(exc))
         return ProviderResult(
             True,
-            "Z-Library Telegram Bot 源配置有效，将通过 gateway 执行搜索。" if gateway_url else "Z-Library Telegram Bot 源配置有效，将返回 Telegram handoff 搜索结果。",
+            f"Z-Library eapi 可用，当前使用 {session.base_url} 执行搜索和下载。",
             {
-                "botUsername": f"@{bot_username}" if bot_username else None,
-                "gatewayConfigured": bool(gateway_url),
-                "searchCommand": config.get("searchCommand"),
-                "downloadEnabled": config.get("downloadEnabled"),
+                "emailConfigured": True,
+                "passwordConfigured": True,
+                "baseUrl": session.base_url,
+                "languages": config.get("languages"),
+                "extensions": config.get("extensions"),
+                "pageSize": config.get("pageSize"),
             },
         )
 
@@ -657,16 +638,9 @@ def search_source_provider(source: dict[str, Any], keyword: str, kind: str | Non
         results = [result for index, item in enumerate(matched) if (result := _comic_api_item_to_result(source, item, index))]
         return results, {"providerType": provider_type, "capabilities": PROVIDER_CAPABILITIES[provider_type]}
 
-    if provider_type == "telegram":
-        config = _telegram_config(source)
-        bot_username = string_value(config.get("botUsername"))
-        if bot_username and not _is_valid_bot_username(bot_username):
-            raise ValueError("Z-Library Telegram Bot 用户名格式不正确")
-        search_kind = _source_kind(source, kind)
-        if string_value(config.get("gatewayUrl")):
-            results = _search_telegram_gateway(source, keyword, config, search_kind, page, page_size)
-        else:
-            results = _telegram_handoff_results(source, keyword, config, search_kind)
+    if provider_type == "zlibrary":
+        config = _zlibrary_config(source)
+        results = _search_zlibrary(source, keyword, page, min(page_size, int(config.get("pageSize") or page_size)))
         return results, {"providerType": provider_type, "capabilities": PROVIDER_CAPABILITIES[provider_type]}
 
     config = source_config(source)

@@ -22,6 +22,8 @@ class Settings(BaseSettings):
     automatic_backup_enabled: bool = True
     automatic_backup_check_on_startup: bool = True
     automatic_backup_interval_seconds: int = Field(default=3600, ge=60)
+    download_queue_enabled: bool = True
+    download_queue_interval_seconds: int = Field(default=5, ge=1)
     qbittorrent_url: str | None = None
     qbittorrent_username: str | None = None
     qbittorrent_password: str | None = None

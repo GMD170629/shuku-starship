@@ -43,7 +43,7 @@ type SourceSearchResult = {
 type SourceSearchRecordView = { id: string; externalId: string; status: string };
 type SourcesPayload = { ok: boolean; data?: { sources: SourceView[] }; error?: { message: string } };
 type SearchPayload = { ok: boolean; data?: { results: SourceSearchResult[]; records?: SourceSearchRecordView[] }; error?: { message: string } };
-type CreateDownloadPayload = { ok: boolean; data?: { record: SourceSearchRecordView; alreadyQueued?: boolean }; error?: { message: string } };
+type CreateDownloadPayload = { ok: boolean; data?: { task?: { id: string; status: string }; record: SourceSearchRecordView; alreadyQueued?: boolean }; error?: { message: string } };
 
 const kindOptions = [
   { value: 'mixed', label: '混合' },
@@ -123,7 +123,7 @@ export function SourceSearchPage() {
         if (!payload.ok) throw new Error(payload.error?.message ?? '读取源列表失败');
         const nextSources = payload.data?.sources ?? [];
         setSources(nextSources);
-        const firstEnabled = nextSources.find((source) => source.enabled);
+        const firstEnabled = nextSources.find((source) => source.enabled && source.providerType === 'zlibrary') ?? nextSources.find((source) => source.enabled);
         if (firstEnabled) setSourceId(firstEnabled.id);
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : '读取源列表失败'));
@@ -193,7 +193,7 @@ export function SourceSearchPage() {
       const payload = (await response.json()) as CreateDownloadPayload;
       if (!payload.ok || !payload.data?.record) throw new Error(payload.error?.message ?? '创建下载任务失败');
       setRecords((current) => [...current.filter((item) => item.externalId !== result.externalId), payload.data!.record]);
-      const successMessage = payload.data.alreadyQueued ? '已在下载队列中' : '已加入下载队列';
+      const successMessage = payload.data.alreadyQueued ? '已在下载队列中，下载完成后会自动导入' : '已加入下载队列，下载完成后会自动导入';
       setMessage(successMessage);
       toast.success(successMessage);
     } catch (reason) {

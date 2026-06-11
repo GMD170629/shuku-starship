@@ -22,7 +22,8 @@ dependencies = [
   "lxml>=5.2.0",
   "pypdfium2>=4.30.0",
   "watchdog>=4.0.0",
-  "python-multipart>=0.0.20"
+  "python-multipart>=0.0.20",
+  "zlibrary==1.0.2"
 ]
 
 [project.optional-dependencies]

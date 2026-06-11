@@ -48,7 +48,7 @@ const statusOptions = [
 const providerOptions = [
   { value: 'all', label: '全部类型' },
   { value: 'manual', label: '手动源' },
-  { value: 'telegram', label: 'Z-Library Telegram Bot' },
+  { value: 'zlibrary', label: 'Z-Library' },
   { value: 'pt_rss', label: 'PT RSS' },
   { value: 'comic_api', label: '漫画 API' },
   { value: 'rss', label: 'RSS' },

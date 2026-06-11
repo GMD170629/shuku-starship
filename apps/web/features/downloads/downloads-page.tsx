@@ -49,7 +49,7 @@ const statusLabels: Record<string, string> = {
 
 const typeLabels: Record<string, string> = {
   manual: '手动',
-  telegram: 'Z-Library Telegram Bot',
+  zlibrary: 'Z-Library',
   torrent: 'Torrent',
   http: 'HTTP',
   blackhole: 'Blackhole'

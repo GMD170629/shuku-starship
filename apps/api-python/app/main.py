@@ -10,6 +10,7 @@ from app.db.bootstrap import bootstrap_database
 from app.db.session import SessionLocal
 from app.db.session import engine
 from app.services.backup_scheduler import start_automatic_backup_scheduler
+from app.services.download_queue import start_download_queue_worker
 
 
 def create_app(settings_override: Settings | None = None, session_factory: Callable[[], Session] | None = None) -> FastAPI:
@@ -21,10 +22,14 @@ def create_app(settings_override: Settings | None = None, session_factory: Calla
         if session_factory is None:
             bootstrap_database(engine, settings)
         scheduler = start_automatic_backup_scheduler(factory, settings)
+        download_queue_worker = start_download_queue_worker(factory, settings)
         app.state.automatic_backup_scheduler = scheduler
+        app.state.download_queue_worker = download_queue_worker
         try:
             yield
         finally:
+            if download_queue_worker is not None:
+                download_queue_worker.stop()
             if scheduler is not None:
                 scheduler.stop()
 

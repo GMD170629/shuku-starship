@@ -23,6 +23,7 @@ def test_settings(tmp_path) -> Settings:
         download_inbox_path=str(tmp_path / "downloads" / "inbox"),
         secure_cookies=False,
         automatic_backup_enabled=False,
+        download_queue_enabled=False,
     )
 
 

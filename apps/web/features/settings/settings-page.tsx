@@ -583,7 +583,7 @@ export function SettingsPage() {
           ) : active === '源管理' ? (
             <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-5">
               <div className="font-semibold">通用来源配置</div>
-              <div className="mt-1 text-sm leading-6 text-slate-500">集中管理手动源、PT RSS、Z-Library Telegram Bot、漫画 API、通用 RSS 和 HTTP 源。可保存配置、脱敏展示，并通过已注册 Provider 执行测试和搜索。</div>
+              <div className="mt-1 text-sm leading-6 text-slate-500">集中管理手动源、PT RSS、Z-Library、漫画 API、通用 RSS 和 HTTP 源。可保存配置、脱敏展示，并通过已注册 Provider 执行测试和搜索。</div>
               <Link href="/settings/sources" className="mt-4 inline-flex min-h-11 items-center justify-center rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700">
                 打开源管理
               </Link>

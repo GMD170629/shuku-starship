@@ -10,6 +10,7 @@ from pathlib import Path
 from time import time_ns
 from typing import Any
 from urllib.parse import unquote, urlparse
+from urllib.parse import urljoin
 from urllib.parse import urlencode
 from urllib.request import Request as UrlRequest
 from urllib.request import urlopen
@@ -18,6 +19,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
+from app.services.zlibrary_eapi import USER_AGENT, login_with_config
 from app.worker.importer import ImportOptions, import_managed_book
 
 
@@ -105,24 +107,24 @@ def qbittorrent_config(db: Session, settings: Settings) -> QbittorrentConfig:
 
 def infer_download_task_type(provider_type: str, download_meta: Any) -> str:
     meta = remote_ref(download_meta)
+    if provider_type == "zlibrary" and meta.get("type") == "zlibrary_eapi":
+        return "zlibrary"
     if string_value(meta.get("downloadUrl")):
         return "http"
-    if provider_type == "telegram":
-        return "telegram"
     if provider_type in {"pt_rss", "torrent"}:
         return "blackhole" if meta.get("type") == "blackhole" or meta.get("kind") == "blackhole" or string_value(meta.get("blackholePath")) else "torrent"
-    if provider_type in {"http", "rss", "comic_api"}:
+    if provider_type in {"http", "rss", "comic_api", "zlibrary"}:
         return "http"
     return "manual"
 
 
 def has_usable_download_meta(provider_type: str, download_meta: Any) -> bool:
     meta = remote_ref(download_meta)
+    if provider_type == "zlibrary" and meta.get("type") == "zlibrary_eapi" and string_value(meta.get("zlibraryBookId")) and string_value(meta.get("zlibraryBookHash")):
+        return True
     if string_value(meta.get("downloadUrl")):
         return True
     if provider_type == "pt_rss" and (string_value(meta.get("magnetUrl")) or string_value(meta.get("torrentUrl")) or string_value(meta.get("blackholePath"))):
-        return True
-    if provider_type == "telegram" and (string_value(meta.get("fileId")) or string_value(meta.get("messageId"))):
         return True
     return False
 
@@ -331,30 +333,70 @@ def execute_torrent_task(db: Session, settings: Settings, task: dict[str, Any]) 
     raise ValueError("torrent 下载任务缺少 torrentUrl、magnetUrl 或 blackholePath")
 
 
-def execute_telegram_download(db: Session, settings: Settings, task: dict[str, Any]) -> Path:
+def source_config(db: Session, source_id: str) -> dict[str, Any]:
+    source = row(db, "SELECT `config` FROM `Source` WHERE `id` = :id", {"id": source_id}) if has_table(db, "Source") else None
+    if not source:
+        raise ValueError("Z-Library 下载任务缺少对应源配置")
+    raw_config = source.get("config")
+    if isinstance(raw_config, dict):
+        return raw_config
+    if isinstance(raw_config, str) and raw_config.strip():
+        try:
+            parsed = json.loads(raw_config)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Z-Library 源配置不是有效 JSON") from exc
+        if isinstance(parsed, dict):
+            return parsed
+    return {}
+
+
+def execute_zlibrary_task(db: Session, settings: Settings, task: dict[str, Any]) -> Path:
     ref = remote_ref(task.get("remoteRef"))
-    if string_value(ref.get("downloadUrl")):
-        return execute_http_download(db, settings, task)
-    file_id = string_value(ref.get("fileId"))
-    message_id = string_value(ref.get("messageId"))
-    if not file_id and not message_id:
-        raise ValueError("Z-Library Telegram Bot 下载需要 gateway 返回 downloadUrl，或提供 fileId/messageId 作为 handoff。")
-    filename = ensure_suffix(string_value(ref.get("filename")) or string_value(task.get("displayName")) or string_value(ref.get("externalId")) or str(task.get("id") or "telegram"), ".telegram.txt")
-    target_path = unique_inbox_path(settings, filename)
-    handoff = {
-        "type": "telegram_zlibrary_handoff",
-        "taskId": task.get("id"),
-        "title": task.get("displayName"),
-        "botUsername": ref.get("botUsername"),
-        "fileId": file_id or None,
-        "messageId": message_id or None,
-        "externalId": ref.get("externalId"),
-        "externalUrl": ref.get("externalUrl"),
-        "createdAt": now().isoformat(),
-        "message": "Telegram Bot 未返回直接 downloadUrl。请使用 fileId/messageId 或 externalUrl 在 Telegram/gateway 中完成下载后导入。",
-    }
-    target_path.write_text(json.dumps(handoff, ensure_ascii=False, indent=2), encoding="utf-8")
-    return target_path
+    book_id = string_value(ref.get("zlibraryBookId"))
+    book_hash = string_value(ref.get("zlibraryBookHash"))
+    if not book_id or not book_hash:
+        raise ValueError("Z-Library 下载任务缺少 zlibraryBookId/zlibraryBookHash")
+
+    config = source_config(db, string_value(task.get("sourceId")))
+    if string_value(ref.get("baseUrl")) and not string_value(config.get("baseUrl")):
+        config = {**config, "baseUrl": string_value(ref.get("baseUrl"))}
+    client, session = login_with_config(config)
+    file_data = client.get_download_link(session, book_id, book_hash)
+    download_url = string_value(file_data.get("downloadLink"))
+    if not download_url:
+        raise ValueError("Z-Library 下载链接为空")
+    if download_url.startswith("/"):
+        download_url = urljoin(f"{session.base_url}/", download_url.lstrip("/"))
+    parsed = urlparse(download_url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Z-Library 下载链接不是 http/https URL")
+
+    headers = {"Accept": "*/*", "User-Agent": USER_AGENT, "Cookie": session.cookie}
+    referer = string_value(ref.get("href")) or string_value(ref.get("externalUrl"))
+    if referer:
+        headers["Referer"] = referer
+    request = UrlRequest(download_url, headers=headers)
+    with urlopen(request, timeout=60) as response:
+        content_type = (response.headers.get("content-type") or "").lower()
+        if "text/html" in content_type:
+            raise ValueError("Z-Library 返回了 HTML 页面，可能是下载额度不足、登录失效或浏览器校验页。")
+        filename = sanitize_filename(
+            filename_from_content_disposition(response.headers.get("content-disposition"))
+            or string_value(ref.get("filename"))
+            or filename_from_url(response.geturl() or download_url)
+            or string_value(task.get("displayName"))
+        )
+        assert_allowed_extension(filename)
+        target_path = unique_inbox_path(settings, filename)
+        try:
+            with target_path.open("xb") as handle:
+                shutil.copyfileobj(response, handle)
+            if target_path.stat().st_size <= 0:
+                raise ValueError("下载文件为空")
+            return target_path
+        except Exception:
+            target_path.unlink(missing_ok=True)
+            raise
 
 
 def run_task(db: Session, settings: Settings, task: dict[str, Any]) -> Path:
@@ -363,10 +405,10 @@ def run_task(db: Session, settings: Settings, task: dict[str, Any]) -> Path:
         return execute_http_download(db, settings, task)
     if task_type == "blackhole":
         return execute_blackhole(settings, task)
-    if task_type == "telegram":
-        return execute_telegram_download(db, settings, task)
     if task_type == "torrent":
         return execute_torrent_task(db, settings, task)
+    if task_type == "zlibrary":
+        return execute_zlibrary_task(db, settings, task)
     raise ValueError(f"下载类型 {task_type} 暂未支持")
 
 

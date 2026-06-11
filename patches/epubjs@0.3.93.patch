@@ -1,0 +1,84 @@
+diff --git a/lib/navigation.js b/lib/navigation.js
+index 091e38415f9a2b8a7b70ed01530aa50d2a2eb7df..75229b807306d73361daf6d08d5c41af88388cec 100644
+--- a/lib/navigation.js
++++ b/lib/navigation.js
+@@ -301,13 +301,19 @@ class Navigation {
+ 
+     for (i = 0; i < length; ++i) {
+       item = this.ncxItem(navPoints[i]);
++      if (!item) continue;
+       toc[item.id] = item;
+ 
+       if (!item.parent) {
+         list.push(item);
+       } else {
+         parent = toc[item.parent];
+-        parent.subitems.push(item);
++
++        if (parent) {
++          parent.subitems.push(item);
++        } else {
++          list.push(item);
++        }
+       }
+     }
+ 
+@@ -324,13 +330,15 @@ class Navigation {
+   ncxItem(item) {
+     var id = item.getAttribute("id") || false,
+         content = (0, _core.qs)(item, "content"),
+-        src = content.getAttribute("src"),
++        src = content && content.getAttribute("src"),
+         navLabel = (0, _core.qs)(item, "navLabel"),
+-        text = navLabel.textContent ? navLabel.textContent : "",
++        text = navLabel && navLabel.textContent ? navLabel.textContent : "",
+         subitems = [],
+         parentNode = item.parentNode,
+         parent;
+ 
++    if (!src) return;
++
+     if (parentNode && (parentNode.nodeName === "navPoint" || parentNode.nodeName.split(':').slice(-1)[0] === "navPoint")) {
+       parent = parentNode.getAttribute("id");
+     }
+diff --git a/src/navigation.js b/src/navigation.js
+index 801598bdc7bfb8626e0e699bb2405c338a1c183c..4f75f16cee81ff57c61b090a6730839cf8e6e226 100644
+--- a/src/navigation.js
++++ b/src/navigation.js
+@@ -289,12 +289,17 @@ class Navigation {
+ 
+ 		for (i = 0; i < length; ++i) {
+ 			item = this.ncxItem(navPoints[i]);
++			if (!item) continue;
+ 			toc[item.id] = item;
+ 			if(!item.parent) {
+ 				list.push(item);
+ 			} else {
+ 				parent = toc[item.parent];
+-				parent.subitems.push(item);
++				if(parent) {
++					parent.subitems.push(item);
++				} else {
++					list.push(item);
++				}
+ 			}
+ 		}
+ 
+@@ -310,13 +315,15 @@ class Navigation {
+ 	ncxItem(item){
+ 		var id = item.getAttribute("id") || false,
+ 				content = qs(item, "content"),
+-				src = content.getAttribute("src"),
++				src = content && content.getAttribute("src"),
+ 				navLabel = qs(item, "navLabel"),
+-				text = navLabel.textContent ? navLabel.textContent : "",
++				text = navLabel && navLabel.textContent ? navLabel.textContent : "",
+ 				subitems = [],
+ 				parentNode = item.parentNode,
+ 				parent;
+ 
++		if(!src) return;
++
+ 		if(parentNode && (parentNode.nodeName === "navPoint" || parentNode.nodeName.split(':').slice(-1)[0] === "navPoint")) {
+ 			parent = parentNode.getAttribute("id");
+ 		}

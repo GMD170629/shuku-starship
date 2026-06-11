@@ -10,6 +10,7 @@ from sqlalchemy import text
 from app.api.routes import compat
 from app.core.auth import hash_password
 from app.models.auth import User
+from app.services.download_queue import process_next_download_task
 from tests.test_worker_importer import create_worker_tables, write_comic_fixture, write_epub_fixture, write_pdf_fixture
 
 
@@ -117,45 +118,103 @@ def serve_qbittorrent_api():
     return server
 
 
-def serve_telegram_gateway():
+def serve_zlibrary_eapi(mode="ok"):
     requests = []
 
-    class GatewayHandler(BaseHTTPRequestHandler):
+    class ZlibHandler(BaseHTTPRequestHandler):
         def log_message(self, format, *args):
             return
 
-        def do_POST(self):
-            length = int(self.headers.get("content-length", "0"))
-            body = json.loads(self.rfile.read(length).decode("utf-8"))
-            requests.append(body)
-            payload = {
-                "results": [
-                    {
-                        "externalId": "book-1",
-                        "title": "Orbital Mechanics",
-                        "author": "Ada Example",
-                        "format": "epub",
-                        "size": "2 MB",
-                        "downloadUrl": f"http://127.0.0.1:{self.server.server_port}/orbital.epub",
-                    },
-                    {
-                        "title": "Message Only",
-                        "messageId": "msg-2",
-                        "format": "pdf",
-                    },
-                ]
-            }
+        def json_response(self, status, payload):
             encoded = json.dumps(payload).encode("utf-8")
-            self.send_response(200)
-            self.send_header("content-type", "application/json")
+            self.send_response(status)
+            self.send_header("content-type", "application/json; charset=UTF-8")
             self.send_header("content-length", str(len(encoded)))
             self.end_headers()
             self.wfile.write(encoded)
 
-    server = ThreadingHTTPServer(("127.0.0.1", 0), GatewayHandler)
+        def do_POST(self):
+            length = int(self.headers.get("content-length") or "0")
+            body = self.rfile.read(length).decode("utf-8")
+            form = {key: values[0] for key, values in parse_qs(body).items()}
+            requests.append({"method": "POST", "path": self.path, "form": form, "cookie": self.headers.get("cookie")})
+            if mode == "browser_check":
+                encoded = b"<html><title>Checking your browser ...</title></html>"
+                self.send_response(503)
+                self.send_header("content-type", "text/html;charset=utf-8")
+                self.send_header("content-length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+                return
+            if self.path == "/eapi/user/login":
+                if mode == "bad_login":
+                    self.json_response(400, {"success": 0, "error": "Incorrect email or password"})
+                    return
+                self.json_response(200, {"success": 1, "user": {"id": "user-1", "remix_userkey": "key-1"}})
+                return
+            if self.path == "/eapi/book/search":
+                self.json_response(
+                    200,
+                    {
+                        "success": 1,
+                        "books": [
+                            {
+                                "id": 123,
+                                "hash": "abc123",
+                                "title": "Orbital Mechanics",
+                                "author": "Ada Orbit",
+                                "publisher": "Star Press",
+                                "language": "english",
+                                "extension": "EPUB",
+                                "filesizeString": "2 MB",
+                                "cover": f"http://127.0.0.1:{server.server_port}/covers/123.jpg",
+                                "href": f"http://127.0.0.1:{server.server_port}/book/123/orbital.html",
+                                "description": "Flight dynamics reference",
+                                "year": 2025,
+                            }
+                        ],
+                        "pagination": {"total_items": 1},
+                    },
+                )
+                return
+            self.send_response(404)
+            self.end_headers()
+
+        def do_GET(self):
+            requests.append({"method": "GET", "path": self.path, "cookie": self.headers.get("cookie"), "referer": self.headers.get("referer")})
+            if mode == "browser_check":
+                encoded = b"<html><title>Checking your browser ...</title></html>"
+                self.send_response(503)
+                self.send_header("content-type", "text/html;charset=utf-8")
+                self.send_header("content-length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+                return
+            if self.path == "/eapi/book/123/abc123":
+                self.json_response(200, {"success": 1, "book": {"id": 123, "hash": "abc123", "title": "Orbital Mechanics"}})
+                return
+            if self.path == "/eapi/book/123/abc123/file":
+                if "remix_userid=user-1" not in (self.headers.get("cookie") or ""):
+                    self.json_response(400, {"success": 0, "error": "Please login"})
+                    return
+                self.json_response(200, {"success": 1, "file": {"downloadLink": f"http://127.0.0.1:{server.server_port}/download/orbital.epub", "extension": "epub"}})
+                return
+            if self.path == "/download/orbital.epub":
+                encoded = b"zlibrary-epub"
+                self.send_response(200)
+                self.send_header("content-type", "application/epub+zip")
+                self.send_header("content-disposition", "attachment; filename=orbital.epub")
+                self.send_header("content-length", str(len(encoded)))
+                self.end_headers()
+                self.wfile.write(encoded)
+                return
+            self.send_response(404)
+            self.end_headers()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), ZlibHandler)
+    server.requests = requests
     thread = Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    server.requests = requests
     return server
 
 
@@ -776,81 +835,176 @@ def test_generic_rss_and_comic_api_providers_create_download_tasks(client, db_se
         server.shutdown()
 
 
-def test_telegram_provider_handoff_and_gateway_results_create_download_tasks(client, db_session):
+def test_create_download_task_only_queues_without_downloading(client, db_session, test_settings, tmp_path):
     create_source_tables(db_session)
     create_download_tables(db_session)
+    test_settings.resolved_download_inbox_path.mkdir(parents=True)
     _login(client, db_session)
-
-    handoff_source = client.post(
-        "/api/sources",
-        json={"name": "Telegram handoff", "kind": "novel", "providerType": "telegram", "config": {"botUsername": "@zlib_test_bot"}},
-    )
-    assert handoff_source.status_code == 201
-    handoff_id = handoff_source.json()["data"]["source"]["id"]
-
-    handoff_test = client.post(f"/api/sources/{handoff_id}/test")
-    assert handoff_test.status_code == 200
-    assert handoff_test.json()["data"]["result"]["status"] == "ok"
-    assert "handoff" in handoff_test.json()["data"]["result"]["message"]
-
-    handoff_search = client.post(f"/api/sources/{handoff_id}/search", json={"keyword": "星际远航", "kind": "novel"})
-    assert handoff_search.status_code == 200
-    handoff_result = handoff_search.json()["data"]["results"][0]
-    assert handoff_result["providerType"] == "telegram"
-    assert handoff_result["downloadAvailable"] is False
-    assert handoff_result["externalUrl"] == "https://t.me/zlib_test_bot"
-    assert handoff_result["format"] == "ebook"
-
-    gateway = serve_telegram_gateway()
+    source_dir = tmp_path / "queue-source"
+    source_dir.mkdir()
+    (source_dir / "book.epub").write_bytes(b"queued-book")
+    server = serve_directory(source_dir)
     try:
-        gateway_source = client.post(
+        created = client.post(
             "/api/sources",
             json={
-                "name": "Telegram gateway",
-                "kind": "novel",
-                "providerType": "telegram",
-                "config": {
-                    "botUsername": "zlib_test_bot",
-                    "gatewayUrl": f"http://127.0.0.1:{gateway.server_port}/search",
-                    "downloadEnabled": True,
-                },
+                "name": "HTTP queue source",
+                "providerType": "http",
+                "config": {"items": [{"externalId": "queue-1", "title": "Queue Book", "downloadUrl": f"http://127.0.0.1:{server.server_port}/book.epub"}]},
             },
         )
-        assert gateway_source.status_code == 201
-        gateway_id = gateway_source.json()["data"]["source"]["id"]
+        assert created.status_code == 201
+        source_id = created.json()["data"]["source"]["id"]
 
-        gateway_test = client.post(f"/api/sources/{gateway_id}/test")
-        assert gateway_test.status_code == 200
-        assert gateway_test.json()["data"]["result"]["details"]["gatewayConfigured"] is True
-
-        searched = client.post(f"/api/sources/{gateway_id}/search", json={"keyword": "orbital mechanics", "kind": "novel", "saveResults": True})
+        searched = client.post(f"/api/sources/{source_id}/search", json={"keyword": "queue", "saveResults": True})
         assert searched.status_code == 200
-        assert gateway.requests[0]["provider"] == "zlibrary_telegram_bot"
-        assert gateway.requests[0]["keyword"] == "orbital mechanics"
-        assert gateway.requests[0]["page"] == 1
-        data = searched.json()["data"]
-        assert data["provider"]["capabilities"]["telegram"] is True
-        assert len(data["results"]) == 2
-        direct = data["results"][0]
-        assert direct["externalId"] == "book-1"
-        assert direct["downloadAvailable"] is True
-        assert direct["downloadMeta"]["type"] == "telegram_zlibrary"
-        assert direct["downloadMeta"]["downloadUrl"].endswith("/orbital.epub")
-        message_only = data["results"][1]
-        assert message_only["downloadAvailable"] is True
-        assert message_only["downloadMeta"]["messageId"] == "msg-2"
+        record = searched.json()["data"]["records"][0]
 
-        direct_record = data["records"][0]
-        direct_task = client.post(f"/api/source-search-records/{direct_record['id']}/create-download-task")
-        assert direct_task.status_code == 201
-        assert direct_task.json()["data"]["task"]["type"] == "http"
-
-        message_record = data["records"][1]
-        message_task = client.post(f"/api/source-search-records/{message_record['id']}/create-download-task")
-        assert message_task.status_code == 201
-        assert message_task.json()["data"]["task"]["type"] == "telegram"
+        queued = client.post(f"/api/source-search-records/{record['id']}/create-download-task")
+        assert queued.status_code == 201
+        task = queued.json()["data"]["task"]
+        assert task["status"] == "queued"
+        assert task["type"] == "http"
+        assert not test_settings.resolved_download_inbox_path.joinpath("book.epub").exists()
     finally:
-        gateway.shutdown()
+        server.shutdown()
+
+
+def test_zlibrary_provider_search_masks_password_and_downloads_with_eapi(client, db_session, test_settings):
+    create_source_tables(db_session)
+    create_download_tables(db_session)
+    test_settings.resolved_download_inbox_path.mkdir(parents=True)
+    _login(client, db_session)
+    server = serve_zlibrary_eapi()
+    try:
+        base_url = f"http://127.0.0.1:{server.server_port}"
+        created = client.post(
+            "/api/sources",
+            json={
+                "name": "Z-Library",
+                "kind": "novel",
+                "providerType": "zlibrary",
+                "config": {"email": "reader@example.com", "password": "secret", "baseUrl": base_url, "languages": ["english"], "extensions": ["EPUB"], "exact": True, "pageSize": 10},
+            },
+        )
+        assert created.status_code == 201
+        source = created.json()["data"]["source"]
+        assert source["providerTypeLabel"] == "Z-Library"
+        assert source["config"]["password"]["configured"] is True
+        source_id = source["id"]
+
+        listed = client.get("/api/sources")
+        assert listed.status_code == 200
+        assert listed.json()["data"]["sources"][0]["config"]["password"]["masked"] == "********"
+
+        updated = client.put(f"/api/sources/{source_id}", json={"config": {"email": "reader@example.com", "password": "", "baseUrl": base_url, "languages": ["english"], "extensions": ["EPUB"], "exact": False, "pageSize": 20}})
+        assert updated.status_code == 200
+        stored_config = json.loads(db_session.execute(text("SELECT config FROM Source WHERE id = :id"), {"id": source_id}).scalar())
+        assert stored_config["password"] == "secret"
+        assert stored_config["baseUrl"] == base_url
+
+        tested = client.post(f"/api/sources/{source_id}/test")
+        assert tested.status_code == 200
+        test_result = tested.json()["data"]["result"]
+        assert test_result["status"] == "ok"
+        assert test_result["details"]["baseUrl"] == base_url
+
+        searched = client.post(f"/api/sources/{source_id}/search", json={"keyword": "orbital", "saveResults": True})
+        assert searched.status_code == 200
+        data = searched.json()["data"]
+        assert data["provider"]["providerType"] == "zlibrary"
+        result = data["results"][0]
+        assert result["providerType"] == "zlibrary"
+        assert result["externalId"] == "zlibrary:123"
+        assert result["downloadAvailable"] is True
+        assert result["downloadMeta"]["type"] == "zlibrary_eapi"
+        assert result["downloadMeta"]["zlibraryBookId"] == "123"
+        assert result["downloadMeta"]["zlibraryBookHash"] == "abc123"
+        assert result["downloadMeta"]["filename"] == "Orbital Mechanics.epub"
+
+        record = data["records"][0]
+        task = client.post(f"/api/source-search-records/{record['id']}/create-download-task")
+        assert task.status_code == 201
+        task_payload = task.json()["data"]["task"]
+        assert task_payload["type"] == "zlibrary"
+
+        started = client.post(f"/api/download-tasks/{task_payload['id']}/start")
+        assert started.status_code == 200
+        downloaded_task = started.json()["data"]["task"]
+        assert downloaded_task["status"] == "downloaded"
+        assert downloaded_task["filePath"].endswith("orbital.epub")
+        assert test_settings.resolved_download_inbox_path.joinpath("orbital.epub").read_bytes() == b"zlibrary-epub"
+        assert any(item["path"] == "/eapi/book/123/abc123/file" and "remix_userid=user-1" in (item["cookie"] or "") for item in server.requests)
+    finally:
+        server.shutdown()
+
+
+def test_telegram_provider_is_no_longer_supported(client, db_session):
+    create_source_tables(db_session)
+    _login(client, db_session)
+    created = client.post(
+        "/api/sources",
+        json={"name": "Old Telegram", "kind": "novel", "providerType": "telegram", "config": {"botUsername": "@zlib_test_bot"}},
+    )
+    assert created.status_code == 201
+    source_id = created.json()["data"]["source"]["id"]
+
+    tested = client.post(f"/api/sources/{source_id}/test")
+    assert tested.status_code == 200
+    assert tested.json()["data"]["result"]["status"] == "failed"
+    assert "尚未实现 Provider" in tested.json()["data"]["result"]["message"]
+
+    searched = client.post(f"/api/sources/{source_id}/search", json={"keyword": "orbital"})
+    assert searched.status_code == 400
+    assert "尚未实现 Provider" in searched.json()["error"]["message"]
+
+
+def test_zlibrary_login_errors_return_search_failure(client, db_session):
+    create_source_tables(db_session)
+    _login(client, db_session)
+    server = serve_zlibrary_eapi("bad_login")
+    try:
+        created = client.post(
+            "/api/sources",
+            json={
+                "name": "Z-Library",
+                "kind": "novel",
+                "providerType": "zlibrary",
+                "config": {"email": "reader@example.com", "password": "bad", "baseUrl": f"http://127.0.0.1:{server.server_port}"},
+            },
+        )
+        assert created.status_code == 201
+        source_id = created.json()["data"]["source"]["id"]
+
+        searched = client.post(f"/api/sources/{source_id}/search", json={"keyword": "orbital"})
+        assert searched.status_code == 400
+        assert "邮箱或密码不正确" in searched.json()["error"]["message"]
+    finally:
+        server.shutdown()
+
+
+def test_zlibrary_browser_check_page_returns_actionable_error(client, db_session):
+    create_source_tables(db_session)
+    _login(client, db_session)
+    server = serve_zlibrary_eapi("browser_check")
+    try:
+        created = client.post(
+            "/api/sources",
+            json={
+                "name": "Z-Library",
+                "kind": "novel",
+                "providerType": "zlibrary",
+                "config": {"email": "reader@example.com", "password": "secret", "baseUrl": f"http://127.0.0.1:{server.server_port}"},
+            },
+        )
+        assert created.status_code == 201
+        source_id = created.json()["data"]["source"]["id"]
+
+        searched = client.post(f"/api/sources/{source_id}/search", json={"keyword": "orbital"})
+        assert searched.status_code == 400
+        assert "浏览器校验页" in searched.json()["error"]["message"]
+    finally:
+        server.shutdown()
 
 
 def test_download_task_http_start_downloads_file(client, db_session, test_settings, tmp_path):
@@ -881,7 +1035,76 @@ def test_download_task_http_start_downloads_file(client, db_session, test_settin
         server.shutdown()
 
 
-def test_download_task_torrent_and_telegram_handoff_execution(client, db_session, test_settings, tmp_path):
+def test_download_queue_worker_downloads_and_imports_http_task(client, db_session, test_settings, tmp_path):
+    create_worker_tables(db_session)
+    create_download_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    test_settings.resolved_download_inbox_path.mkdir(parents=True)
+    _login(client, db_session)
+    source_dir = tmp_path / "queue-http"
+    source_dir.mkdir()
+    write_epub_fixture(source_dir / "queued.epub")
+    server = serve_directory(source_dir)
+    try:
+        created = client.post(
+            "/api/download-tasks",
+            json={"type": "http", "displayName": "queued.epub", "remoteRef": {"downloadUrl": f"http://127.0.0.1:{server.server_port}/queued.epub"}},
+        )
+        assert created.status_code == 201
+        task_id = created.json()["data"]["task"]["id"]
+
+        assert process_next_download_task(db_session, test_settings) is True
+
+        task = db_session.execute(text("SELECT * FROM DownloadTask WHERE id = :id"), {"id": task_id}).mappings().first()
+        assert task["status"] == "completed"
+        assert task["bookId"]
+        assert task["filePath"].endswith("queued.epub")
+        assert test_settings.resolved_download_inbox_path.joinpath("queued.epub").exists()
+        assert db_session.execute(text("SELECT COUNT(*) FROM LibraryWork")).scalar() == 1
+    finally:
+        server.shutdown()
+
+
+def test_download_queue_worker_marks_download_failures(client, db_session, test_settings):
+    create_download_tables(db_session)
+    test_settings.resolved_download_inbox_path.mkdir(parents=True)
+    _login(client, db_session)
+    created = client.post(
+        "/api/download-tasks",
+        json={"type": "http", "displayName": "bad.epub", "remoteRef": {"downloadUrl": "ftp://example.com/bad.epub"}},
+    )
+    assert created.status_code == 201
+    task_id = created.json()["data"]["task"]["id"]
+
+    assert process_next_download_task(db_session, test_settings) is True
+
+    task = db_session.execute(text("SELECT status, errorMessage FROM DownloadTask WHERE id = :id"), {"id": task_id}).mappings().first()
+    assert task["status"] == "failed"
+    assert "http/https" in task["errorMessage"]
+
+
+def test_download_task_retry_requeues_cancelled_task(client, db_session):
+    create_download_tables(db_session)
+    _login(client, db_session)
+    created = client.post(
+        "/api/download-tasks",
+        json={"type": "http", "displayName": "retry.epub", "remoteRef": {"downloadUrl": "https://example.com/retry.epub"}},
+    )
+    assert created.status_code == 201
+    task_id = created.json()["data"]["task"]["id"]
+
+    cancelled = client.post(f"/api/download-tasks/{task_id}/cancel")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["data"]["task"]["status"] == "cancelled"
+
+    retried = client.post(f"/api/download-tasks/{task_id}/retry")
+    assert retried.status_code == 200
+    payload = retried.json()["data"]["task"]
+    assert payload["status"] == "queued"
+    assert payload["progress"] == 0
+
+
+def test_download_task_torrent_execution(client, db_session, test_settings, tmp_path):
     create_download_tables(db_session)
     test_settings.resolved_download_inbox_path.mkdir(parents=True)
     _login(client, db_session)
@@ -914,24 +1137,6 @@ def test_download_task_torrent_and_telegram_handoff_execution(client, db_session
         assert magnet_payload["status"] == "downloaded"
         assert magnet_payload["filePath"].endswith(".magnet")
         assert "magnet:?xt=urn:btih:abc123" in test_settings.resolved_download_inbox_path.joinpath("magnet-book.magnet").read_text(encoding="utf-8")
-
-        telegram_task = client.post(
-            "/api/download-tasks",
-            json={
-                "type": "telegram",
-                "displayName": "telegram-book",
-                "remoteRef": {"botUsername": "zlib_test_bot", "messageId": "msg-1", "externalUrl": "https://t.me/zlib_test_bot"},
-            },
-        )
-        assert telegram_task.status_code == 201
-        telegram_started = client.post(f"/api/download-tasks/{telegram_task.json()['data']['task']['id']}/start")
-        assert telegram_started.status_code == 200
-        telegram_payload = telegram_started.json()["data"]["task"]
-        assert telegram_payload["status"] == "downloaded"
-        assert telegram_payload["filePath"].endswith(".telegram.txt")
-        handoff = json.loads(test_settings.resolved_download_inbox_path.joinpath("telegram-book.telegram.txt").read_text(encoding="utf-8"))
-        assert handoff["messageId"] == "msg-1"
-        assert handoff["botUsername"] == "zlib_test_bot"
     finally:
         server.shutdown()
 
