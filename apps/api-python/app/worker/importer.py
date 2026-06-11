@@ -17,7 +17,7 @@ from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.services.organize_service import apply_organize_job, refresh_metadata_providers
+from app.services.organize_service import apply_organize_job, metadata_title_needs_ai, parse_json_value, refresh_metadata_providers
 
 SUPPORTED_EXTS = {".epub", ".cbz", ".zip", ".pdf"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
@@ -467,7 +467,11 @@ def stage_managed_import_file(source: Path, managed: Path, import_mode: str = "C
             source.rename(managed)
         except OSError:
             shutil.copy2(source, managed)
-            source.unlink()
+            try:
+                source.unlink()
+            except OSError as exc:
+                managed.unlink(missing_ok=True)
+                raise RuntimeError("移动模式需要删除监控目录中的源文件，但当前监控目录不可写或以只读方式挂载；请改用复制模式，或将 /monitor 挂载为可写。") from exc
     else:
         shutil.copy2(source, managed)
     return managed
@@ -512,9 +516,16 @@ def _auto_apply_epub_metadata(db: Session, work_id: str, edition_id: str, task_i
     job = _row(db, "SELECT * FROM `OrganizeJob` WHERE `workId` = :work_id AND `editionId` = :edition_id ORDER BY `updatedAt` DESC LIMIT 1", {"work_id": work_id, "edition_id": edition_id})
     if not job:
         return False
+    work = _row(db, "SELECT * FROM `LibraryWork` WHERE `id` = :work_id", {"work_id": work_id})
+    match_title = str((work or {}).get("title") or "").strip()
+    if metadata_title_needs_ai(match_title):
+        ai_title = _ai_title_for_metadata(db, job["id"], task_id)
+        if not ai_title:
+            return False
+        match_title = ai_title
     for provider in ["douban", "bangumi"]:
         try:
-            result = refresh_metadata_providers(db, job["id"], [provider], force=True)
+            result = refresh_metadata_providers(db, job["id"], [provider], force=True, query=match_title, match_title=match_title)
         except Exception:
             continue
         if int(result.get("added") or 0) <= 0:
@@ -533,6 +544,25 @@ def _auto_apply_epub_metadata(db: Session, work_id: str, edition_id: str, task_i
         _log_import(db, task_id, "info", f"auto metadata applied from {provider}")
         return True
     return False
+
+
+def _ai_title_for_metadata(db: Session, job_id: str, task_id: str) -> str | None:
+    try:
+        refresh_metadata_providers(db, job_id, ["ai"], force=True)
+    except Exception as exc:
+        _log_import(db, task_id, "warning", f"ai title recognition failed: {exc}")
+        return None
+    suggestion = _row(
+        db,
+        "SELECT `suggestedValue` FROM `MetadataSuggestion` WHERE `jobId` = :job_id AND `status` = 'PENDING' AND `source` = 'ai' AND `field` = 'title' ORDER BY `confidence` DESC, `createdAt` ASC LIMIT 1",
+        {"job_id": job_id},
+    )
+    value = parse_json_value((suggestion or {}).get("suggestedValue"))
+    title = str(value or "").strip()
+    if not title or metadata_title_needs_ai(title):
+        return None
+    _log_import(db, task_id, "info", f"ai metadata title recognized: {title}")
+    return title
 
 
 def _insert(db: Session, table: str, values: dict[str, Any]) -> dict[str, Any]:

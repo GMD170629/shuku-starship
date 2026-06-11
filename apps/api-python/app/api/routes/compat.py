@@ -20,6 +20,7 @@ from urllib.request import urlopen
 from fastapi import APIRouter, Depends, File, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from sqlalchemy import inspect, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.auth import get_current_user
@@ -452,6 +453,35 @@ def _delete(db: Session, table: str, row_id: str, id_column: str = "id") -> bool
     return bool(result.rowcount)
 
 
+def _normalize_monitor_root_path(value: Any) -> str:
+    root_path = str(value or "").strip()
+    if not root_path:
+        return ""
+    return os.path.normpath(root_path)
+
+
+def _monitor_folder_by_root_path(db: Session, root_path: str, exclude_id: str | None = None) -> dict[str, Any] | None:
+    if not _has_table(db, "MonitorFolder"):
+        return None
+    params: dict[str, Any] = {"root_path": root_path}
+    sql = "SELECT * FROM `MonitorFolder` WHERE `rootPath` = :root_path"
+    if exclude_id is not None:
+        sql += " AND `id` != :exclude_id"
+        params["exclude_id"] = exclude_id
+    return _row(db, f"{sql} LIMIT 1", params)
+
+
+def _monitor_move_writable_error(root_path: str, import_mode: str | None) -> Response | None:
+    if str(import_mode or "COPY").upper() != "MOVE":
+        return None
+    path = Path(root_path)
+    if not path.exists() or not path.is_dir():
+        return fail("移动模式需要监控文件夹在容器内存在", status_code=400, details={"rootPath": root_path})
+    if not os.access(path, os.W_OK):
+        return fail("移动模式需要监控文件夹可写；当前 /monitor 挂载可能是只读，请改用复制模式或将监控目录以可写方式挂载。", status_code=400, details={"rootPath": root_path, "importMode": "MOVE"})
+    return None
+
+
 @router.get("/dashboard/summary")
 def dashboard_summary(request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
     _user, auth_error = _auth(db, request, settings)
@@ -685,23 +715,36 @@ async def create_monitor_folder(request: Request, db: Session = Depends(get_db),
     if auth_error:
         return auth_error
     payload = await request.json()
-    folder = _insert(
-        db,
-        "MonitorFolder",
-        {
-            "id": f"py_{time_ns()}",
-            "name": payload.get("name") or Path(payload.get("rootPath", "")).name or "监控文件夹",
-            "rootPath": payload.get("rootPath"),
-            "enabled": bool(payload.get("enabled", True)),
-            "importMode": payload.get("importMode") or "COPY",
-            "ignorePatterns": payload.get("ignorePatterns"),
-            "ignoreHidden": bool(payload.get("ignoreHidden", True)),
-            "minFileSizeBytes": int(payload.get("minFileSizeBytes") or 10240),
-            "description": payload.get("description"),
-            "createdAt": _now(),
-            "updatedAt": _now(),
-        },
-    )
+    root_path = _normalize_monitor_root_path(payload.get("rootPath"))
+    if not root_path:
+        return fail("请填写监控文件夹路径", status_code=400)
+    if _monitor_folder_by_root_path(db, root_path):
+        return fail("监控文件夹路径已存在", status_code=409, details={"rootPath": root_path})
+    import_mode = str(payload.get("importMode") or "COPY").upper()
+    move_error = _monitor_move_writable_error(root_path, import_mode)
+    if move_error:
+        return move_error
+    try:
+        folder = _insert(
+            db,
+            "MonitorFolder",
+            {
+                "id": f"py_{time_ns()}",
+                "name": payload.get("name") or Path(root_path).name or "监控文件夹",
+                "rootPath": root_path,
+                "enabled": bool(payload.get("enabled", True)),
+                "importMode": import_mode,
+                "ignorePatterns": payload.get("ignorePatterns"),
+                "ignoreHidden": bool(payload.get("ignoreHidden", True)),
+                "minFileSizeBytes": int(payload.get("minFileSizeBytes") or 10240),
+                "description": payload.get("description"),
+                "createdAt": _now(),
+                "updatedAt": _now(),
+            },
+        )
+    except IntegrityError:
+        db.rollback()
+        return fail("监控文件夹路径已存在", status_code=409, details={"rootPath": root_path})
     return ok({"folder": folder}, status_code=201)
 
 
@@ -713,9 +756,31 @@ async def update_monitor_folder(folder_id: str, request: Request, db: Session = 
         return auth_error
     payload = await request.json()
     mapping = {"rootPath": "rootPath", "importMode": "importMode", "minFileSizeBytes": "minFileSizeBytes", "ignorePatterns": "ignorePatterns", "ignoreHidden": "ignoreHidden", "enabled": "enabled", "name": "name", "description": "description"}
-    folder = _update(db, "MonitorFolder", folder_id, {mapping[key]: value for key, value in payload.items() if key in mapping})
-    if not folder:
+    values = {mapping[key]: value for key, value in payload.items() if key in mapping}
+    existing = _row(db, "SELECT * FROM `MonitorFolder` WHERE `id` = :id", {"id": folder_id}) if _has_table(db, "MonitorFolder") else None
+    if not existing:
         return fail("监控文件夹不存在", status_code=404)
+    if "rootPath" in values:
+        root_path = _normalize_monitor_root_path(values["rootPath"])
+        if not root_path:
+            return fail("请填写监控文件夹路径", status_code=400)
+        if _monitor_folder_by_root_path(db, root_path, exclude_id=folder_id):
+            return fail("监控文件夹路径已存在", status_code=409, details={"rootPath": root_path})
+        values["rootPath"] = root_path
+    if "importMode" in values:
+        values["importMode"] = str(values["importMode"] or "COPY").upper()
+    next_root_path = str(values.get("rootPath") or existing.get("rootPath") or "")
+    next_import_mode = str(values.get("importMode") or existing.get("importMode") or "COPY").upper()
+    move_error = _monitor_move_writable_error(next_root_path, next_import_mode)
+    if move_error:
+        return move_error
+    if values:
+        values["updatedAt"] = _now()
+    try:
+        folder = _update(db, "MonitorFolder", folder_id, values)
+    except IntegrityError:
+        db.rollback()
+        return fail("监控文件夹路径已存在", status_code=409, details={"rootPath": values.get("rootPath")})
     return ok({"folder": folder})
 
 
@@ -1231,6 +1296,26 @@ def get_cover(request: Request, work_id: str | None = None, edition_id: str | No
         row = _row(db, "SELECT `coverPath` FROM `LibraryVolume` WHERE `id` = :id", {"id": volume_id})
     cover_id = work_id or edition_id or volume_id or "cover"
     return _send_file(_stored_path((row or {}).get("coverPath"), settings), request, user.id, route="cover", file_id=cover_id)
+
+
+@router.get("/metadata/cover-proxy")
+def metadata_cover_proxy(url: str, request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+    _user, auth_error = _auth(db, request, settings)
+    if auth_error:
+        return auth_error
+    if not url.startswith(("http://", "https://")):
+        return fail("封面地址不支持", status_code=400)
+    remote_request = UrlRequest(url, headers={"Accept": "image/*,*/*", "User-Agent": "Shuku Starship Python", "Referer": "https://book.douban.com/"})
+    try:
+        with urlopen(remote_request, timeout=20) as remote_response:
+            content_type = remote_response.headers.get("content-type") or "image/jpeg"
+            if not content_type.lower().startswith("image/"):
+                return fail("远程地址不是图片", status_code=400)
+            data = remote_response.read(8 * 1024 * 1024)
+    except Exception as exc:
+        logger.warning("failed to proxy metadata cover url=%s error=%s", url, exc)
+        return fail("封面预览加载失败", status_code=502)
+    return Response(data, media_type=content_type, headers={"Cache-Control": "private, max-age=86400"})
 
 
 @router.post("/works/{work_id}/cover/upload")
@@ -2244,7 +2329,7 @@ def _metadata_field_patch(candidate: dict[str, Any], fields: list[str]) -> dict[
 def _apply_remote_cover(work_id: str, cover_url: str, settings: Settings) -> dict[str, Any]:
     if not cover_url.startswith(("http://", "https://")):
         return {}
-    request = UrlRequest(cover_url, headers={"Accept": "image/*,*/*", "User-Agent": "Shuku Starship Python"})
+    request = UrlRequest(cover_url, headers={"Accept": "image/*,*/*", "User-Agent": "Shuku Starship Python", "Referer": "https://book.douban.com/"})
     with urlopen(request, timeout=30) as response:
         content_type = response.headers.get("content-type") or ""
         data = response.read(8 * 1024 * 1024)

@@ -44,7 +44,7 @@ services:
       - "${WEB_PORT:-3000}:3000"
     volumes:
       - ${STORAGE_PATH:-./data/storage}:/app/storage
-      - ${MONITOR_HOST_PATH:-./monitor}:/monitor:ro
+      - ${MONITOR_HOST_PATH:-./monitor}:/monitor
     command: ["./scripts/start-unified-app.sh"]
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]

@@ -2,7 +2,7 @@ from functools import partial
 from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
 import json
 from threading import Thread
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, quote, urlparse
 import zipfile
 
 from sqlalchemy import text
@@ -12,6 +12,7 @@ from app.core.auth import hash_password
 from app.models.auth import User
 from app.services.organize_service import bangumi_candidates, douban_candidates
 from app.services.download_queue import process_next_download_task
+from app.worker.importer import _auto_apply_epub_metadata
 from tests.test_worker_importer import create_worker_tables, write_comic_fixture, write_epub_fixture, write_pdf_fixture
 
 
@@ -301,14 +302,18 @@ def serve_douban_crawler_gateway():
         def do_GET(self):
             requests.append({"path": self.path, "accept": self.headers.get("accept"), "user_agent": self.headers.get("user-agent")})
             if self.path.startswith("/subject_search"):
+                cover_url = f"http://127.0.0.1:{self.server.server_port}/covers/cover.jpg"
+                revised_cover_url = f"http://127.0.0.1:{self.server.server_port}/covers/revised.jpg"
                 body = """
                 <html><script>
                 window.__DATA__ = {"items":[
-                  {"tpl_name":"search_subject","id":4913064,"title":"活着","abstract":"余华 / 作家出版社 / 2012-8 / 28.00元","abstract_2":"","cover_url":"https://img.example/cover.jpg","url":"/subject/4913064/"}
+                  {"tpl_name":"search_subject","id":4913064,"title":"活着","abstract":"余华 / 作家出版社 / 2012-8 / 28.00元","abstract_2":"","cover_url":"__COVER_URL__","url":"/subject/4913064/"},
+                  {"tpl_name":"search_subject","id":4913065,"title":"活着：新版","abstract":"余华 / 北京十月文艺出版社 / 2021-1 / 45.00元","abstract_2":"新版简介","cover_url":"__REVISED_COVER_URL__","url":"/subject/4913065/"}
                 ]};
                 </script></html>
-                """
+                """.replace("__COVER_URL__", cover_url).replace("__REVISED_COVER_URL__", revised_cover_url)
             elif self.path.startswith("/subject/4913064"):
+                cover_url = f"http://127.0.0.1:{self.server.server_port}/covers/large.jpg"
                 body = """
                 <html>
                   <script type="application/ld+json">{
@@ -319,7 +324,7 @@ def serve_douban_crawler_gateway():
                     "url":"https://book.douban.test/subject/4913064/",
                     "isbn":"9787506365437"
                   }</script>
-                  <meta property="og:image" content="https://img.example/large.jpg" />
+                  <meta property="og:image" content="__COVER_URL__" />
                   <div id="info">
                     <span class="pl">出版社:</span> 作家出版社<br/>
                     <span class="pl">出版年:</span> 2012-8<br/>
@@ -328,7 +333,15 @@ def serve_douban_crawler_gateway():
                   <h2><span>内容简介</span></h2>
                   <div class="intro"><p>这是一本关于生命韧性的小说。</p></div>
                 </html>
-                """
+                """.replace("__COVER_URL__", cover_url)
+            elif self.path.startswith("/covers/"):
+                body = b"\xff\xd8\xff\xd9"
+                self.send_response(200)
+                self.send_header("content-type", "image/jpeg")
+                self.send_header("content-length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -394,6 +407,162 @@ def serve_bangumi_api_gateway():
     thread.start()
     server.requests = requests
     return server
+
+
+def serve_priority_metadata_gateway(scenario: str):
+    requests = []
+
+    class PriorityMetadataHandler(BaseHTTPRequestHandler):
+        def log_message(self, format, *args):
+            return
+
+        def write_body(self, body: str | bytes, content_type: str = "text/html; charset=utf-8"):
+            encoded = body if isinstance(body, bytes) else body.encode("utf-8")
+            self.send_response(200)
+            self.send_header("content-type", content_type)
+            self.send_header("content-length", str(len(encoded)))
+            self.end_headers()
+            self.wfile.write(encoded)
+
+        def json_response(self, payload: dict):
+            self.write_body(json.dumps(payload, ensure_ascii=False), "application/json")
+
+        def do_GET(self):
+            parsed = urlparse(self.path)
+            query = parse_qs(parsed.query)
+            requests.append({"method": "GET", "path": parsed.path, "query": query})
+            if parsed.path == "/subject_search":
+                search_text = (query.get("search_text") or [""])[0]
+                items = []
+                if scenario in {"douban-later-exact", "ai-title"}:
+                    items = [
+                        {"tpl_name": "search_subject", "id": 1001, "title": "黑暗坡食人树：全新修订版", "abstract": "[日]岛田庄司 / 新星出版社 / 2024-11 / 69.00元", "abstract_2": "新版", "cover_url": "https://img.example/revised.jpg", "url": "/subject/1001/"},
+                        {"tpl_name": "search_subject", "id": 1002, "title": "黑暗坡食人树", "abstract": "[日]岛田庄司 / 新星出版社 / 2009-7 / 32.00元", "abstract_2": "", "cover_url": "https://img.example/exact.jpg", "url": "/subject/1002/"},
+                    ]
+                elif scenario in {"douban-no-exact", "no-exact"}:
+                    items = [
+                        {"tpl_name": "search_subject", "id": 1001, "title": "黑暗坡食人树：全新修订版", "abstract": "[日]岛田庄司 / 新星出版社 / 2024-11 / 69.00元", "abstract_2": "新版", "cover_url": "https://img.example/revised.jpg", "url": "/subject/1001/"}
+                    ]
+                body = f"<html><script>window.__DATA__ = {json.dumps({'items': items}, ensure_ascii=False)};</script><p>{search_text}</p></html>"
+                self.write_body(body)
+                return
+            if parsed.path == "/subject/1002/":
+                body = """
+                <html>
+                  <script type="application/ld+json">{
+                    "@context":"http://schema.org",
+                    "@type":"Book",
+                    "name":"黑暗坡食人树",
+                    "author":[{"@type":"Person","name":"[日]岛田庄司"}],
+                    "url":"https://book.douban.test/subject/1002/",
+                    "isbn":"9787802256866"
+                  }</script>
+                  <meta property="og:image" content="https://img.example/exact-large.jpg" />
+                  <div id="info">
+                    <span class="pl">出版社:</span> 新星出版社<br/>
+                    <span class="pl">出版年:</span> 2009-7<br/>
+                    <span class="pl">丛书:</span> 午夜文库·大师系列：岛田庄司作品·御手洗洁系列<br/>
+                    <span class="pl">ISBN:</span> 9787802256866<br/>
+                  </div>
+                  <h2><span>内容简介</span></h2>
+                  <div class="intro"><p>大楠树顶部开着锯齿状的缺口。</p></div>
+                </html>
+                """
+                self.write_body(body)
+                return
+            if parsed.path == "/subject/1001/":
+                body = """
+                <html>
+                  <script type="application/ld+json">{"@type":"Book","name":"黑暗坡食人树：全新修订版","author":[{"name":"[日]岛田庄司"}],"url":"https://book.douban.test/subject/1001/"}</script>
+                  <div id="info"><span class="pl">出版社:</span> 新星出版社<br/><span class="pl">出版年:</span> 2024-11<br/></div>
+                </html>
+                """
+                self.write_body(body)
+                return
+            self.send_response(404)
+            self.end_headers()
+
+        def do_POST(self):
+            length = int(self.headers.get("content-length", "0"))
+            body = json.loads(self.rfile.read(length).decode("utf-8"))
+            requests.append({"method": "POST", "path": self.path, "body": body})
+            if self.path == "/v0/search/subjects":
+                if scenario == "douban-no-exact":
+                    self.json_response(
+                        {
+                            "data": [
+                                {
+                                    "id": 42,
+                                    "name": "Kura Yami Slope",
+                                    "name_cn": "黑暗坡食人树",
+                                    "summary": "Bangumi exact description",
+                                    "date": "2009-07-01",
+                                    "infobox": [{"key": "作者", "value": "岛田庄司"}, {"key": "出版社", "value": "新星出版社"}],
+                                }
+                            ]
+                        }
+                    )
+                    return
+                self.json_response({"data": [{"id": 43, "name": "Kura Yami Slope Revised", "name_cn": "黑暗坡食人树：全新修订版", "summary": "Bangumi non exact"}]})
+                return
+            if self.path == "/chat/completions":
+                self.json_response({"choices": [{"message": {"content": json.dumps({"suggestions": [{"field": "title", "value": "黑暗坡食人树", "confidence": 0.92, "reason": "cleaned hash"}]}, ensure_ascii=False)}}]})
+                return
+            self.send_response(404)
+            self.end_headers()
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), PriorityMetadataHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    server.requests = requests
+    return server
+
+
+def insert_priority_metadata_fixture(db_session, gateway, title: str = "黑暗坡食人树"):
+    db_session.execute(text("CREATE TABLE IF NOT EXISTS SystemSetting (`key` TEXT PRIMARY KEY, `value` TEXT, `createdAt` TEXT, `updatedAt` TEXT)"))
+    work_columns = {row[1] for row in db_session.execute(text("PRAGMA table_info(LibraryWork)")).all()}
+    if "seriesName" not in work_columns:
+        db_session.execute(text("ALTER TABLE LibraryWork ADD COLUMN seriesName TEXT"))
+    for key, value in {
+        "metadata.douban.mode": "crawler",
+        "metadata.douban.baseUrl": f"http://127.0.0.1:{gateway.server_port}",
+        "metadata.douban.userAgent": "ShukuPriorityTest/1.0",
+        "metadata.bangumi.baseUrl": f"http://127.0.0.1:{gateway.server_port}",
+        "metadata.bangumi.userAgent": "ShukuPriorityTest/1.0",
+        "metadata.ai.baseUrl": f"http://127.0.0.1:{gateway.server_port}",
+        "metadata.ai.apiKey": "ai-key",
+        "metadata.ai.model": "ai-model",
+    }.items():
+        db_session.execute(
+            text("INSERT INTO SystemSetting (`key`, `value`, `createdAt`, `updatedAt`) VALUES (:key, :value, 'now', 'now')"),
+            {"key": key, "value": value},
+        )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryWork (
+                id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                mergeKey, createdAt, updatedAt
+            ) VALUES (
+                'work-priority', :title, :normalized, '', '', 'EPUB', 'WANT', 'UNKNOWN',
+                'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', 0, 0, 'epub:priority', 'now', 'now'
+            )"""
+        ),
+        {"title": title, "normalized": title.lower()},
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryEdition (
+                id, workId, origin, format, importStatus, sizeBytes, "primary", hidden, createdAt, updatedAt
+            ) VALUES ('edition-priority', 'work-priority', 'MANUAL', 'EPUB', 'IMPORTED', 10, 1, 0, 'now', 'now')"""
+        )
+    )
+    db_session.execute(
+        text(
+            "INSERT INTO OrganizeJob (id, workId, editionId, status, issueCodes, summary, createdAt, updatedAt) VALUES ('job-priority', 'work-priority', 'edition-priority', 'REVIEWING', '[]', 'review', 'now', 'now')"
+        )
+    )
+    db_session.commit()
 
 
 def test_metadata_candidate_parsers_accept_common_provider_shapes():
@@ -610,6 +779,8 @@ def test_import_tasks_return_logs_summary_and_rescan_contract(client, db_session
 
 def test_monitor_folder_and_system_settings_mutations(client, db_session, test_settings):
     test_settings.resolved_monitor_root.mkdir(parents=True)
+    second_root = test_settings.resolved_monitor_root.parent / "second-inbox"
+    second_root.mkdir(parents=True)
     _login(client, db_session)
 
     created = client.post(
@@ -619,13 +790,51 @@ def test_monitor_folder_and_system_settings_mutations(client, db_session, test_s
     assert created.status_code == 201
     folder_id = created.json()["data"]["folder"]["id"]
 
+    duplicate = client.post(
+        "/api/monitor-folders",
+        json={"name": "Duplicate Inbox", "rootPath": f"{test_settings.resolved_monitor_root}/", "enabled": True},
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["ok"] is False
+
+    empty_path = client.post("/api/monitor-folders", json={"name": "No Path", "rootPath": " "})
+    assert empty_path.status_code == 400
+    assert empty_path.json()["ok"] is False
+
+    second = client.post(
+        "/api/monitor-folders",
+        json={"name": "Second Inbox", "rootPath": str(second_root), "enabled": True},
+    )
+    assert second.status_code == 201
+    second_folder_id = second.json()["data"]["folder"]["id"]
+
+    collision = client.put(f"/api/monitor-folders/{second_folder_id}", json={"rootPath": str(test_settings.resolved_monitor_root)})
+    assert collision.status_code == 409
+    assert collision.json()["ok"] is False
+
     updated = client.put(f"/api/monitor-folders/{folder_id}", json={"enabled": False, "importMode": "MOVE"})
     assert updated.status_code == 200
     assert updated.json()["data"]["folder"]["enabled"] is False
+    assert updated.json()["data"]["folder"]["updatedAt"]
 
     settings = client.put("/api/system-settings", json={"settings": {"readerTheme": "dark"}})
     assert settings.status_code == 200
     assert settings.json()["data"]["settings"]["readerTheme"] == "dark"
+
+
+def test_monitor_folder_move_requires_writable_root(client, db_session, test_settings, monkeypatch):
+    test_settings.resolved_monitor_root.mkdir(parents=True)
+    _login(client, db_session)
+    monkeypatch.setattr(compat.os, "access", lambda _path, mode: False if mode == compat.os.W_OK else True)
+
+    created = client.post(
+        "/api/monitor-folders",
+        json={"name": "Read Only Inbox", "rootPath": str(test_settings.resolved_monitor_root), "enabled": True, "importMode": "MOVE"},
+    )
+
+    assert created.status_code == 400
+    assert created.json()["ok"] is False
+    assert "移动模式需要监控文件夹可写" in created.json()["error"]["message"]
 
 
 def test_source_manual_and_http_providers_execute_search_and_save_records(client, db_session):
@@ -1614,6 +1823,140 @@ def test_work_metadata_refresh_runs_douban_crawler_external_provider(client, db_
         ]
     finally:
         douban.shutdown()
+
+
+def test_ebook_metadata_search_returns_all_douban_crawler_candidates_and_proxy_cover(client, db_session):
+    create_worker_tables(db_session)
+    create_organize_detail_tables(db_session)
+    db_session.execute(text("CREATE TABLE IF NOT EXISTS SystemSetting (`key` TEXT PRIMARY KEY, `value` TEXT, `createdAt` TEXT, `updatedAt` TEXT)"))
+    douban = serve_douban_crawler_gateway()
+    try:
+        for key, value in {
+            "metadata.douban.mode": "crawler",
+            "metadata.douban.baseUrl": f"http://127.0.0.1:{douban.server_port}",
+            "metadata.douban.userAgent": "ShukuCrawlerTest/1.0",
+        }.items():
+            db_session.execute(
+                text("INSERT INTO SystemSetting (`key`, `value`, `createdAt`, `updatedAt`) VALUES (:key, :value, 'now', 'now')"),
+                {"key": key, "value": value},
+            )
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryWork (
+                    id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                    trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                    mergeKey, createdAt, updatedAt
+                ) VALUES (
+                    'work-douban-search', '活着', '活着', '', '', 'EPUB', 'WANT', 'UNKNOWN',
+                    'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', 0, 0, 'epub:douban-search', 'now', 'now'
+                )"""
+            )
+        )
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryEdition (
+                    id, workId, origin, format, importStatus, sizeBytes, "primary", hidden, createdAt, updatedAt
+                ) VALUES ('edition-douban-search', 'work-douban-search', 'MANUAL', 'EPUB', 'IMPORTED', 10, 1, 0, 'now', 'now')"""
+            )
+        )
+        db_session.commit()
+        _login(client, db_session)
+
+        searched = client.post("/api/works/work-douban-search/metadata/search", json={"source": "douban", "query": "活着"})
+
+        assert searched.status_code == 200
+        search_payload = searched.json()["data"]
+        assert [item["title"] for item in search_payload["candidates"]] == ["活着", "活着：新版"]
+        assert search_payload["candidates"][0]["description"] == "这是一本关于生命韧性的小说。"
+        assert search_payload["candidates"][0]["coverUrl"].startswith(f"http://127.0.0.1:{douban.server_port}/covers/")
+        assert search_payload["candidates"][1]["coverUrl"].startswith(f"http://127.0.0.1:{douban.server_port}/covers/")
+
+        proxied = client.get(f"/api/metadata/cover-proxy?url={quote(search_payload['candidates'][0]['coverUrl'], safe='')}")
+
+        assert proxied.status_code == 200
+        assert proxied.headers["content-type"] == "image/jpeg"
+        assert proxied.content == b"\xff\xd8\xff\xd9"
+    finally:
+        douban.shutdown()
+
+
+def test_auto_epub_metadata_applies_later_exact_douban_candidate_and_series(db_session):
+    create_worker_tables(db_session)
+    create_organize_detail_tables(db_session)
+    gateway = serve_priority_metadata_gateway("douban-later-exact")
+    try:
+        insert_priority_metadata_fixture(db_session, gateway)
+
+        applied = _auto_apply_epub_metadata(db_session, "work-priority", "edition-priority", "task-priority")
+
+        assert applied is True
+        work = db_session.execute(text("SELECT title, author, seriesName, organized, organizeStatus FROM LibraryWork WHERE id = 'work-priority'")).mappings().first()
+        assert dict(work) == {
+            "title": "黑暗坡食人树",
+            "author": "[日]岛田庄司",
+            "seriesName": "午夜文库·大师系列：岛田庄司作品·御手洗洁系列",
+            "organized": 1,
+            "organizeStatus": "APPLIED",
+        }
+        assert any(request["path"] == "/subject/1002/" for request in gateway.requests)
+        assert not any(request["path"] == "/v0/search/subjects" for request in gateway.requests)
+    finally:
+        gateway.shutdown()
+
+
+def test_auto_epub_metadata_falls_back_to_bangumi_when_douban_has_no_exact_title(db_session):
+    create_worker_tables(db_session)
+    create_organize_detail_tables(db_session)
+    gateway = serve_priority_metadata_gateway("douban-no-exact")
+    try:
+        insert_priority_metadata_fixture(db_session, gateway)
+
+        applied = _auto_apply_epub_metadata(db_session, "work-priority", "edition-priority", "task-priority")
+
+        assert applied is True
+        work = db_session.execute(text("SELECT title, author, organized, organizeStatus FROM LibraryWork WHERE id = 'work-priority'")).mappings().first()
+        assert dict(work) == {"title": "黑暗坡食人树", "author": "岛田庄司", "organized": 1, "organizeStatus": "APPLIED"}
+        assert any(request["path"] == "/subject_search" for request in gateway.requests)
+        assert any(request["path"] == "/v0/search/subjects" for request in gateway.requests)
+    finally:
+        gateway.shutdown()
+
+
+def test_auto_epub_metadata_uses_ai_title_for_odd_hash_before_external_match(db_session):
+    create_worker_tables(db_session)
+    create_organize_detail_tables(db_session)
+    gateway = serve_priority_metadata_gateway("ai-title")
+    try:
+        insert_priority_metadata_fixture(db_session, gateway, title="3b83c5f4795dda74d6e58e3b5748f5f3585275bb27580b9e9975481bc5ddd6ec")
+
+        applied = _auto_apply_epub_metadata(db_session, "work-priority", "edition-priority", "task-priority")
+
+        assert applied is True
+        paths = [request["path"] for request in gateway.requests]
+        assert paths.index("/chat/completions") < paths.index("/subject_search")
+        search_request = next(request for request in gateway.requests if request["path"] == "/subject_search")
+        assert search_request["query"]["search_text"] == ["黑暗坡食人树"]
+        work = db_session.execute(text("SELECT title, seriesName, organized FROM LibraryWork WHERE id = 'work-priority'")).mappings().first()
+        assert dict(work) == {"title": "黑暗坡食人树", "seriesName": "午夜文库·大师系列：岛田庄司作品·御手洗洁系列", "organized": 1}
+    finally:
+        gateway.shutdown()
+
+
+def test_auto_epub_metadata_keeps_reviewing_when_no_provider_has_exact_title(db_session):
+    create_worker_tables(db_session)
+    create_organize_detail_tables(db_session)
+    gateway = serve_priority_metadata_gateway("no-exact")
+    try:
+        insert_priority_metadata_fixture(db_session, gateway)
+
+        applied = _auto_apply_epub_metadata(db_session, "work-priority", "edition-priority", "task-priority")
+
+        assert applied is False
+        work = db_session.execute(text("SELECT title, organized, organizeStatus FROM LibraryWork WHERE id = 'work-priority'")).mappings().first()
+        assert dict(work) == {"title": "黑暗坡食人树", "organized": 0, "organizeStatus": "REVIEWING"}
+        assert db_session.execute(text("SELECT COUNT(*) FROM MetadataSuggestion WHERE jobId = 'job-priority' AND source IN ('douban', 'bangumi')")).scalar() == 0
+    finally:
+        gateway.shutdown()
 
 
 def test_work_metadata_refresh_runs_bangumi_external_provider(client, db_session):

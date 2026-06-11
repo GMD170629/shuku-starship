@@ -80,6 +80,11 @@ function isCoverField(field: MetadataField) {
   return field === 'coverUrl';
 }
 
+function previewCoverUrl(value: string) {
+  if (value.startsWith('/')) return value;
+  return `/api/metadata/cover-proxy?url=${encodeURIComponent(value)}`;
+}
+
 function defaultFields(book: WorkView, candidate: MetadataCandidate | null) {
   if (!candidate) return [];
   return fields.filter((field) => {
@@ -186,7 +191,7 @@ export function MetadataLookupModal({ book, open, onClose, onApplied }: Metadata
     if (typeof value !== 'string' || !value.trim()) return '未生成';
     return (
       <div className="flex items-center gap-3">
-        <img src={value} alt="" className="h-20 w-14 rounded-lg border border-slate-200 object-cover" />
+        <img src={previewCoverUrl(value)} alt="" className="h-20 w-14 rounded-lg border border-slate-200 object-cover" />
         <span className="text-xs text-slate-500">{kind === 'current' ? '当前封面' : '候选封面'}</span>
       </div>
     );
@@ -237,7 +242,7 @@ export function MetadataLookupModal({ book, open, onClose, onApplied }: Metadata
                 className={cn('w-full rounded-2xl border p-3 text-left transition', selected?.id === candidate.id ? 'border-blue-200 bg-blue-50' : 'border-slate-200 hover:bg-slate-50')}
               >
                 <div className="flex gap-3">
-                  {candidate.coverUrl ? <img src={candidate.coverUrl} alt="" className="h-20 w-14 shrink-0 rounded-lg border border-slate-200 object-cover" /> : null}
+                  {candidate.coverUrl ? <img src={previewCoverUrl(candidate.coverUrl)} alt="" className="h-20 w-14 shrink-0 rounded-lg border border-slate-200 object-cover" /> : null}
                   <div className="min-w-0 flex-1">
                     <div className="flex items-start justify-between gap-2">
                       <div className="line-clamp-2 font-medium text-slate-900">{candidate.title || '未命名候选'}</div>

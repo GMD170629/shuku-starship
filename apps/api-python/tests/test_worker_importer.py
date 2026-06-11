@@ -115,7 +115,7 @@ def serve_import_metadata_gateways():
                             {
                                 "id": 99,
                                 "name": "Starship Novel",
-                                "name_cn": "星舰小说",
+                                "name_cn": "目录测试",
                                 "summary": "Bangumi fallback description",
                                 "date": "2024-04-01",
                                 "tags": [{"name": "科幻"}, {"name": "小说"}],
@@ -323,6 +323,33 @@ def test_stage_managed_import_file_copy_and_move(tmp_path):
     assert moved.read_text(encoding="utf-8") == "copy me"
 
 
+def test_stage_managed_import_file_move_reports_read_only_source(tmp_path, monkeypatch):
+    source = tmp_path / "source.epub"
+    managed = tmp_path / "managed.epub"
+    source.write_text("copy me", encoding="utf-8")
+    original_unlink = Path.unlink
+
+    def fail_rename(self, target):
+        raise OSError("cross-device move")
+
+    def maybe_fail_unlink(self, *args, **kwargs):
+        if self == source:
+            raise OSError("Read-only file system")
+        return original_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "rename", fail_rename)
+    monkeypatch.setattr(Path, "unlink", maybe_fail_unlink)
+
+    try:
+        stage_managed_import_file(source, managed, "MOVE")
+    except RuntimeError as exc:
+        assert "移动模式需要删除监控目录中的源文件" in str(exc)
+    else:
+        raise AssertionError("MOVE should fail when source cannot be deleted")
+    assert source.exists()
+    assert not managed.exists()
+
+
 def test_import_epub_creates_library_records(db_session, test_settings, tmp_path):
     create_worker_tables(db_session)
     test_settings.resolved_storage_root.mkdir(parents=True)
@@ -359,9 +386,9 @@ def test_import_epub_falls_back_to_bangumi_and_skips_pending_organize_queue(db_s
         result = import_managed_book(db_session, test_settings, ImportOptions(source_file_path=epub, origin="MANUAL", original_name="fallback.epub"))
 
         assert result.import_status == "completed"
-        assert [request["path"] for request in gateway.requests] == ["/v2/book/search?q=%E7%9B%AE%E5%BD%95%E6%B5%8B%E8%AF%95+%E6%B5%8B%E8%AF%95%E4%BD%9C%E8%80%85&count=3", "/v0/search/subjects"]
+        assert [request["path"] for request in gateway.requests] == ["/v2/book/search?q=%E7%9B%AE%E5%BD%95%E6%B5%8B%E8%AF%95&count=3", "/v0/search/subjects"]
         work = db_session.execute(text("SELECT title, author, description, tags, organized, organizeStatus FROM LibraryWork")).mappings().first()
-        assert work["title"] == "星舰小说"
+        assert work["title"] == "目录测试"
         assert work["author"] == "Bangumi 作者"
         assert work["description"] == "Bangumi fallback description"
         assert json.loads(work["tags"]) == ["小说", "科幻"]

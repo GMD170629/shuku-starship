@@ -56,7 +56,7 @@ pnpm dev:test
 
 Docker 默认把项目根目录的 `./monitor` 挂载为容器内 `/monitor`。本地开发或 NAS 部署时，请把入站读物目录挂载、同步或软链接到 `./monitor`，然后在设置页保存 `/monitor` 作为监控文件夹。
 
-监控文件夹只是导入来源。手动上传会把 EPUB/CBZ/ZIP 复制到系统托管目录 `STORAGE_ROOT/library`；监控导入默认也会复制，也可以在设置页把单个监控文件夹改为“移动到项目文件夹”。阅读时使用系统托管目录中的文件，不再依赖原始入站路径。
+监控文件夹只是导入来源。手动上传会把 EPUB/CBZ/ZIP 复制到系统托管目录 `STORAGE_ROOT/library`；监控导入默认也会复制，也可以在设置页把单个监控文件夹改为“移动到项目文件夹”。移动模式会在导入成功后删除入站目录中的源文件，因此 `/monitor` 必须以可写方式挂载，且容器运行用户需要对 `MONITOR_HOST_PATH` 有写权限。阅读时使用系统托管目录中的文件，不再依赖原始入站路径。
 
 ## Demo 数据隔离
 
@@ -161,7 +161,7 @@ env MYSQL_PASSWORD='change-me' MYSQL_ROOT_PASSWORD='change-root-me' ADMIN_PASSWO
 - `MONITOR_HOST_PATH`：宿主机监控目录，默认 `./monitor`
 - `MYSQL_DATA_PATH` / `STORAGE_PATH`：宿主机持久化目录，默认在当前目录的 `./data` 下
 
-生产容器默认不会以 root 身份运行，统一应用容器使用 `PUID` / `PGID`。请把它们设置为 NAS 上拥有 `MONITOR_HOST_PATH` 读取权限、并拥有 `STORAGE_PATH` 写入权限的用户和用户组 ID：
+生产容器默认不会以 root 身份运行，统一应用容器使用 `PUID` / `PGID`。请把它们设置为 NAS 上拥有 `MONITOR_HOST_PATH` 读取权限、并拥有 `STORAGE_PATH` 写入权限的用户和用户组 ID；如果某个监控文件夹使用“移动到项目文件夹”，还需要对 `MONITOR_HOST_PATH` 有写/删除权限：
 
 ```bash
 id
@@ -190,8 +190,8 @@ curl -fsSL https://raw.githubusercontent.com/GMD170629/shuku-starship/main/docke
 
 - `${MYSQL_DATA_PATH:-./data/mysql}`：MySQL 数据
 - `${STORAGE_PATH:-./data/storage}`：封面、归档索引、临时文件和运行日志
-- `${MONITOR_HOST_PATH:-./monitor}`：宿主机或 NAS 监控目录，挂载到容器内 `/monitor`
+- `${MONITOR_HOST_PATH:-./monitor}`：宿主机或 NAS 监控目录，挂载到容器内 `/monitor`；复制模式只需可读，移动模式需要可写
 
-重启容器不会清空 MySQL、封面、索引或导入托管目录。替换 NAS 入站目录后，只要 `MONITOR_HOST_PATH` 指向真实目录且当前 `PUID` / `PGID` 可读，就可以在设置页保存 `/monitor` 作为监控文件夹。
+重启容器不会清空 MySQL、封面、索引或导入托管目录。替换 NAS 入站目录后，只要 `MONITOR_HOST_PATH` 指向真实目录且当前 `PUID` / `PGID` 可读，就可以在设置页保存 `/monitor` 作为复制模式监控文件夹；移动模式还会校验该路径可写。
 
 更多部署说明见 `docs/DEPLOYMENT.md`。
