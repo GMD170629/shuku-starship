@@ -20,9 +20,8 @@ export async function POST(request: Request) {
   if (!ext || !['epub', 'cbz', 'zip'].includes(ext)) return fail('当前版本仅支持 EPUB、CBZ、ZIP 格式', 400);
   const sizeLimit = importFileSizeLimitBytesForExt(ext);
   if (sizeLimit && file.size > sizeLimit) {
-    const envName = ext === 'epub' ? 'EPUB_MAX_SIZE_BYTES' : 'COMIC_MAX_ARCHIVE_SIZE_BYTES';
     const label = ext === 'epub' ? 'EPUB 文件' : '漫画压缩包';
-    return fail(`${label}过大：当前限制 ${formatImportByteLimit(sizeLimit)}，可通过 ${envName} 调整`, 413);
+    return fail(`${label}过大：当前限制 ${formatImportByteLimit(sizeLimit)}`, 413);
   }
 
   const tempRoot = join(process.env.STORAGE_ROOT ?? join(process.cwd(), 'storage'), 'temp', 'uploads');

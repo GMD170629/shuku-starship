@@ -27,17 +27,17 @@ AUTOMATIC_BACKUP_CHECK_ON_STARTUP=true
 AUTOMATIC_BACKUP_INTERVAL_SECONDS=3600
 ```
 
-Torrent and magnet tasks can be submitted to qBittorrent Web API when configured:
+Torrent and magnet tasks can be submitted to qBittorrent Web API when configured through `SystemSetting` rows:
 
 ```bash
-QBITTORRENT_URL=http://qbittorrent:8080
-QBITTORRENT_USERNAME=admin
-QBITTORRENT_PASSWORD=change-me
-QBITTORRENT_CATEGORY=shuku
-QBITTORRENT_SAVE_PATH=/downloads/books
+download.qbittorrent.url=http://qbittorrent:8080
+download.qbittorrent.username=admin
+download.qbittorrent.password=change-me
+download.qbittorrent.category=shuku
+download.qbittorrent.savePath=/downloads/books
 ```
 
-When `QBITTORRENT_URL` is empty, torrent tasks keep the local `.torrent`/`.magnet` handoff behavior.
+When no qBittorrent URL is configured, torrent tasks keep the local `.torrent`/`.magnet` handoff behavior.
 
 Run the Python import worker:
 
@@ -69,7 +69,7 @@ PYTHON_REAL_LIBRARY_SAMPLE_DIR=/path/to/books pnpm smoke:python-real-library
 
 ## Unified Docker runtime
 
-The Next.js app permanently rewrites `/api/:path*` to the local Python API process on `API_PYTHON_PORT` inside the same container. The unified app startup script launches:
+The Next.js app permanently rewrites `/api/:path*` to the local Python API process on `127.0.0.1:8000` inside the same container. The unified app startup script launches:
 
 - `uvicorn app.main:app`
 - `python -m app.worker.main`

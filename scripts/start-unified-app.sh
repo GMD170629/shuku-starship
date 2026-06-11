@@ -2,12 +2,10 @@
 set -eu
 
 ROOT_DIR="${ROOT_DIR:-/app}"
-API_PYTHON_PORT="${API_PYTHON_PORT:-8000}"
+PYTHON_API_PORT="8000"
 WEB_PORT="${PORT:-3000}"
 PYTHON_API_DIR="${PYTHON_API_DIR:-$ROOT_DIR/apps/api-python}"
 NEXT_SERVER="${NEXT_SERVER:-$ROOT_DIR/apps/web/server.js}"
-RUN_DB_PUSH="${RUN_DB_PUSH:-false}"
-RUN_SEED="${RUN_SEED:-true}"
 
 derive_python_database_url() {
   if [ -n "${PYTHON_DATABASE_URL:-}" ]; then
@@ -33,27 +31,35 @@ shutdown() {
 
 trap shutdown INT TERM EXIT
 
-"$ROOT_DIR/scripts/require-env.sh" DATABASE_URL SESSION_SECRET MONITOR_ROOT
-mkdir -p "$MONITOR_ROOT" "$ROOT_DIR/storage/covers" "$ROOT_DIR/storage/indexes" "$ROOT_DIR/storage/temp" "$ROOT_DIR/storage/logs" "$ROOT_DIR/storage/downloads/inbox"
+"$ROOT_DIR/scripts/require-env.sh" DATABASE_URL
+export STORAGE_ROOT="${STORAGE_ROOT:-$ROOT_DIR/storage}"
+export DOWNLOAD_INBOX_PATH="${DOWNLOAD_INBOX_PATH:-$STORAGE_ROOT/downloads/inbox}"
+export MONITOR_ROOT="${MONITOR_ROOT:-/monitor}"
+mkdir -p "$MONITOR_ROOT" "$STORAGE_ROOT/covers" "$STORAGE_ROOT/indexes" "$STORAGE_ROOT/temp" "$STORAGE_ROOT/logs" "$DOWNLOAD_INBOX_PATH" "$STORAGE_ROOT/secrets"
+
+if [ -z "${SESSION_SECRET:-}" ]; then
+  secret_file="$STORAGE_ROOT/secrets/session-secret"
+  if [ ! -s "$secret_file" ]; then
+    umask 077
+    if command -v openssl >/dev/null 2>&1; then
+      openssl rand -hex 32 > "$secret_file"
+    else
+      node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('hex'))" > "$secret_file"
+    fi
+  fi
+  SESSION_SECRET="$(tr -d '\r\n' < "$secret_file")"
+  export SESSION_SECRET
+fi
 
 export HOSTNAME="${HOSTNAME:-0.0.0.0}"
 export PORT="$WEB_PORT"
-export API_PYTHON_PORT
-export STORAGE_ROOT="${STORAGE_ROOT:-$ROOT_DIR/storage}"
-export DOWNLOAD_INBOX_PATH="${DOWNLOAD_INBOX_PATH:-$STORAGE_ROOT/downloads/inbox}"
 export PYTHON_DATABASE_URL="$(derive_python_database_url)"
 
-if [ "$RUN_DB_PUSH" = "true" ]; then
-  pnpm --dir "$ROOT_DIR/migrator" --filter @shuku/database exec prisma db push --accept-data-loss
-fi
-
-if [ "$RUN_SEED" = "true" ]; then
-  node "$ROOT_DIR/scripts/seed.mjs"
-fi
+node "$ROOT_DIR/scripts/seed.mjs"
 
 (
   cd "$PYTHON_API_DIR"
-  DATABASE_URL="$PYTHON_DATABASE_URL" uvicorn app.main:app --host 127.0.0.1 --port "$API_PYTHON_PORT"
+  DATABASE_URL="$PYTHON_DATABASE_URL" uvicorn app.main:app --host 127.0.0.1 --port "$PYTHON_API_PORT"
 ) &
 API_PID="$!"
 

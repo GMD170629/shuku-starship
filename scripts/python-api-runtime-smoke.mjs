@@ -62,8 +62,7 @@ async function main() {
     MONITOR_ROOT: monitorRoot,
     STORAGE_ROOT: storageRoot,
     DOWNLOAD_INBOX_PATH: inbox,
-    AUTOMATIC_BACKUP_ENABLED: 'false',
-    SECURE_COOKIES: 'false'
+    AUTOMATIC_BACKUP_ENABLED: 'false'
   };
 
   let child;

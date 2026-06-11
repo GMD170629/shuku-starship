@@ -12,6 +12,25 @@ services:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile.prod
+      target: migrator
+    container_name: shuku-migrate
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: mysql://shuku:shuku@mysql:3306/shuku_starship
+    command: ["pnpm", "--filter", "@shuku/database", "exec", "prisma", "db", "push", "--skip-generate"]
 
   web:
     build:
@@ -20,28 +39,16 @@ services:
       target: runner
     container_name: shuku-web
     depends_on:
-      - mysql
+      mysql:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       DATABASE_URL: mysql://shuku:shuku@mysql:3306/shuku_starship
-      API_PYTHON_PORT: ${API_PYTHON_PORT:-8000}
-      MONITOR_ROOT: /monitor
       STORAGE_ROOT: /app/storage
       DOWNLOAD_INBOX_PATH: /app/storage/downloads/inbox
-      EPUB_MAX_SIZE_BYTES: ${EPUB_MAX_SIZE_BYTES:-536870912}
-      COMIC_MAX_ARCHIVE_SIZE_BYTES: ${COMIC_MAX_ARCHIVE_SIZE_BYTES:-2147483648}
-      FILE_STREAMS_PER_USER: 4
-      SLOW_FILE_REQUEST_MS: 1500
       ADMIN_EMAIL: admin@example.com
       ADMIN_PASSWORD: starshipnas
-      SESSION_SECRET: dev-session-secret-change-me-at-least-32-chars
-      SECURE_COOKIES: "false"
-      RUN_DB_PUSH: "true"
-      RUN_SEED: "true"
-      QBITTORRENT_URL: ${QBITTORRENT_URL:-}
-      QBITTORRENT_USERNAME: ${QBITTORRENT_USERNAME:-}
-      QBITTORRENT_PASSWORD: ${QBITTORRENT_PASSWORD:-}
-      QBITTORRENT_CATEGORY: ${QBITTORRENT_CATEGORY:-shuku}
-      QBITTORRENT_SAVE_PATH: ${QBITTORRENT_SAVE_PATH:-}
     ports:
       - "${WEB_PORT:-3000}:3000"
     volumes:

@@ -1670,7 +1670,7 @@ def test_file_streams_are_limited_per_user(client, db_session, test_settings, tm
     assert response.status_code == 200
     edition_id = response.json()["data"]["results"][0]["editionId"]
     user_id = db_session.execute(text("SELECT id FROM User WHERE email = 'admin@example.com'")).scalar()
-    monkeypatch.setenv("FILE_STREAMS_PER_USER", "1")
+    monkeypatch.setattr(compat, "STREAMS_PER_USER_LIMIT", 1)
     with compat._active_file_streams_lock:
         compat._active_file_streams_by_user[user_id] = 1
     try:
@@ -1694,7 +1694,7 @@ def test_file_streams_log_slow_requests(client, db_session, test_settings, tmp_p
 
     assert response.status_code == 200
     edition_id = response.json()["data"]["results"][0]["editionId"]
-    monkeypatch.setenv("SLOW_FILE_REQUEST_MS", "0")
+    monkeypatch.setattr(compat, "SLOW_REQUEST_LOG_THRESHOLD_MS", 0)
     with caplog.at_level("WARNING", logger="app.api.routes.compat"):
         streamed = client.get(f"/api/editions/{edition_id}/file", headers={"Range": "bytes=0-3"})
 
@@ -1792,7 +1792,7 @@ def test_archive_page_streams_are_limited_and_logged(client, db_session, test_se
     assert imported.status_code == 200
     volume_id = imported.json()["data"]["results"][0]["volumeId"]
     user_id = db_session.execute(text("SELECT id FROM User WHERE email = 'admin@example.com'")).scalar()
-    monkeypatch.setenv("FILE_STREAMS_PER_USER", "1")
+    monkeypatch.setattr(compat, "STREAMS_PER_USER_LIMIT", 1)
     with compat._active_file_streams_lock:
         compat._active_file_streams_by_user[user_id] = 1
     try:
@@ -1802,7 +1802,7 @@ def test_archive_page_streams_are_limited_and_logged(client, db_session, test_se
         with compat._active_file_streams_lock:
             compat._active_file_streams_by_user.pop(user_id, None)
 
-    monkeypatch.setenv("SLOW_FILE_REQUEST_MS", "0")
+    monkeypatch.setattr(compat, "SLOW_REQUEST_LOG_THRESHOLD_MS", 0)
     with caplog.at_level("WARNING", logger="app.api.routes.compat"):
         streamed = client.get(f"/api/volumes/{volume_id}/pages/1", headers={"Range": "bytes=0-1"})
 

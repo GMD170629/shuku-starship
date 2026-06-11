@@ -15,14 +15,8 @@ const BOOK_ASSET_ROOT = join(STORAGE_ROOT, 'books');
 
 const DEFAULT_MAX_EPUB_SIZE_BYTES = 512 * 1024 * 1024;
 const DEFAULT_MAX_ARCHIVE_SIZE_BYTES = 2 * 1024 * 1024 * 1024;
-
-function envByteLimit(name: string, fallback: number) {
-  const parsed = Number(process.env[name]);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-const MAX_EPUB_SIZE_BYTES = envByteLimit('EPUB_MAX_SIZE_BYTES', DEFAULT_MAX_EPUB_SIZE_BYTES);
-const MAX_ARCHIVE_SIZE_BYTES = envByteLimit('COMIC_MAX_ARCHIVE_SIZE_BYTES', DEFAULT_MAX_ARCHIVE_SIZE_BYTES);
+const MAX_EPUB_SIZE_BYTES = DEFAULT_MAX_EPUB_SIZE_BYTES;
+const MAX_ARCHIVE_SIZE_BYTES = DEFAULT_MAX_ARCHIVE_SIZE_BYTES;
 const MAX_ENTRIES = Number(process.env.IMPORT_MAX_ENTRIES ?? 10000);
 const MAX_IMAGE_COUNT = Number(process.env.COMIC_MAX_IMAGE_COUNT ?? 5000);
 const MAX_SINGLE_IMAGE_BYTES = Number(process.env.COMIC_MAX_SINGLE_IMAGE_BYTES ?? 80 * 1024 * 1024);
@@ -467,7 +461,7 @@ async function buildEpubChapters(epubPath: string, opfPath: string, opfXml: stri
 
 export async function parseEpubMetadata(epubPath: string): Promise<ParsedEpubMetadata> {
   const fileStat = await stat(epubPath);
-  if (fileStat.size > MAX_EPUB_SIZE_BYTES) throw new Error(`EPUB 文件过大：当前限制 ${formatImportByteLimit(MAX_EPUB_SIZE_BYTES)}，可通过 EPUB_MAX_SIZE_BYTES 调整`);
+  if (fileStat.size > MAX_EPUB_SIZE_BYTES) throw new Error(`EPUB 文件过大：当前限制 ${formatImportByteLimit(MAX_EPUB_SIZE_BYTES)}`);
   await openZip(epubPath).then((zip) => zip.close());
   const containerXml = await readZipText(epubPath, 'META-INF/container.xml');
   const opfPath = /full-path="([^"]+)"/.exec(containerXml)?.[1];
@@ -596,7 +590,7 @@ async function parseComicArchive(filePath: string, originalName?: string): Promi
   const format = ext === '.cbz' ? 'cbz' : 'zip';
   const fileStat = await stat(filePath);
   if (!fileStat.isFile()) throw new Error('漫画压缩包不存在或不可读');
-  if (fileStat.size > MAX_ARCHIVE_SIZE_BYTES) throw new Error(`漫画压缩包过大：当前限制 ${formatImportByteLimit(MAX_ARCHIVE_SIZE_BYTES)}，可通过 COMIC_MAX_ARCHIVE_SIZE_BYTES 调整`);
+  if (fileStat.size > MAX_ARCHIVE_SIZE_BYTES) throw new Error(`漫画压缩包过大：当前限制 ${formatImportByteLimit(MAX_ARCHIVE_SIZE_BYTES)}`);
   const { images, comicInfoEntry } = await listArchiveEntries(filePath);
   if (images.length === 0) throw new Error('漫画压缩包内没有可导入的图片');
   if (images.length > MAX_IMAGE_COUNT) throw new Error(`漫画图片数量超过限制（${MAX_IMAGE_COUNT}）`);

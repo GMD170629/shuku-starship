@@ -109,15 +109,10 @@ describe('parseComicVolumeFromName', () => {
 });
 
 describe('import file size limits', () => {
-  function expectedLimit(name: string, fallback: number) {
-    const parsed = Number(process.env[name]);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-  }
-
-  it('returns configured limits for supported formats', () => {
-    assert.equal(importFileSizeLimitBytesForExt('epub'), expectedLimit('EPUB_MAX_SIZE_BYTES', 512 * 1024 * 1024));
-    assert.equal(importFileSizeLimitBytesForExt('.cbz'), expectedLimit('COMIC_MAX_ARCHIVE_SIZE_BYTES', 2 * 1024 * 1024 * 1024));
-    assert.equal(importFileSizeLimitBytesForExt('.zip'), expectedLimit('COMIC_MAX_ARCHIVE_SIZE_BYTES', 2 * 1024 * 1024 * 1024));
+  it('returns built-in limits for supported formats', () => {
+    assert.equal(importFileSizeLimitBytesForExt('epub'), 512 * 1024 * 1024);
+    assert.equal(importFileSizeLimitBytesForExt('.cbz'), 2 * 1024 * 1024 * 1024);
+    assert.equal(importFileSizeLimitBytesForExt('.zip'), 2 * 1024 * 1024 * 1024);
     assert.equal(importFileSizeLimitBytesForExt('.pdf'), null);
   });
 

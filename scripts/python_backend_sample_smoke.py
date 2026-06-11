@@ -198,7 +198,6 @@ def main() -> None:
             "STORAGE_ROOT": str(storage_root),
             "DOWNLOAD_INBOX_PATH": str(inbox),
             "AUTOMATIC_BACKUP_ENABLED": "false",
-            "SECURE_COOKIES": "false",
         }
         process = subprocess.Popen(
             ["uv", "run", "--extra", "dev", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", str(port), "--log-level", "warning"],

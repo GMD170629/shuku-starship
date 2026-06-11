@@ -22,12 +22,11 @@ curl -fsSL https://raw.githubusercontent.com/GMD170629/shuku-starship/main/docke
 第一次试运行可以直接使用默认值启动；正式部署请通过 `.env` 或一行命令里的 `env ... sh -c 'curl ... | docker compose -f - up -d'` 覆盖：
 
 - `MYSQL_PASSWORD` / `MYSQL_ROOT_PASSWORD`，如需外部数据库可覆盖 `DATABASE_URL`
-- `SESSION_SECRET`
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD`
 - `MONITOR_HOST_PATH`
 - `PUID` / `PGID`
 
-容器内监控根路径固定是 `/monitor`。`MONITOR_HOST_PATH` 是宿主机或 NAS 上的入站读物目录，默认 `./monitor`。
+容器内监控根路径固定是 `/monitor`。`MONITOR_HOST_PATH` 是宿主机或 NAS 上的入站读物目录，默认 `./monitor`。会话密钥由容器首次启动时生成并保存在 `STORAGE_PATH` 下。
 
 ## 迁移与初始化
 
@@ -44,7 +43,6 @@ DEMO_MODE=true pnpm db:seed:demo
 统一应用容器会检查：
 
 - `DATABASE_URL`
-- `SESSION_SECRET`
 - `MONITOR_ROOT`
 - `MONITOR_ROOT` 是否可读
 - `STORAGE_ROOT` 是否可写

@@ -7,7 +7,7 @@ This document tracks the migration from the historical Node.js/Next.js backend i
 - API surface: Next.js App Router routes under `apps/web/app/api`, currently 67 route files and roughly 87 HTTP handlers.
 - Web backend libraries: shared TypeScript logic under `apps/web/lib`, including auth, health checks, file responses, backups, source search, downloads, reader preferences, and view mapping.
 - Import and organization logic: TypeScript packages under `packages/scanner/src`, including EPUB/CBZ/ZIP import, comic page indexing, cover generation, path safety, metadata suggestions, and organize jobs.
-- Worker: Python watchdog worker is the runtime worker. `workers/scan-worker` remains in the repository only for later source cleanup.
+- Worker: Python watchdog worker is the runtime worker. The historical standalone Node scan worker has been removed.
 - Database: Prisma Client against MySQL, with schema in `packages/database/prisma/schema.prisma`.
 - Deployment: Docker Compose runs `web` and `mysql` locally, plus `migrate` in production. The `web` container starts Next.js, FastAPI, and the Python worker.
 - Storage: imported files, covers, indexes, temporary files, and logs live under `STORAGE_ROOT`; monitor folders are constrained by `MONITOR_ROOT`.
@@ -76,7 +76,7 @@ flowchart LR
 | Reader | `apps/web/app/api/reader`, `apps/web/app/api/editions` | Initial compatible API complete | Preferences, progress, and bootstrap routes are implemented |
 | Files and covers | `apps/web/lib/file-response.ts`, cover/page routes | Initial compatible API complete | File, edition file, cover, cover upload, and archived comic page routes support Range, ETag, Last-Modified, 206, 304, 416, per-user stream concurrency slots, streaming ZIP page entries, and slow-request logging behavior in tests |
 | Import | `apps/web/app/api/works/import`, `packages/scanner/src/managed-import.ts` | Initial compatible API complete | Manual upload and downloaded-file import now invoke the Python importer for EPUB/CBZ/ZIP/PDF; EPUB2 NCX, EPUB3 TOC nav selection, XHTML heading/numbered chapter fallback, OPF raw metadata capture, PDF first-page cover rendering, PDF Subject/Keywords mapping, CBZ/ZIP ComicInfo Series/Volume/Publisher/tags/raw metadata, and missing comic page-index rebuild are covered, while production sample validation remains |
-| Worker | `workers/scan-worker/src/index.ts` | Runtime default | Python watchdog worker now supports monitor refresh, rescan settings, stable-file checks, COPY/MOVE staging, duplicate skips, and graceful ready/shutdown behavior inside the unified app container |
+| Worker | Python worker under `apps/api-python/app/worker` | Runtime default | Python watchdog worker now supports monitor refresh, rescan settings, stable-file checks, COPY/MOVE staging, duplicate skips, and graceful ready/shutdown behavior inside the unified app container |
 | Sources | `apps/web/app/api/sources`, `apps/web/lib/sources` | Initial provider execution parity complete | CRUD, source test/search, search-record actions, and download-task creation routes exist; manual/http/PT RSS/Telegram/generic RSS/comic API providers now execute in Python and can persist search records |
 | Downloads | `apps/web/app/api/download-tasks`, `apps/web/lib/downloads` | Partially migrated executor behavior | CRUD, search-record task creation, HTTP download execution, Blackhole placeholder execution, torrentUrl `.torrent` download, magnet handoff files, optional qBittorrent Web API submission plus completed-file pickup/import, Telegram non-direct handoff manifests, cancel/retry, and downloaded-file import through the Python importer are implemented; Telegram Bot file retrieval without gateway remains external/manual |
 | Organize | `apps/web/app/api/organize`, `packages/scanner/src/organize-pipeline.ts` | Initial external metadata parity complete | Jobs, pending, detail, apply, refresh, and bulk-apply routes exist; apply now writes metadata suggestions to works, marks organized/dismissed suggestions, applies duplicate hide/merge actions, refresh recomputes local issue/duplicate candidates, and AI-compatible, Douban-compatible API, Douban crawler, plus Bangumi metadata refresh write suggestions |
@@ -111,10 +111,10 @@ flowchart LR
 - Backup parity: database export/restore, storage-root library-file restore, automatic scheduler startup, and automatic state/retention pruning are covered for supported tables; historical backup compatibility and very large archive operational behavior still need production rehearsal.
 - Worker races: monitor folder import must preserve duplicate handling and failure recovery.
 - Deployment: Web, Python API, and Python Worker share one runtime container; process supervision in `scripts/start-unified-app.sh` must keep signal handling and failure propagation reliable.
-- Partial source cleanup: TypeScript backend sources remain for comparison and follow-up cleanup, but Docker runtime paths no longer use them.
+- Source cleanup: the standalone Node scan worker has been removed; shared TypeScript scanner code remains because the Next.js app still uses it for imports, reader support, and organize flows.
 
 ## Immediate Next Steps
 
 1. Run `PYTHON_REAL_LIBRARY_SAMPLE_DIR=/path/to/books pnpm smoke:python-real-library` against a production-like sample set before large production data writes.
 2. Rehearse the unified Docker image with `VERIFY_DOCKER_BUILD=true pnpm verify:python-backend`.
-3. Remove unused TypeScript backend sources in a separate cleanup once the unified runtime has baked.
+3. Continue reducing shared TypeScript scanner usage as Python feature parity expands.

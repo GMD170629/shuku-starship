@@ -147,10 +147,10 @@ curl -fsSL https://raw.githubusercontent.com/GMD170629/shuku-starship/main/docke
 
 这条命令会在当前目录创建 `./data` 和 `./monitor` 持久化目录；容器内监控根路径固定是 `/monitor`。默认账号为 `admin@example.com` / `starshipnas`，仅适合首次试运行。
 
-正式部署建议显式传入密码、会话密钥和真实监控目录：
+正式部署建议显式传入数据库密码、管理员密码和真实监控目录。会话密钥由容器首次启动时生成并保存在 `STORAGE_PATH` 下：
 
 ```bash
-env MYSQL_PASSWORD='change-me' MYSQL_ROOT_PASSWORD='change-root-me' SESSION_SECRET='replace-with-a-long-random-secret-at-least-32-chars' ADMIN_PASSWORD='change-this-admin-password' MONITOR_HOST_PATH='/volume1/inbox-books' sh -c 'curl -fsSL https://raw.githubusercontent.com/GMD170629/shuku-starship/main/docker-compose.prod.yml | docker compose -f - up -d'
+env MYSQL_PASSWORD='change-me' MYSQL_ROOT_PASSWORD='change-root-me' ADMIN_PASSWORD='change-this-admin-password' MONITOR_HOST_PATH='/volume1/inbox-books' sh -c 'curl -fsSL https://raw.githubusercontent.com/GMD170629/shuku-starship/main/docker-compose.prod.yml | docker compose -f - up -d'
 ```
 
 如果不想把环境变量写在命令里，也可以在任意空目录创建 `.env`，然后运行同一条远端 compose 命令。生产 compose 默认读取当前目录的 `.env`，可配置项包括：
@@ -158,10 +158,7 @@ env MYSQL_PASSWORD='change-me' MYSQL_ROOT_PASSWORD='change-root-me' SESSION_SECR
 - `WEB_PORT`：Web 端口，默认 `3000`
 - `PUID` / `PGID`：统一应用容器运行用户，默认 `1000:1000`
 - `MYSQL_PASSWORD` / `MYSQL_ROOT_PASSWORD`，如需外部数据库可覆盖 `DATABASE_URL`
-- `SESSION_SECRET`
 - `ADMIN_EMAIL` / `ADMIN_PASSWORD`
-- `EPUB_MAX_SIZE_BYTES`：EPUB 导入大小上限，默认 `536870912`（512MB）
-- `COMIC_MAX_ARCHIVE_SIZE_BYTES`：CBZ/ZIP 漫画导入大小上限，默认 `2147483648`（2GB）
 - `MONITOR_HOST_PATH`：宿主机监控目录，默认 `./monitor`
 - `MYSQL_DATA_PATH` / `STORAGE_PATH`：宿主机持久化目录，默认在当前目录的 `./data` 下
 

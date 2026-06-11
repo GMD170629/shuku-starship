@@ -31,7 +31,7 @@ fi
 
 TEST_DATABASE_URL="${TEST_DATABASE_URL:-mysql://shuku:shuku@localhost:3306/shuku_starship_test}"
 TEST_PYTHON_DATABASE_URL="${TEST_PYTHON_DATABASE_URL:-}"
-API_PYTHON_PORT="${API_PYTHON_PORT:-8000}"
+PYTHON_API_PORT="8000"
 WEB_PORT="${WEB_PORT:-3000}"
 MONITOR_ROOT="${MONITOR_ROOT:-$ROOT_DIR/books}"
 STORAGE_ROOT="${STORAGE_ROOT:-$ROOT_DIR/storage}"
@@ -57,7 +57,7 @@ if [ -z "$TEST_PYTHON_DATABASE_URL" ]; then
 fi
 
 DATABASE_URL="$TEST_DATABASE_URL"
-export DATABASE_URL MONITOR_ROOT STORAGE_ROOT DOWNLOAD_INBOX_PATH SESSION_SECRET WEB_PORT API_PYTHON_PORT
+export DATABASE_URL MONITOR_ROOT STORAGE_ROOT DOWNLOAD_INBOX_PATH SESSION_SECRET WEB_PORT
 
 ENV_BACKUP="$(mktemp)"
 if [ -f .env ]; then
@@ -72,15 +72,13 @@ awk \
   -v monitor="$MONITOR_ROOT" \
   -v storage="$STORAGE_ROOT" \
   -v inbox="$DOWNLOAD_INBOX_PATH" \
-  -v secret="$SESSION_SECRET" \
-  -v apiPort="$API_PYTHON_PORT" '
-  BEGIN { seenDb = 0; seenMonitor = 0; seenStorage = 0; seenInbox = 0; seenSecret = 0; seenApiPort = 0 }
+  -v secret="$SESSION_SECRET" '
+  BEGIN { seenDb = 0; seenMonitor = 0; seenStorage = 0; seenInbox = 0; seenSecret = 0 }
   /^DATABASE_URL=/ { print "DATABASE_URL=" db; seenDb = 1; next }
   /^MONITOR_ROOT=/ { print "MONITOR_ROOT=" monitor; seenMonitor = 1; next }
   /^STORAGE_ROOT=/ { print "STORAGE_ROOT=" storage; seenStorage = 1; next }
   /^DOWNLOAD_INBOX_PATH=/ { print "DOWNLOAD_INBOX_PATH=" inbox; seenInbox = 1; next }
   /^SESSION_SECRET=/ { print "SESSION_SECRET=" secret; seenSecret = 1; next }
-  /^API_PYTHON_PORT=/ { print "API_PYTHON_PORT=" apiPort; seenApiPort = 1; next }
   { print }
   END {
     if (!seenDb) print "DATABASE_URL=" db
@@ -88,7 +86,6 @@ awk \
     if (!seenStorage) print "STORAGE_ROOT=" storage
     if (!seenInbox) print "DOWNLOAD_INBOX_PATH=" inbox
     if (!seenSecret) print "SESSION_SECRET=" secret
-    if (!seenApiPort) print "API_PYTHON_PORT=" apiPort
   }
 ' "$ENV_BACKUP" > .env
 
@@ -113,7 +110,7 @@ pnpm db:seed
 echo "Starting test service:"
 echo "  Web:          http://localhost:$WEB_PORT"
 echo "  Health check: http://localhost:$WEB_PORT/api/health"
-echo "  Python API:   http://127.0.0.1:$API_PYTHON_PORT"
+echo "  Python API:   http://127.0.0.1:$PYTHON_API_PORT"
 echo "  Database:     $TEST_DATABASE_URL"
 echo "  Python DB:    $TEST_PYTHON_DATABASE_URL"
 echo "  Monitor root: $MONITOR_ROOT"
@@ -126,14 +123,13 @@ echo "  Storage root: $STORAGE_ROOT"
     STORAGE_ROOT="$STORAGE_ROOT" \
     DOWNLOAD_INBOX_PATH="$DOWNLOAD_INBOX_PATH" \
     SESSION_SECRET="$SESSION_SECRET" \
-    SECURE_COOKIES="${SECURE_COOKIES:-false}" \
     AUTOMATIC_BACKUP_ENABLED="${AUTOMATIC_BACKUP_ENABLED:-false}" \
-    uv run --extra dev uvicorn app.main:app --host 127.0.0.1 --port "$API_PYTHON_PORT"
+    uv run --extra dev uvicorn app.main:app --host 127.0.0.1 --port "$PYTHON_API_PORT"
 ) &
 
 echo "Waiting for Python API..."
 i=0
-until node -e "fetch(process.argv[1]).then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))" "http://127.0.0.1:$API_PYTHON_PORT/api/health"; do
+until node -e "fetch(process.argv[1]).then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))" "http://127.0.0.1:$PYTHON_API_PORT/api/health"; do
   i=$((i + 1))
   if [ "$i" -ge 60 ]; then
     echo "Python API did not become ready in time." >&2

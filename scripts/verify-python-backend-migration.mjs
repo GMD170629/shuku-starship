@@ -97,13 +97,13 @@ run('uv', ['run', '--extra', 'dev', 'python', '../../scripts/python_backend_samp
 });
 run('pnpm', ['--filter', '@shuku/web', 'typecheck']);
 run('pnpm', ['--filter', '@shuku/web', 'test', '--', '--test-reporter=spec']);
-const composeEnv = { ...process.env, MONITOR_ROOT: '/monitor' };
+const composeEnv = { ...process.env };
 runQuiet('docker', ['compose', '-f', 'docker-compose.yml', 'config'], { successMessage: 'dev compose config ok', env: composeEnv });
 runQuiet('docker', ['compose', '-f', 'docker-compose.prod.yml', 'config'], { successMessage: 'prod compose config ok', env: composeEnv });
 expectServices(
   'dev unified topology',
   capture('docker', ['compose', '-f', 'docker-compose.yml', 'config', '--services'], { env: composeEnv }),
-  ['mysql', 'web'],
+  ['mysql', 'migrate', 'web'],
   ['api-python', 'scan-worker-python', 'scan-worker']
 );
 expectServices(
@@ -116,13 +116,14 @@ run('bash', ['-n', 'scripts/publish-docker-hub.sh']);
 run('sh', ['-n', 'scripts/start-unified-app.sh']);
 
 expectIncludes('apps/web/next.config.js', 'beforeFiles');
-expectIncludes('apps/web/next.config.js', 'API_PYTHON_PORT');
+expectIncludes('apps/web/next.config.js', 'http://127.0.0.1:8000');
 expectIncludes('scripts/dev-test.sh', 'uv run --extra dev uvicorn app.main:app');
 expectIncludes('scripts/dev-test.sh', 'uv run --extra dev python -m app.worker.main');
 expectNotIncludes('scripts/dev-test.sh', 'pnpm --filter @shuku/scan-worker dev');
 expectIncludes('apps/web/Dockerfile.prod', 'scripts/start-unified-app.sh');
 expectIncludes('apps/web/Dockerfile.prod', 'pip install --no-cache-dir ./apps/api-python');
-expectIncludes('docker-compose.yml', 'API_PYTHON_PORT');
+expectNotIncludes('docker-compose.yml', 'API_PYTHON_PORT');
+expectNotIncludes('docker-compose.prod.yml', 'API_PYTHON_PORT');
 expectIncludes('docker-compose.prod.yml', 'scripts/start-unified-app.sh');
 expectNotIncludes('docker-compose.yml', 'profiles:');
 expectNotIncludes('docker-compose.yml', 'api-python:');

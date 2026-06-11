@@ -10,16 +10,14 @@ class Settings(BaseSettings):
     app_version: str = "0.1.0"
     database_url: str = "mysql+pymysql://shuku:shuku@127.0.0.1:3306/shuku_starship"
     session_secret: str | None = None
-    monitor_root: str | None = None
-    storage_root: str = "./storage"
-    download_inbox_path: str = "./downloads/inbox"
+    monitor_root: str | None = "/monitor"
+    storage_root: str = "/app/storage"
+    download_inbox_path: str = "/app/storage/downloads/inbox"
     demo_mode: bool = False
     next_public_demo_mode: bool = False
     admin_email: str = "admin@example.com"
     admin_password: str = "starshipnas"
     admin_name: str = "管理员"
-    file_streams_per_user: int = Field(default=4, ge=1)
-    slow_file_request_ms: int = Field(default=1500, ge=1)
     secure_cookies: bool = False
     automatic_backup_enabled: bool = True
     automatic_backup_check_on_startup: bool = True

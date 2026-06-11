@@ -37,10 +37,6 @@ export function storagePathCandidates(path: string) {
     candidates.push(join(isAbsolute(storageRoot) ? storageRoot : resolve(storageRoot), relativeToStorage));
   }
 
-  if (path.startsWith('storage/')) {
-    candidates.push(...roots.map((root) => join(root, 'workers/scan-worker', path)));
-  }
-
   return uniquePaths(candidates);
 }
 

@@ -10,7 +10,6 @@ COPY packages/shared/package.json packages/shared/package.json
 COPY packages/ui/package.json packages/ui/package.json
 COPY packages/scanner/package.json packages/scanner/package.json
 COPY packages/reader-core/package.json packages/reader-core/package.json
-COPY workers/scan-worker/package.json workers/scan-worker/package.json
 RUN pnpm install
 
 COPY . .

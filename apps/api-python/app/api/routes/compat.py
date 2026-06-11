@@ -51,6 +51,8 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 _active_file_streams_by_user: dict[str, int] = {}
 _active_file_streams_lock = threading.Lock()
+STREAMS_PER_USER_LIMIT = 4
+SLOW_REQUEST_LOG_THRESHOLD_MS = 1500
 
 
 def _now() -> datetime:
@@ -951,7 +953,7 @@ def _file_stream_limit_response() -> Response:
 
 
 def _acquire_file_stream_slot(user_id: str):
-    limit = max(1, _positive_env_int("FILE_STREAMS_PER_USER", 4))
+    limit = STREAMS_PER_USER_LIMIT
     with _active_file_streams_lock:
         current = _active_file_streams_by_user.get(user_id, 0)
         if current >= limit:
@@ -976,7 +978,7 @@ def _acquire_file_stream_slot(user_id: str):
 
 
 def _log_slow_file_request(request: Request, route: str, file_id: str, range_header: str | None, bytes_sent: int, status_code: int, started_at: float) -> None:
-    threshold_ms = _positive_env_int("SLOW_FILE_REQUEST_MS", 1500)
+    threshold_ms = SLOW_REQUEST_LOG_THRESHOLD_MS
     duration_ms = int((monotonic() - started_at) * 1000)
     if duration_ms < threshold_ms:
         return

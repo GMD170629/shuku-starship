@@ -23,8 +23,7 @@ const nextConfig = {
   output: 'standalone',
   transpilePackages: ['@shuku/database', '@shuku/scanner', '@shuku/shared', '@shuku/reader-core'],
   async rewrites() {
-    const port = process.env.API_PYTHON_PORT || '8000';
-    const target = `http://127.0.0.1:${port}`;
+    const target = 'http://127.0.0.1:8000';
     return {
       beforeFiles: [
         {

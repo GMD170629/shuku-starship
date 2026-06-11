@@ -27,8 +27,7 @@ async function resolveEpubPath(path: string) {
   return firstExistingPath([
     resolve(process.cwd(), path),
     resolve(repoRoot, path),
-    join(repoRoot, 'apps/web', path),
-    join(repoRoot, 'workers/scan-worker', path)
+    join(repoRoot, 'apps/web', path)
   ]);
 }
 

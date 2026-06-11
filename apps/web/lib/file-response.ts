@@ -27,11 +27,8 @@ export type RangeParseResult =
   | { type: 'range'; range: ByteRange };
 
 const activeStreamsByUser = new Map<string, number>();
-
-function numberFromEnv(name: string, fallback: number) {
-  const value = Number(process.env[name]);
-  return Number.isFinite(value) && value > 0 ? value : fallback;
-}
+const STREAMS_PER_USER_LIMIT = 4;
+const SLOW_REQUEST_LOG_THRESHOLD_MS = 1500;
 
 export function parseByteRange(header: string | null, size: number): RangeParseResult {
   if (!header) return { type: 'none' };
@@ -99,9 +96,8 @@ export function shouldUseRange(request: Request, etag: string, lastModified: str
 }
 
 export function acquireStreamSlot(userId: string) {
-  const limit = numberFromEnv('FILE_STREAMS_PER_USER', 4);
   const current = activeStreamsByUser.get(userId) ?? 0;
-  if (current >= limit) return null;
+  if (current >= STREAMS_PER_USER_LIMIT) return null;
   activeStreamsByUser.set(userId, current + 1);
 
   let released = false;
@@ -142,9 +138,8 @@ export type SlowRequestInfo = {
 };
 
 export function logSlowRequest(info: SlowRequestInfo) {
-  const threshold = numberFromEnv('SLOW_FILE_REQUEST_MS', 1500);
   const durationMs = Date.now() - info.startedAt;
-  if (durationMs < threshold) return;
+  if (durationMs < SLOW_REQUEST_LOG_THRESHOLD_MS) return;
   console.warn('[slow-file-request]', {
     route: info.route,
     userId: info.userId,

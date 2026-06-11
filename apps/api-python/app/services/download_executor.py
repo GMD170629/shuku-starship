@@ -33,6 +33,15 @@ class DownloadExecutionResult:
     import_result: Any = None
 
 
+@dataclass(frozen=True)
+class QbittorrentConfig:
+    url: str | None = None
+    username: str | None = None
+    password: str | None = None
+    category: str | None = None
+    save_path: str | None = None
+
+
 def now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -75,6 +84,23 @@ def remote_ref(value: Any) -> dict[str, Any]:
 
 def string_value(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
+
+
+def system_setting(db: Session, key: str) -> str | None:
+    if not has_table(db, "SystemSetting"):
+        return None
+    item = row(db, "SELECT `value` FROM `SystemSetting` WHERE `key` = :key", {"key": key})
+    return string_value((item or {}).get("value")) or None
+
+
+def qbittorrent_config(db: Session, settings: Settings) -> QbittorrentConfig:
+    return QbittorrentConfig(
+        url=system_setting(db, "download.qbittorrent.url") or settings.qbittorrent_url,
+        username=system_setting(db, "download.qbittorrent.username") or settings.qbittorrent_username,
+        password=system_setting(db, "download.qbittorrent.password") or settings.qbittorrent_password,
+        category=system_setting(db, "download.qbittorrent.category") or settings.qbittorrent_category,
+        save_path=system_setting(db, "download.qbittorrent.savePath") or settings.qbittorrent_save_path,
+    )
 
 
 def infer_download_task_type(provider_type: str, download_meta: Any) -> str:
@@ -210,45 +236,45 @@ def execute_blackhole(settings: Settings, task: dict[str, Any]) -> Path:
     return target_path
 
 
-def qbittorrent_endpoint(settings: Settings, path: str) -> str:
-    base = string_value(settings.qbittorrent_url)
+def qbittorrent_endpoint(config: QbittorrentConfig, path: str) -> str:
+    base = string_value(config.url)
     if not base:
         raise ValueError("qBittorrent URL 未配置")
     return f"{base.rstrip('/')}/{path.lstrip('/')}"
 
 
-def qbittorrent_request(settings: Settings, path: str, payload: dict[str, str], cookie: str | None = None) -> tuple[int, str, str | None]:
+def qbittorrent_request(config: QbittorrentConfig, path: str, payload: dict[str, str], cookie: str | None = None) -> tuple[int, str, str | None]:
     data = urlencode(payload).encode("utf-8")
     headers = {"Content-Type": "application/x-www-form-urlencoded"}
     if cookie:
         headers["Cookie"] = cookie
-    request = UrlRequest(qbittorrent_endpoint(settings, path), data=data, headers=headers, method="POST")
+    request = UrlRequest(qbittorrent_endpoint(config, path), data=data, headers=headers, method="POST")
     with urlopen(request, timeout=30) as response:
         body = response.read().decode("utf-8", "replace")
         return response.status, body, response.headers.get("set-cookie")
 
 
-def qbittorrent_cookie(settings: Settings) -> str | None:
-    username = string_value(settings.qbittorrent_username)
-    password = string_value(settings.qbittorrent_password)
+def qbittorrent_cookie(config: QbittorrentConfig) -> str | None:
+    username = string_value(config.username)
+    password = string_value(config.password)
     if not username and not password:
         return None
-    status, body, cookie = qbittorrent_request(settings, "/api/v2/auth/login", {"username": username, "password": password})
+    status, body, cookie = qbittorrent_request(config, "/api/v2/auth/login", {"username": username, "password": password})
     if status != 200 or body.strip().lower() not in {"ok", "ok.", ""}:
         raise ValueError("qBittorrent 登录失败")
     return cookie
 
 
-def execute_qbittorrent_task(settings: Settings, task: dict[str, Any], torrent_ref: str, ref_type: str) -> Path:
-    cookie = qbittorrent_cookie(settings)
+def execute_qbittorrent_task(settings: Settings, config: QbittorrentConfig, task: dict[str, Any], torrent_ref: str, ref_type: str) -> Path:
+    cookie = qbittorrent_cookie(config)
     payload = {"urls": torrent_ref, "paused": "false"}
-    category = string_value(settings.qbittorrent_category)
-    save_path = string_value(settings.qbittorrent_save_path)
+    category = string_value(config.category)
+    save_path = string_value(config.save_path)
     if category:
         payload["category"] = category
     if save_path:
         payload["savepath"] = save_path
-    status, body, _cookie = qbittorrent_request(settings, "/api/v2/torrents/add", payload, cookie)
+    status, body, _cookie = qbittorrent_request(config, "/api/v2/torrents/add", payload, cookie)
     if status < 200 or status >= 300 or body.strip().lower() in {"fails.", "fail"}:
         raise ValueError(f"qBittorrent 提交失败：{body.strip() or status}")
     filename = ensure_suffix(string_value(task.get("displayName")) or string_value(task.get("id")) or "torrent", ".qbittorrent.json")
@@ -281,18 +307,19 @@ def ensure_suffix(filename: str, suffix: str) -> str:
 
 def execute_torrent_task(db: Session, settings: Settings, task: dict[str, Any]) -> Path:
     ref = remote_ref(task.get("remoteRef"))
+    qbit = qbittorrent_config(db, settings)
     torrent_url = string_value(ref.get("torrentUrl"))
     if torrent_url:
-        if string_value(settings.qbittorrent_url):
-            return execute_qbittorrent_task(settings, task, torrent_url, "torrentUrl")
+        if string_value(qbit.url):
+            return execute_qbittorrent_task(settings, qbit, task, torrent_url, "torrentUrl")
         return execute_http_download(db, settings, {**task, "remoteRef": {**ref, "downloadUrl": torrent_url, "filename": ensure_suffix(string_value(ref.get("filename")) or string_value(task.get("displayName")) or "download", ".torrent")}})
 
     magnet_url = string_value(ref.get("magnetUrl"))
     if magnet_url:
         if not magnet_url.startswith("magnet:?"):
             raise ValueError("magnetUrl 格式不正确")
-        if string_value(settings.qbittorrent_url):
-            return execute_qbittorrent_task(settings, task, magnet_url, "magnetUrl")
+        if string_value(qbit.url):
+            return execute_qbittorrent_task(settings, qbit, task, magnet_url, "magnetUrl")
         filename = ensure_suffix(string_value(ref.get("filename")) or string_value(task.get("displayName")) or string_value(ref.get("externalId")) or str(task.get("id") or "torrent"), ".magnet")
         target_path = unique_inbox_path(settings, filename)
         target_path.write_text(magnet_url, encoding="utf-8")
@@ -391,15 +418,15 @@ def load_qbittorrent_manifest(file_path: Path) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) and payload.get("type") == "qbittorrent_submission" else None
 
 
-def configured_qbittorrent_save_root(settings: Settings, manifest: dict[str, Any]) -> Path:
-    save_path = string_value(manifest.get("savePath")) or string_value(settings.qbittorrent_save_path)
+def configured_qbittorrent_save_root(config: QbittorrentConfig, manifest: dict[str, Any]) -> Path:
+    save_path = string_value(manifest.get("savePath")) or string_value(config.save_path)
     if not save_path:
         raise ValueError("qBittorrent 任务缺少保存目录，无法拾取完成文件")
     return Path(save_path).expanduser().resolve()
 
 
-def find_qbittorrent_completed_file(settings: Settings, manifest: dict[str, Any], task: dict[str, Any]) -> Path:
-    root = configured_qbittorrent_save_root(settings, manifest)
+def find_qbittorrent_completed_file(config: QbittorrentConfig, manifest: dict[str, Any], task: dict[str, Any]) -> Path:
+    root = configured_qbittorrent_save_root(config, manifest)
     if not root.exists() or not root.is_dir():
         raise ValueError("qBittorrent 保存目录不存在或不可访问")
     expected_values = [
@@ -438,7 +465,8 @@ def stage_completed_download_to_inbox(settings: Settings, source: Path) -> Path:
     return target
 
 
-def resolve_download_import_file(settings: Settings, task: dict[str, Any]) -> Path:
+def resolve_download_import_file(db: Session, settings: Settings, task: dict[str, Any]) -> Path:
+    qbit = qbittorrent_config(db, settings)
     try:
         file_path = validate_inbox_file(settings, task.get("filePath"))
     except Exception:
@@ -447,11 +475,11 @@ def resolve_download_import_file(settings: Settings, task: dict[str, Any]) -> Pa
         manifest = load_qbittorrent_manifest(candidate) if candidate and candidate.exists() else None
         if not manifest:
             raise
-        completed = find_qbittorrent_completed_file(settings, manifest, task)
+        completed = find_qbittorrent_completed_file(qbit, manifest, task)
         return stage_completed_download_to_inbox(settings, completed)
     manifest = load_qbittorrent_manifest(file_path)
     if manifest:
-        completed = find_qbittorrent_completed_file(settings, manifest, task)
+        completed = find_qbittorrent_completed_file(qbit, manifest, task)
         return stage_completed_download_to_inbox(settings, completed)
     return file_path
 
@@ -464,7 +492,7 @@ def import_download_task(db: Session, settings: Settings, task_id: str) -> Downl
         raise ValueError("只有已下载任务可以导入书库")
 
     try:
-        file_path = resolve_download_import_file(settings, task)
+        file_path = resolve_download_import_file(db, settings, task)
     except Exception as exc:
         update_row(db, "DownloadTask", task_id, {"status": "failed", "errorMessage": error_summary(exc), "updatedAt": now()})
         if task.get("searchRecordId") and has_table(db, "SourceSearchRecord"):

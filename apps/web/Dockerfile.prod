@@ -12,7 +12,6 @@ COPY packages/shared/package.json packages/shared/package.json
 COPY packages/ui/package.json packages/ui/package.json
 COPY packages/scanner/package.json packages/scanner/package.json
 COPY packages/reader-core/package.json packages/reader-core/package.json
-COPY workers/scan-worker/package.json workers/scan-worker/package.json
 RUN pnpm install --frozen-lockfile
 
 FROM deps AS builder
@@ -63,9 +62,13 @@ COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
 COPY --from=migrator-deps /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./migrator/
 COPY --from=migrator-deps /app/node_modules ./migrator/node_modules
 COPY --from=builder /app/packages/database ./migrator/packages/database
-COPY --from=builder /app/apps/api-python ./apps/api-python
+COPY --from=builder /app/apps/api-python/app ./apps/api-python/app
+COPY --from=builder /app/apps/api-python/alembic ./apps/api-python/alembic
+COPY --from=builder /app/apps/api-python/alembic.ini ./apps/api-python/alembic.ini
+COPY --from=builder /app/apps/api-python/pyproject.toml ./apps/api-python/pyproject.toml
 RUN python3 -m venv /opt/shuku-python \
   && /opt/shuku-python/bin/pip install --no-cache-dir ./apps/api-python \
+  && rm -rf ./apps/api-python/build ./apps/api-python/*.egg-info \
   && chmod +x ./scripts/require-env.sh ./scripts/start-unified-app.sh \
   && mkdir -p /app/storage/covers /app/storage/indexes /app/storage/temp /app/storage/logs /books
 

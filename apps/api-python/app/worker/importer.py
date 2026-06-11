@@ -20,6 +20,8 @@ from app.core.config import Settings
 
 SUPPORTED_EXTS = {".epub", ".cbz", ".zip", ".pdf"}
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+MAX_EPUB_SIZE_BYTES = 512 * 1024 * 1024
+MAX_ARCHIVE_SIZE_BYTES = 2 * 1024 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -56,9 +58,9 @@ def import_file_size_limit_bytes_for_ext(ext: str) -> int | None:
     normalized = ext if ext.startswith(".") else f".{ext}"
     normalized = normalized.lower()
     if normalized == ".epub":
-        return int(os.environ.get("EPUB_MAX_SIZE_BYTES") or 512 * 1024 * 1024)
+        return MAX_EPUB_SIZE_BYTES
     if normalized in {".cbz", ".zip"}:
-        return int(os.environ.get("COMIC_MAX_ARCHIVE_SIZE_BYTES") or 2 * 1024 * 1024 * 1024)
+        return MAX_ARCHIVE_SIZE_BYTES
     return None
 
 

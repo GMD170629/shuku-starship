@@ -61,7 +61,7 @@
 - 使用 Turborepo 串联 `dev`、`build`、`lint`、`typecheck` 等基础命令。
 - 保留 `apps/web` 作为 Next.js Web 与 API 入口。
 - 保留 `packages/database`、`packages/shared`、`packages/ui`、`packages/scanner`、`packages/reader-core` 作为 MVP 共享包边界。
-- 保留 `workers/scan-worker` 作为扫描任务 Worker 入口。
+- 使用 Python watchdog worker 作为扫描任务 Worker 入口。
 
 验收标准：
 - 根目录可以通过 `pnpm install` 安装依赖。
