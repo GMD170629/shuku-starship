@@ -1,4 +1,4 @@
-name: Build and push production Docker images
+name: Build and push production Docker image
 
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
 
 jobs:
   docker:
-    name: Build and push ${{ matrix.name }}
+    name: Build and push web
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -23,10 +23,6 @@ jobs:
             image: gamersgu/shuku-starship-web
             dockerfile: apps/web/Dockerfile.prod
             target: runner
-          - name: migrator
-            image: gamersgu/shuku-starship-migrator
-            dockerfile: apps/web/Dockerfile.prod
-            target: migrator
 
     steps:
       - name: Check out repository
