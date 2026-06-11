@@ -362,7 +362,6 @@ export function ReaderPage({ editionId }: { editionId: string }) {
     const serialized = JSON.stringify(payload);
     if (serialized === lastProgressPayloadRef.current && !useBeacon) return;
     lastProgressPayloadRef.current = serialized;
-    const editionId = currentBook.editionId ?? currentBook.id;
     const url = `/api/editions/${editionId}/progress`;
     if (useBeacon && typeof navigator !== 'undefined' && navigator.sendBeacon) {
       void enqueueProgress(editionId, payload);
@@ -424,9 +423,9 @@ export function ReaderPage({ editionId }: { editionId: string }) {
 
   useEffect(() => {
     if (!book || readerType === 'unknown') return;
-    writeCache(progressCacheKey(book.editionId ?? book.id), { progress, extra: progressExtra });
+    writeCache(progressCacheKey(editionId), { progress, extra: progressExtra });
     scheduleProgressSync();
-  }, [book, progress, progressExtra, readerType]);
+  }, [book, editionId, progress, progressExtra, readerType]);
 
   useEffect(() => {
     if (!book || readerType !== 'comic') return undefined;
@@ -502,7 +501,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
   return (
     <>
       <ReaderShell
-        editionId={book.editionId ?? book.id}
+        editionId={editionId}
         title={book.title}
         readerType={readerType}
         progress={progress}
@@ -514,7 +513,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
       >
         {(readerEvents) => readerType === 'epub' ? (
           <EbookReader
-            editionId={book.editionId ?? book.id}
+            editionId={editionId}
             title={book.title}
             theme={settings.theme}
             fontSize={settings.fontSize}

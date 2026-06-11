@@ -406,6 +406,7 @@ def ensure_organize_job_for_work(db: Session, work_id: str) -> dict[str, Any] | 
     if not edition_id and has_table(db, "LibraryEdition"):
         edition = row(db, "SELECT * FROM `LibraryEdition` WHERE `workId` = :work_id ORDER BY `createdAt` ASC LIMIT 1", {"work_id": work_id})
         edition_id = edition.get("id") if edition else None
+    already_organized = bool(work.get("organized")) or work.get("organizeStatus") == "APPLIED"
     return insert_row(
         db,
         "OrganizeJob",
@@ -413,9 +414,9 @@ def ensure_organize_job_for_work(db: Session, work_id: str) -> dict[str, Any] | 
             "id": f"py_{time_ns()}",
             "workId": work_id,
             "editionId": edition_id,
-            "status": "REVIEWING",
-            "issueCodes": json_text(["NEW_IMPORT"] if not work.get("organized") else []),
-            "summary": "等待元数据刷新",
+            "status": "APPLIED" if already_organized else "REVIEWING",
+            "issueCodes": json_text([] if already_organized else ["NEW_IMPORT"]),
+            "summary": "已整理，等待元数据刷新" if already_organized else "等待元数据刷新",
             "createdAt": now(),
             "updatedAt": now(),
         },
@@ -1103,8 +1104,15 @@ def refresh_metadata_providers(db: Session, job_id: str, providers: list[str], f
         except Exception as exc:
             results.append({"provider": provider, "enabled": True, "added": 0, "cacheHit": False, "error": str(exc)})
     if total_added > 0:
-        update_row(db, "OrganizeJob", job_id, {"status": "REVIEWING", "summary": f"新增 {total_added} 条外部/AI 元数据建议", "updatedAt": now()})
-        if job.get("workId") and has_table(db, "LibraryWork"):
+        work = row(db, "SELECT * FROM `LibraryWork` WHERE `id` = :id", {"id": job.get("workId")}) if job.get("workId") and has_table(db, "LibraryWork") else None
+        already_organized = bool((work or {}).get("organized")) or (work or {}).get("organizeStatus") == "APPLIED" or job.get("status") == "APPLIED"
+        update_row(
+            db,
+            "OrganizeJob",
+            job_id,
+            {"status": "APPLIED" if already_organized else "REVIEWING", "summary": f"新增 {total_added} 条外部/AI 元数据建议", "updatedAt": now()},
+        )
+        if job.get("workId") and has_table(db, "LibraryWork") and not already_organized:
             update_row(db, "LibraryWork", job["workId"], {"organizeStatus": "REVIEWING", "organized": False, "updatedAt": now()})
     return {"added": total_added, "results": results}
 

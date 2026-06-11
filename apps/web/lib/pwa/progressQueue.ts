@@ -136,6 +136,10 @@ export async function flushProgressQueue(syncFn?: (item: QueuedProgress) => Prom
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(item.progress)
         });
+        if (response.status === 404 || response.status === 410) {
+          await deleteFromStore(PROGRESS_STORE, item.bookId);
+          continue;
+        }
         if (!response.ok) throw new Error('Progress sync failed');
       }
       await deleteFromStore(PROGRESS_STORE, item.bookId);

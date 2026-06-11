@@ -70,6 +70,11 @@ function localLatestLabel(book: WorkView) {
   return parts.length > 0 ? parts.join(' · ') : '未记录';
 }
 
+function readableEditionId(book: WorkView | null) {
+  if (!book) return null;
+  return book.recentEditionId ?? book.editionId ?? book.primaryEditionId ?? book.editions.find((edition) => !edition.hidden)?.id ?? null;
+}
+
 type ReadingUnitView = { id: string; unitType: string; title: string; href: string; mediaType?: string | null; sortOrder: number; size?: string | number | null };
 type DetailMetadata = { language?: string | null; publisher?: string | null; publishedAt?: string | null; isbn?: string | null; items?: Array<{ source: string; metadataJson: unknown }> };
 type ComicSectionView = { id: string; title: string; index: number; fileId: string; pageCount: number; coverUrl: string };
@@ -303,8 +308,9 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   }
 
   function downloadPrimaryEdition() {
-    if (!book?.editionId) return;
-    window.location.href = `/api/editions/${book.editionId}/file`;
+    const editionId = readableEditionId(book);
+    if (!editionId) return;
+    window.location.href = `/api/editions/${editionId}/file`;
   }
 
   async function uploadCover(file: File | null) {
@@ -335,6 +341,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
 
   if (error && !book) return <div className="rounded-3xl border border-red-100 bg-red-50 p-8 text-sm text-red-700">{error}</div>;
   if (!book || !displayBook) return <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取读物详情...</div>;
+  const readerEditionId = readableEditionId(book);
 
   return (
     <div className="space-y-6">
@@ -368,8 +375,8 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
               <Progress value={book.progress} className="mt-3" />
             </div>
             <div className="mt-5 flex flex-wrap gap-3">
-              <Button icon={BookOpen} onClick={() => router.push(comicSections[0] && book.editionId ? `/reader/${book.editionId}?volume=${encodeURIComponent(comicSections[0].id)}` : `/reader/${book.editionId ?? book.id}`)}>{book.progress > 0 ? '继续阅读' : '开始阅读'}</Button>
-              <Button disabled={!book.editionId} variant="secondary" icon={Download} onClick={downloadPrimaryEdition}>下载</Button>
+              <Button disabled={!readerEditionId} icon={BookOpen} onClick={() => readerEditionId && router.push(comicSections[0] ? `/reader/${readerEditionId}?volume=${encodeURIComponent(comicSections[0].id)}` : `/reader/${readerEditionId}`)}>{book.progress > 0 ? '继续阅读' : '开始阅读'}</Button>
+              <Button disabled={!readerEditionId} variant="secondary" icon={Download} onClick={downloadPrimaryEdition}>下载</Button>
               <Button variant="secondary" icon={Edit3} onClick={() => setEditing((value) => !value)}>编辑信息</Button>
               <Button disabled={saving} variant="secondary" icon={Database} onClick={() => setMetadataLookupOpen(true)}>元数据识别</Button>
               <Button loading={busyAction === 'regenerateCover'} disabled={saving && busyAction !== 'regenerateCover'} variant="secondary" icon={RefreshCw} onClick={() => postAction(`/api/works/${book.id}/cover/regenerate`, '封面已重新生成', { refreshCover: true, busyKey: 'regenerateCover' })}>重新生成封面</Button>
@@ -536,7 +543,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
             <h2 className="text-lg font-semibold">{book.type === 'comic' ? '卷册列表' : '章节列表'}</h2>
             <div className="mt-3 divide-y divide-slate-100">
               {book.type === 'comic' && comicSections.length > 0 ? comicSections.map((section) => (
-              <button key={section.id} onClick={() => router.push(`/reader/${book.editionId ?? book.id}?volume=${encodeURIComponent(section.id)}`)} className="flex w-full items-center gap-3 py-3 text-left hover:bg-slate-50">
+              <button key={section.id} disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}?volume=${encodeURIComponent(section.id)}`)} className="flex w-full items-center gap-3 py-3 text-left hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
                 <img src={section.coverUrl} alt="" className="h-20 w-14 rounded-lg object-cover" />
                 <div className="min-w-0 flex-1">
                   <div className="font-medium">{section.title}</div>
@@ -549,7 +556,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
                 <ChevronRight size={16} className="text-slate-400" />
               </button>
             )) : readingUnits.length > 0 ? readingUnits.slice(0, 80).map((unit) => (
-              <button key={unit.id} onClick={() => router.push(`/reader/${book.editionId ?? book.id}`)} className="flex w-full items-center justify-between py-3 text-left hover:bg-slate-50">
+              <button key={unit.id} disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}`)} className="flex w-full items-center justify-between py-3 text-left hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
                 <div>
                   <div className="font-medium">{unit.title}</div>
                   <div className="mt-1 text-xs text-slate-500">{unit.unitType === 'page' ? '漫画页' : '章节'} · {unit.mediaType ?? unit.href}</div>
@@ -557,7 +564,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
                 <ChevronRight size={16} className="text-slate-400" />
               </button>
             )) : (
-              <button onClick={() => router.push(`/reader/${book.editionId ?? book.id}`)} className="flex w-full items-center justify-between py-4 text-left hover:bg-slate-50">
+              <button disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}`)} className="flex w-full items-center justify-between py-4 text-left hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
                 <div className="text-sm text-slate-500">开始阅读</div>
                 <ChevronRight size={16} className="text-slate-400" />
               </button>

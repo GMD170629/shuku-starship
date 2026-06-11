@@ -270,8 +270,7 @@ export function OrganizeJobDetailPage({ jobId }: { jobId: string }) {
           open={metadataLookupOpen}
           onClose={() => setMetadataLookupOpen(false)}
           onApplied={() => {
-            setMessage('元数据已应用');
-            loadJob();
+            router.push('/organize');
           }}
         />
       ) : null}

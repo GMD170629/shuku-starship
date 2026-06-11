@@ -94,11 +94,17 @@ function openingCoverUrl(book: WorkView) {
   return `/api/works/${book.id}/cover?size=large`;
 }
 
+function readableEditionId(book: WorkView) {
+  return book.recentEditionId ?? book.editionId ?? book.primaryEditionId ?? book.editions.find((edition) => !edition.hidden)?.id ?? null;
+}
+
 function storeReaderOpeningContext(book: WorkView, sourceElement?: HTMLElement | null) {
+  const editionId = readableEditionId(book);
+  if (!editionId) return;
   const coverElement = sourceElement?.querySelector('[data-book-cover="true"]') ?? sourceElement;
   const rect = coverElement?.getBoundingClientRect();
   const payload = {
-    editionId: book.editionId ?? book.id,
+    editionId,
     title: book.title,
     author: book.author,
     format: book.format,
@@ -215,8 +221,10 @@ export function MobileReaderApp() {
   }, [books, readingBooks]);
 
   function openReader(book: WorkView, sourceElement?: HTMLElement | null) {
+    const editionId = readableEditionId(book);
+    if (!editionId) return;
     storeReaderOpeningContext(book, sourceElement);
-    router.push(`/reader/${book.editionId ?? book.id}?from=mobile`);
+    router.push(`/reader/${editionId}?from=mobile`);
   }
 
   async function uploadBook(event: ChangeEvent<HTMLInputElement>) {

@@ -1,17 +1,19 @@
+name: shuku-starship
+
 services:
   mysql:
     image: mysql:8.4
-    container_name: shuku-mysql
+    container_name: shuku-prod-mysql
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: shuku_starship
-      MYSQL_USER: shuku
-      MYSQL_PASSWORD: shuku
-    ports:
-      - "3306:3306"
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-root-me}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-shuku_starship}
+      MYSQL_USER: ${MYSQL_USER:-shuku}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-me}
     volumes:
-      - mysql_data:/var/lib/mysql
+      - ${MYSQL_DATA_PATH:-./data/mysql}:/var/lib/mysql
+    ports:
+      - "${MYSQL_PORT:-13306}:3306"
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u$${MYSQL_USER} -p$${MYSQL_PASSWORD} --silent"]
       interval: 10s
@@ -20,32 +22,58 @@ services:
       start_period: 30s
 
   web:
-    build:
-      context: .
-      dockerfile: apps/web/Dockerfile.prod
-      target: runner
-    container_name: shuku-web
+    image: gamersgu/shuku-starship-web:prod
+    platform: linux/amd64
+    pull_policy: always
+    container_name: shuku-prod-web
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
     depends_on:
       mysql:
         condition: service_healthy
     environment:
-      DATABASE_URL: mysql://shuku:shuku@mysql:3306/shuku_starship
-      PYTHON_DATABASE_URL: mysql+pymysql://shuku:shuku@mysql:3306/shuku_starship
+      DATABASE_URL: ${DATABASE_URL:-mysql://${MYSQL_USER:-shuku}:${MYSQL_PASSWORD:-change-me}@mysql:3306/${MYSQL_DATABASE:-shuku_starship}}
+      PYTHON_DATABASE_URL: ${PYTHON_DATABASE_URL:-mysql+pymysql://${MYSQL_USER:-shuku}:${MYSQL_PASSWORD:-change-me}@mysql:3306/${MYSQL_DATABASE:-shuku_starship}}
+      DEMO_MODE: ${DEMO_MODE:-false}
+      NEXT_PUBLIC_DEMO_MODE: ${NEXT_PUBLIC_DEMO_MODE:-false}
       STORAGE_ROOT: /app/storage
       DOWNLOAD_INBOX_PATH: /app/storage/downloads/inbox
-      ADMIN_EMAIL: admin@example.com
-      ADMIN_PASSWORD: starshipnas
+      PORT: 3000
+      HOSTNAME: 0.0.0.0
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-starshipnas}
     ports:
       - "${WEB_PORT:-3000}:3000"
     volumes:
-      - ./monitor:/monitor
-      - ./storage:/app/storage
+      - ${STORAGE_PATH:-./data/storage}:/app/storage
+      - ${MONITOR_HOST_PATH:-./monitor}:/monitor
+    command: ["./scripts/start-unified-app.sh"]
     healthcheck:
       test: ["CMD-SHELL", "node -e \"fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))\""]
       interval: 30s
       timeout: 5s
       retries: 5
-      start_period: 60s
-
-volumes:
-  mysql_data:
+      start_period: 30s
+  manga-downloader:
+    image: yxb900211/komga-manga-downloader:1.1.9
+    container_name: komga-manga-downloader
+    ports:
+      - "45458:8080"
+    environment:
+      LICENSE_CODE: '$$Yxb=900211'
+      AUTH_USERNAME: admin
+      AUTH_PASSWORD: 123456
+      JWT_SECRET: 4C99392CE4CBA06B547495462F4387CC
+      DATA_DIR: /app/data
+      KOMGA_LIBRARY_PATH: /data/komga
+      KXO_BASE_URL: https://kxo.moe
+      KXO_MIRRORS: kxo.moe,kxx.moe,kzz.moe,koz.moe
+      COOKIE_REFRESH_MINUTES: 30
+      SYNC_INTERVAL_MINUTES: 60
+      MAX_DOWNLOAD_WORKERS: 2
+      ORGANIZE_ROOT_PATHS: /data/staging
+    volumes:
+      - ./mange:/app/data
+      - ./monitor:/data/komga
+      - ./漫画:/data/staging
+    restart: unless-stopped

@@ -590,7 +590,8 @@ def get_work(work_id: str, request: Request, db: Session = Depends(get_db), sett
     work = _get_work(db, work_id)
     if not work:
         return fail("作品不存在", status_code=404)
-    return ok({"book": _work_view(db, work, user.id)})
+    book = _work_view(db, work, user.id)
+    return ok({"book": book, **_work_detail_navigation(db, book.get("recentEditionId") or book.get("editionId"))})
 
 
 @router.patch("/works/{work_id}")
@@ -927,6 +928,32 @@ def reader_bootstrap(edition_id: str, request: Request, db: Session = Depends(ge
 
 def _reading_unit_view(unit: dict[str, Any]) -> dict[str, Any]:
     return {**unit, "metadataJson": _parse_json(unit.get("metadataJson"), {})}
+
+
+def _work_detail_navigation(db: Session, edition_id: str | None) -> dict[str, Any]:
+    if not edition_id or not _has_table(db, "LibraryEdition"):
+        return {"readingUnits": [], "comicSections": []}
+    edition = _row(db, "SELECT * FROM `LibraryEdition` WHERE `id` = :id", {"id": edition_id})
+    if not edition:
+        return {"readingUnits": [], "comicSections": []}
+    if edition.get("format") == "COMIC":
+        volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
+        return {
+            "readingUnits": [],
+            "comicSections": [
+                {
+                    "id": volume["id"],
+                    "title": volume.get("title") or "未命名卷",
+                    "index": volume.get("volumeIndex") or volume.get("sortOrder") or 0,
+                    "fileId": volume.get("fileId") or volume["id"],
+                    "pageCount": volume.get("pageCount") or 0,
+                    "coverUrl": f"/api/volumes/{volume['id']}/cover?editionId={edition_id}",
+                }
+                for volume in volumes
+            ],
+        }
+    units = _rows(db, "SELECT * FROM `LibraryReadingUnit` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryReadingUnit") else []
+    return {"readingUnits": [_reading_unit_view(unit) for unit in units], "comicSections": []}
 
 
 @router.get("/editions/{edition_id}/progress")
@@ -2319,11 +2346,30 @@ def _metadata_field_patch(candidate: dict[str, Any], fields: list[str]) -> dict[
             patch["publishedYear"] = int(candidate["publishedYear"])
         except (TypeError, ValueError):
             pass
-    if patch:
-        patch["organized"] = True
-        patch["metadataQuality"] = 85
-        patch["updatedAt"] = _now()
     return patch
+
+
+def _finish_metadata_organize_work(db: Session, work_id: str) -> list[str]:
+    if not _has_table(db, "OrganizeJob"):
+        return []
+    jobs = _rows(
+        db,
+        "SELECT `id` FROM `OrganizeJob` WHERE `workId` = :work_id AND `status` IN ('PENDING', 'REVIEWING', 'FAILED')",
+        {"work_id": work_id},
+    )
+    job_ids = [str(job["id"]) for job in jobs if job.get("id")]
+    if not job_ids:
+        return []
+    for job_id in job_ids:
+        _update(db, "OrganizeJob", job_id, {"status": "APPLIED", "summary": "元数据已应用，整理完成", "errorSummary": None, "updatedAt": _now()})
+    placeholders = ", ".join(f":job_id_{index}" for index, _ in enumerate(job_ids))
+    params = {f"job_id_{index}": job_id for index, job_id in enumerate(job_ids)}
+    if _has_table(db, "MetadataSuggestion"):
+        db.execute(text(f"UPDATE `MetadataSuggestion` SET `status` = 'DISMISSED' WHERE `jobId` IN ({placeholders}) AND `status` = 'PENDING'"), params)
+    if _has_table(db, "DuplicateCandidate"):
+        db.execute(text(f"UPDATE `DuplicateCandidate` SET `status` = 'DISMISSED' WHERE `jobId` IN ({placeholders}) AND `status` = 'PENDING'"), params)
+    db.commit()
+    return job_ids
 
 
 def _apply_remote_cover(work_id: str, cover_url: str, settings: Settings) -> dict[str, Any]:
@@ -2391,10 +2437,12 @@ async def compatible_work_action(work_id: str, request: Request, edition_id: str
                 logger.warning("failed to apply remote cover work=%s url=%s error=%s", work_id, candidate.get("coverUrl"), exc)
         if not patch:
             return fail("候选中没有可应用的字段", status_code=400)
+        patch.update({"organized": True, "organizeStatus": "APPLIED", "metadataQuality": 85, "updatedAt": _now()})
         work = _update(db, "LibraryWork", work_id, patch)
         if not work:
             return fail("作品不存在", status_code=404)
-        return ok({"book": _work_view(db, work, user.id), "appliedFields": fields})
+        finished_job_ids = _finish_metadata_organize_work(db, work_id)
+        return ok({"book": _work_view(db, work, user.id), "appliedFields": fields, "finishedOrganizeJobIds": finished_job_ids})
     if request.url.path.endswith("/metadata/refresh"):
         payload = await request.json()
         providers = [str(provider) for provider in payload.get("providers") or [] if str(provider) in {"external", "bangumi", "douban", "ai"}]

@@ -2076,6 +2076,12 @@ def test_ebook_metadata_search_apply_and_refresh_can_use_bangumi(client, db_sess
         assert applied_book["title"] == "星舰漫画"
         assert applied_book["author"] == "漫画作者"
         assert applied_book["tags"] == ["漫画", "科幻"]
+        assert applied.json()["data"]["finishedOrganizeJobIds"]
+        work_state = db_session.execute(text("SELECT organized, organizeStatus FROM LibraryWork WHERE id = 'work-ebook-bangumi'")).mappings().first()
+        assert dict(work_state) == {"organized": 1, "organizeStatus": "APPLIED"}
+        assert db_session.execute(text("SELECT COUNT(*) FROM OrganizeJob WHERE workId = 'work-ebook-bangumi' AND status IN ('PENDING', 'REVIEWING', 'FAILED')")).scalar() == 0
+        pending = client.get("/api/organize/jobs?pageSize=100")
+        assert all(job["book"]["id"] != "work-ebook-bangumi" for job in pending.json()["data"]["jobs"])
 
         refreshed = client.post("/api/works/work-ebook-bangumi/metadata/refresh", json={"providers": ["bangumi"]})
 
@@ -2084,6 +2090,9 @@ def test_ebook_metadata_search_apply_and_refresh_can_use_bangumi(client, db_sess
         assert refresh_payload["enabled"] is True
         assert refresh_payload["added"] == 6
         assert bangumi.requests[-1]["body"] == {"keyword": "星舰漫画", "sort": "match", "filter": {"type": [1]}}
+        work_state = db_session.execute(text("SELECT organized, organizeStatus FROM LibraryWork WHERE id = 'work-ebook-bangumi'")).mappings().first()
+        assert dict(work_state) == {"organized": 1, "organizeStatus": "APPLIED"}
+        assert db_session.execute(text("SELECT COUNT(*) FROM OrganizeJob WHERE workId = 'work-ebook-bangumi' AND status IN ('PENDING', 'REVIEWING', 'FAILED')")).scalar() == 0
         sources = db_session.execute(text("SELECT DISTINCT source FROM MetadataSuggestion")).scalars().all()
         assert sources == ["bangumi"]
     finally:
@@ -2298,6 +2307,12 @@ def test_reader_bootstrap_matches_node_shapes_for_epub_and_comic(client, db_sess
     assert epub_data["totalUnits"] == 2
     assert [unit["title"] for unit in epub_data["readingUnits"]] == ["第一节", "第二节"]
     assert isinstance(epub_data["readingUnits"][0]["metadataJson"], dict)
+    epub_detail = client.get(f"/api/works/{epub_payload['workId']}")
+    assert epub_detail.status_code == 200
+    epub_detail_data = epub_detail.json()["data"]
+    assert epub_detail_data["book"]["editionId"] == epub_payload["editionId"]
+    assert [unit["title"] for unit in epub_detail_data["readingUnits"]] == ["第一节", "第二节"]
+    assert epub_detail_data["comicSections"] == []
 
     comic_payload = comic_imported.json()["data"]["results"][0]
     comic_bootstrap = client.get(f"/api/reader/{comic_payload['editionId']}/bootstrap")
@@ -2310,6 +2325,12 @@ def test_reader_bootstrap_matches_node_shapes_for_epub_and_comic(client, db_sess
     assert comic_data["sections"] == [{"id": comic_payload["volumeId"], "title": "第 1 卷", "pageCount": 2}]
     assert comic_data["pageCount"] == 2
     assert [page["pageIndex"] for page in comic_data["pages"]] == [1, 2]
+    comic_detail = client.get(f"/api/works/{comic_payload['workId']}")
+    assert comic_detail.status_code == 200
+    comic_detail_data = comic_detail.json()["data"]
+    assert comic_detail_data["book"]["editionId"] == comic_payload["editionId"]
+    assert comic_detail_data["readingUnits"] == []
+    assert comic_detail_data["comicSections"] == [{"id": comic_payload["volumeId"], "title": "第 1 卷", "index": 1, "fileId": comic_payload["volumeId"], "pageCount": 2, "coverUrl": f"/api/volumes/{comic_payload['volumeId']}/cover?editionId={comic_payload['editionId']}"}]
 
 
 def test_file_streams_are_limited_per_user(client, db_session, test_settings, tmp_path, monkeypatch):
