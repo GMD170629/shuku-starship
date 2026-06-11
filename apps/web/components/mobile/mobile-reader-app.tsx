@@ -2,7 +2,6 @@
 
 import {
   Bell,
-  Check,
   ChevronRight,
   Cloud,
   Filter,
@@ -74,12 +73,6 @@ function isComic(book: WorkView) {
 
 function isFinished(book: WorkView) {
   return book.progress >= 100 || book.statusValue === 'FINISHED';
-}
-
-function coverBadge(book: WorkView) {
-  if (isFinished(book)) return { label: '已读', icon: Check };
-  if (isComic(book)) return { label: book.chapter && book.chapter !== '未开始' ? '漫' : '漫', icon: null };
-  return { label: book.format || 'EPUB', icon: null };
 }
 
 function shelfFilterMatches(book: WorkView, filter: ShelfFilter) {
@@ -743,11 +736,11 @@ function CompactBookGrid({ books, onOpenBook, preview = false }: { books: WorkVi
   const displayBooks = preview ? repeatBooks(books, 9) : books;
   return (
     <div
-      className={cn('grid', preview ? '' : 'grid-cols-3')}
+      className="grid"
       style={{
-        gridTemplateColumns: preview ? `repeat(auto-fit, minmax(${sv(108)}, 1fr))` : undefined,
-        columnGap: preview ? sv(12) : sv(50),
-        rowGap: preview ? sv(18) : sv(20)
+        gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+        columnGap: sv(12),
+        rowGap: sv(18)
       }}
     >
       {displayBooks.map((book, index) => (
@@ -768,82 +761,21 @@ function CompactBookTile({ book, onOpen, preview }: { book: WorkView; onOpen: Op
       type="button"
       data-mobile-book-entry="true"
       onClick={(event) => onOpen(book, event.currentTarget)}
-      className={cn('min-w-0 text-left transition active:scale-[0.98]', preview ? 'flex w-full flex-col items-center' : '')}
+      className="flex min-w-0 w-full flex-col items-center text-left transition active:scale-[0.98]"
     >
-      <CoverWithBadge
+      <Cover
         book={book}
         size="small"
-        variant={preview ? 'overview' : 'shelf'}
-        className={cn(preview ? 'aspect-[0.74]' : 'aspect-[0.72] w-full')}
-        style={{ width: preview ? '100%' : undefined, borderRadius: sv(preview ? 4 : 3) }}
-        coverSize="small"
+        className="aspect-[0.74] w-full"
+        style={{ borderRadius: sv(4), boxShadow: `0 ${sv(4)} ${sv(10)} rgba(70,47,29,0.13)` }}
       />
       <div
-        className={cn('truncate text-center font-medium text-[#2E2720]', preview ? '' : 'w-full')}
-        style={{ marginTop: sv(6), width: preview ? '100%' : undefined, fontSize: sv(11), lineHeight: sv(14) }}
+        className="w-full truncate text-center font-medium text-[#2E2720]"
+        style={{ marginTop: sv(6), fontSize: sv(11), lineHeight: sv(14) }}
       >
         {book.title}
       </div>
     </button>
-  );
-}
-
-function CoverWithBadge({
-  book,
-  className,
-  style,
-  coverSize,
-  size,
-  variant = 'shelf'
-}: {
-  book: WorkView;
-  className: string;
-  style?: CSSProperties;
-  coverSize: 'small' | 'medium' | 'large';
-  size: 'small' | 'large';
-  variant?: 'overview' | 'shelf';
-}) {
-  const badge = coverBadge(book);
-  const Icon = badge.icon;
-  const isOverview = variant === 'overview';
-  if (isOverview && !Icon) {
-    return (
-      <div className="relative">
-        <Cover
-          book={book}
-          size={coverSize}
-          className={className}
-          style={{ boxShadow: `0 ${sv(4)} ${sv(10)} rgba(70,47,29,0.13)`, ...style }}
-        />
-      </div>
-    );
-  }
-  return (
-    <div className="relative">
-      <Cover
-        book={book}
-        size={coverSize}
-        className={className}
-        style={{ boxShadow: `0 ${sv(4)} ${sv(10)} rgba(70,47,29,0.13)`, ...style }}
-      />
-      <span
-        className="absolute inline-flex items-center justify-center rounded-full border border-white/65 font-semibold text-white backdrop-blur"
-        style={{
-          right: isOverview ? sv(4) : sv(3),
-          top: isOverview ? sv(4) : sv(3),
-          backgroundColor: isOverview ? 'rgba(91,87,79,0.88)' : 'rgba(89,85,76,0.88)',
-          minHeight: size === 'large' ? sv(28) : sv(15),
-          minWidth: size === 'large' ? sv(28) : sv(15),
-          height: Icon && size !== 'large' ? sv(15) : undefined,
-          width: Icon && size !== 'large' ? sv(15) : undefined,
-          paddingLeft: Icon && size !== 'large' ? undefined : sv(size === 'large' ? 8 : 4),
-          paddingRight: Icon && size !== 'large' ? undefined : sv(size === 'large' ? 8 : 4),
-          fontSize: sv(size === 'large' ? 11 : 8)
-        }}
-      >
-        {Icon ? <Icon size={size === 'large' ? sv(15) : sv(10)} strokeWidth={3} /> : badge.label}
-      </span>
-    </div>
   );
 }
 

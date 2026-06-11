@@ -90,6 +90,8 @@ export const readerThemeSurfaces: Record<ReaderTheme, { background: string; text
   black: { background: '#000000', textClass: 'text-slate-100', statusBarStyle: 'black-translucent' }
 };
 
+const readerControlSurface = '#FFFFFF';
+
 function ensureMeta(name: string) {
   const existing = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`);
   if (existing) return { meta: existing, created: false };
@@ -140,6 +142,8 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
   const [navLoading, setNavLoading] = useState(false);
   const dark = isDarkTheme(settings.theme);
   const themeSurface = readerThemeSurfaces[settings.theme];
+  const topSafeAreaBackground = controlsVisible || panel ? readerControlSurface : themeSurface.background;
+  const topSafeAreaStatusBarStyle = controlsVisible || panel ? 'default' : themeSurface.statusBarStyle;
 
   useEffect(() => {
     const previousHtmlBackground = document.documentElement.style.backgroundColor;
@@ -152,11 +156,11 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
     const previousThemeColors = themeColorMetas.map((meta) => meta.content);
     const previousStatusBarStyle = statusBarMeta.content;
 
-    document.documentElement.style.backgroundColor = themeSurface.background;
+    document.documentElement.style.backgroundColor = topSafeAreaBackground;
     document.body.style.backgroundColor = themeSurface.background;
     document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
-    themeColorMetas.forEach((meta) => meta.setAttribute('content', themeSurface.background));
-    statusBarMeta?.setAttribute('content', themeSurface.statusBarStyle);
+    themeColorMetas.forEach((meta) => meta.setAttribute('content', topSafeAreaBackground));
+    statusBarMeta?.setAttribute('content', topSafeAreaStatusBarStyle);
 
     return () => {
       document.documentElement.style.backgroundColor = previousHtmlBackground;
@@ -173,7 +177,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
       if (createdStatusBarMeta) statusBarMeta.remove();
       else statusBarMeta.setAttribute('content', previousStatusBarStyle);
     };
-  }, [dark, themeSurface.background, themeSurface.statusBarStyle]);
+  }, [dark, themeSurface.background, topSafeAreaBackground, topSafeAreaStatusBarStyle]);
 
   function setControlsVisibility(visible: boolean) {
     controlsVisibleRef.current = visible;
@@ -372,6 +376,11 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
       }}
       tabIndex={-1}
     >
+      <div
+        className="pointer-events-none absolute inset-x-0 top-0 z-40 transition-colors duration-200"
+        style={{ height: 'env(safe-area-inset-top)', backgroundColor: topSafeAreaBackground }}
+        aria-hidden="true"
+      />
       <main className="min-h-0 flex-1 w-full">
         {typeof children === 'function' ? children({ enterImmersive, toggleControls, shouldIgnoreInteraction: shouldIgnoreReaderInteraction }) : children}
       </main>
