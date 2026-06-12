@@ -149,6 +149,31 @@ def _json_text(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+def _nullable_float(value: Any, field_label: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_label}格式不正确") from None
+
+
+def _nullable_int(value: Any, field_label: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        parsed = float(value) if isinstance(value, str) else value
+        if int(parsed) != parsed:
+            raise ValueError
+        return int(parsed)
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_label}格式不正确") from None
+
+
 SOURCE_PROVIDER_LABELS = {
     "manual": "手动源",
     "http": "HTTP",
@@ -739,6 +764,13 @@ async def update_work(work_id: str, request: Request, db: Session = Depends(get_
     values = {key: (_json_text(value) if key == "tags" and isinstance(value, list) else value) for key, value in payload.items() if key in allowed}
     if "ignored" in payload:
         values["hidden"] = bool(payload.get("ignored"))
+    try:
+        if "seriesIndex" in values:
+            values["seriesIndex"] = _nullable_float(values["seriesIndex"], "系列序号")
+        if "publishedYear" in values:
+            values["publishedYear"] = _nullable_int(values["publishedYear"], "出版年")
+    except ValueError as exc:
+        return fail(str(exc), status_code=400)
     work = _update(db, "LibraryWork", work_id, values)
     if not work:
         return fail("作品不存在", status_code=404)

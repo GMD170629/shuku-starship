@@ -747,6 +747,44 @@ def test_works_series_filter_is_exact_and_accepts_unicode_names(client, db_sessi
     assert [book["id"] for book in payload["data"]["books"]] == ["exact-2", "exact-1"]
 
 
+def test_update_work_accepts_empty_numeric_metadata_from_forms(client, db_session):
+    create_worker_tables(db_session)
+    work_columns = {row[1] for row in db_session.execute(text("PRAGMA table_info(LibraryWork)")).all()}
+    if "seriesName" not in work_columns:
+        db_session.execute(text("ALTER TABLE LibraryWork ADD COLUMN seriesName TEXT"))
+    if "seriesIndex" not in work_columns:
+        db_session.execute(text("ALTER TABLE LibraryWork ADD COLUMN seriesIndex REAL"))
+    if "publishedYear" not in work_columns:
+        db_session.execute(text("ALTER TABLE LibraryWork ADD COLUMN publishedYear INTEGER"))
+    _login(client, db_session)
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryWork (
+                id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                seriesName, seriesIndex, publishedYear, mergeKey, createdAt, updatedAt
+            ) VALUES (
+                'work-form-numeric', 'Form Numeric', 'formnumeric', 'Author', 'author', 'EPUB', 'WANT', 'UNKNOWN',
+                'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', 0, 0,
+                'Series', 3.5, 2024, 'epub:form-numeric:author', '2026-06-10T00:00:00', '2026-06-10T00:00:00'
+            )"""
+        )
+    )
+    db_session.commit()
+
+    response = client.patch("/api/works/work-form-numeric", json={"seriesIndex": "", "publishedYear": ""})
+    assert response.status_code == 200
+    assert response.json()["data"]["book"]["seriesIndex"] is None
+    assert response.json()["data"]["book"]["publishedYear"] is None
+    row = db_session.execute(text("SELECT seriesIndex, publishedYear FROM LibraryWork WHERE id = 'work-form-numeric'")).mappings().first()
+    assert row["seriesIndex"] is None
+    assert row["publishedYear"] is None
+
+    invalid = client.patch("/api/works/work-form-numeric", json={"seriesIndex": "第 3 卷"})
+    assert invalid.status_code == 400
+    assert "系列序号格式不正确" in invalid.json()["error"]["message"]
+
+
 def test_bulk_works_delete_records_removes_selected_books(client, db_session, test_settings):
     create_worker_tables(db_session)
     _login(client, db_session)

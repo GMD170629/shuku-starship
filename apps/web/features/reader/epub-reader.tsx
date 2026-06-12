@@ -79,16 +79,22 @@ const fallbackEventAttributePattern = /\s+on[a-z0-9_-]+\s*=\s*(?:"[^"]*"|'[^']*'
 const fallbackDangerousUrlAttributePattern = /\s+(href|src|xlink:href|formaction|action|data|poster|srcset)\s*=\s*(?:"\s*javascript:[^"]*"|'\s*javascript:[^']*'|\s*javascript:[^\s"'=<>`]+)/gi;
 const fallbackActiveStyleAttributePattern = /\s+style\s*=\s*(?:"[^"]*(?:javascript\s*:|expression\s*\()[^"]*"|'[^']*(?:javascript\s*:|expression\s*\()[^']*'|[^\s"'=<>`]*(?:javascript\s*:|expression\s*\()[^\s"'=<>`]*)/gi;
 
-function applyTheme(rendition: Rendition, theme: ReaderTheme, fontSize: number, lineHeight: number, fontFamily: ReaderFontFamily) {
+function applyTheme(rendition: Rendition, theme: ReaderTheme, fontSize: number, lineHeight: number, fontFamily: ReaderFontFamily, pageWidth: number) {
   const tokens = themeTokens[theme];
   rendition.themes.default({
+    html: {
+      background: `${tokens.background} !important`
+    },
     body: {
       color: `${tokens.color} !important`,
       background: `${tokens.background} !important`,
       'font-family': `${fontFamilies[fontFamily]} !important`,
       'font-size': `${fontSize}px !important`,
       'line-height': `${lineHeight} !important`,
-      margin: '0 !important'
+      margin: '0 auto !important',
+      'max-width': `${pageWidth}px !important`,
+      padding: '0 24px !important',
+      'box-sizing': 'border-box !important'
     },
     p: {
       'line-height': `${lineHeight} !important`
@@ -322,6 +328,7 @@ export function EbookReader({
   const fontSizeRef = useRef(fontSize);
   const lineHeightRef = useRef(lineHeight);
   const fontFamilyRef = useRef(fontFamily);
+  const pageWidthRef = useRef(pageWidth);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [navigating, setNavigating] = useState(false);
@@ -337,7 +344,8 @@ export function EbookReader({
     fontSizeRef.current = fontSize;
     lineHeightRef.current = lineHeight;
     fontFamilyRef.current = fontFamily;
-  }, [ebookPageTurnAnimation, fontFamily, fontSize, lineHeight, onActivity, onProgress, onReady, onTap, theme]);
+    pageWidthRef.current = pageWidth;
+  }, [ebookPageTurnAnimation, fontFamily, fontSize, lineHeight, onActivity, onProgress, onReady, onTap, pageWidth, theme]);
 
   useEffect(() => {
     if (initialCfi) currentCfiRef.current = initialCfi;
@@ -570,7 +578,7 @@ export function EbookReader({
         });
         localRendition = rendition;
         renditionRef.current = rendition;
-        applyTheme(rendition, themeRef.current, fontSizeRef.current, lineHeightRef.current, fontFamilyRef.current);
+        applyTheme(rendition, themeRef.current, fontSizeRef.current, lineHeightRef.current, fontFamilyRef.current, pageWidthRef.current);
 
         const rawNext = () => (isRtlBook(book as EpubBookWithReadiness) ? rendition.prev() : rendition.next());
         const rawPrev = () => (isRtlBook(book as EpubBookWithReadiness) ? rendition.next() : rendition.prev());
@@ -706,18 +714,18 @@ export function EbookReader({
   useEffect(() => {
     const rendition = renditionRef.current;
     if (!rendition) return;
-    applyTheme(rendition, theme, fontSize, lineHeight, fontFamily);
+    applyTheme(rendition, theme, fontSize, lineHeight, fontFamily, pageWidth);
     const container = containerRef.current;
     rendition.resize(container?.clientWidth ?? window.innerWidth, container?.clientHeight ?? window.innerHeight);
-  }, [fontFamily, fontSize, lineHeight, theme]);
+  }, [fontFamily, fontSize, lineHeight, pageWidth, theme]);
 
   const tokens = themeTokens[theme];
 
   return (
-    <div className="flex h-full w-full justify-center px-3 py-4 md:px-8 md:py-8">
+    <div className="h-full w-full" style={{ background: tokens.background }}>
       <div
-        className="relative h-full min-h-0 w-full overflow-hidden shadow-2xl md:rounded-[24px] md:border md:border-white/10"
-        style={{ maxWidth: `${pageWidth}px`, background: tokens.background }}
+        className="relative h-full min-h-0 w-full overflow-hidden"
+        style={{ background: tokens.background }}
       >
         <div ref={containerRef} className="h-full w-full" aria-label={`${title} EPUB 阅读器`} />
         {loading || navigating ? (
