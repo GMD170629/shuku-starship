@@ -104,8 +104,8 @@ type ComicPagesPayload = {
 };
 
 export const readerThemeSurfaces: Record<ReaderTheme, { background: string; textClass: string; statusBarStyle: 'default' | 'black-translucent' }> = {
-  day: { background: '#F7F7F4', textClass: 'text-slate-950', statusBarStyle: 'default' },
-  warm: { background: '#FDF6EA', textClass: 'text-slate-950', statusBarStyle: 'default' },
+  day: { background: '#F7F7F4', textClass: 'text-slate-950', statusBarStyle: 'black-translucent' },
+  warm: { background: '#FDF6EA', textClass: 'text-slate-950', statusBarStyle: 'black-translucent' },
   night: { background: '#0F172A', textClass: 'text-slate-100', statusBarStyle: 'black-translucent' },
   black: { background: '#000000', textClass: 'text-slate-100', statusBarStyle: 'black-translucent' }
 };
@@ -170,7 +170,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
   const chromeSurface = controlsVisible || panel
     ? {
         background: dark ? readerControlSurfaces.dark : readerControlSurfaces.light,
-        statusBarStyle: dark ? 'black-translucent' as const : 'default' as const
+        statusBarStyle: 'black-translucent' as const
       }
     : {
         background: themeSurface.background,
