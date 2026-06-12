@@ -139,7 +139,7 @@ export function DashboardPage() {
               <StatCard icon={Library} label="总读物" value={String(summary?.totalBooks ?? 0)} hint="全部" />
               <StatCard icon={BookOpen} label="漫画" value={String(summary?.comicBooks ?? 0)} hint="COMIC" tone="green" />
               <StatCard icon={FileText} label="电子书" value={String(summary?.novelBooks ?? 0)} hint="EPUB" tone="amber" />
-              <StatCard icon={HardDrive} label="存储占用" value={formatBytes(summary?.storageUsedBytes ?? 0)} hint={`${summary?.monitorFolderCount ?? 0} 个监控文件夹`} tone="slate" />
+              <StatCard icon={HardDrive} label="文件占用" value={formatBytes(summary?.storageUsedBytes ?? 0)} hint={`${summary?.monitorFolderCount ?? 0} 个监控文件夹`} tone="slate" />
             </div>
           </section>
           <section className="grid grid-cols-1 gap-6 xl:grid-cols-12">
@@ -161,10 +161,10 @@ export function DashboardPage() {
                 <h2 className="text-lg font-semibold">系统状态</h2>
                 <div className="mt-5 space-y-4 text-sm">
                   <StatusRow icon={Server} label="数据库" value={status?.database.message ?? '待检测'} status={status?.database.status} />
-                  <StatusRow icon={Server} label="导入 Worker" value={status?.worker.message ?? '待检测'} status={status?.worker.status} />
+                  <StatusRow icon={Server} label="自动导入" value={status?.worker.message ?? '待检测'} status={status?.worker.status} />
                   <StatusRow icon={RefreshCw} label="当前导入" value={importTask ? `${importTask.monitorFolder?.rootPath ?? '导入中'} · ${importTask.progress}%` : '暂无导入任务'} status={importTask ? 'unknown' : 'ok'} />
                   <StatusRow icon={AlertTriangle} label="错误文件" value={`${status?.errorFileCount ?? 0} 个`} status={(status?.errorFileCount ?? 0) > 0 ? 'error' : 'ok'} />
-                  <StatusRow icon={CheckCircle2} label="存储写入" value={status?.storageWritable.message ?? '待检测'} status={status?.storageWritable.status} />
+                  <StatusRow icon={CheckCircle2} label="书库写入" value={status?.storageWritable.message ?? '待检测'} status={status?.storageWritable.status} />
                 </div>
               </div>
               <div className="rounded-[28px] border border-slate-200 bg-white p-6 shadow-sm">

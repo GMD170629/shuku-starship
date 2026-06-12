@@ -80,6 +80,13 @@ def _has_table(db: Session, table: str) -> bool:
         return False
 
 
+def _has_column(db: Session, table: str, column: str) -> bool:
+    try:
+        return any(item.get("name") == column for item in inspect(db.get_bind()).get_columns(table))
+    except Exception:
+        return False
+
+
 def _auth(db: Session, request: Request, settings: Settings) -> tuple[User | None, Response | None]:
     user, _token, _refresh = get_current_user(db, request, settings)
     if user is None:
@@ -624,7 +631,7 @@ def dashboard_system_status(request: Request, db: Session = Depends(get_db), set
     return ok(
         {
             "database": checks.get("database", {"status": "unknown", "message": "待检测"}),
-            "worker": {"status": "ok", "message": "导入 Worker 监听监控文件夹"} if enabled else {"status": "unknown", "message": "未启用监控文件夹"},
+            "worker": {"status": "ok", "message": "正在监听监控文件夹"} if enabled else {"status": "unknown", "message": "未启用监控文件夹"},
             "enabledMonitorFolders": enabled,
             "currentImportTask": current_task,
             "latestImportTask": latest_task,
@@ -635,8 +642,50 @@ def dashboard_system_status(request: Request, db: Session = Depends(get_db), set
     )
 
 
+@router.get("/series")
+def list_series(request: Request, visibility: str = "active", limit: int = 50, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+    _user, auth_error = _auth(db, request, settings)
+    if auth_error:
+        return auth_error
+    if not _has_table(db, "LibraryWork") or not _has_column(db, "LibraryWork", "seriesName"):
+        return ok({"series": [], "total": 0})
+
+    take = min(100, max(1, limit))
+    where = ["`seriesName` IS NOT NULL", "TRIM(`seriesName`) != ''"]
+    params: dict[str, Any] = {"limit": take}
+    if visibility == "ignored":
+        where.append("`hidden` = 1")
+    elif visibility != "all":
+        where.append("`hidden` = 0")
+    where_sql = " AND ".join(where)
+    total = int(
+        _scalar(
+            db,
+            f"SELECT COUNT(*) FROM (SELECT TRIM(`seriesName`) FROM `LibraryWork` WHERE {where_sql} GROUP BY TRIM(`seriesName`)) grouped_series",
+            params,
+            0,
+        )
+    )
+    rows = _rows(
+        db,
+        f"""
+        SELECT
+            TRIM(`seriesName`) AS name,
+            COUNT(*) AS bookCount,
+            MAX(`updatedAt`) AS latestUpdatedAt
+        FROM `LibraryWork`
+        WHERE {where_sql}
+        GROUP BY TRIM(`seriesName`)
+        ORDER BY MAX(`updatedAt`) DESC, TRIM(`seriesName`) ASC
+        LIMIT :limit
+        """,
+        params,
+    )
+    return ok({"series": [{"name": row.get("name"), "bookCount": row.get("bookCount") or 0, "latestUpdatedAt": _dt(row.get("latestUpdatedAt"))} for row in rows], "total": total})
+
+
 @router.get("/works")
-def list_works(request: Request, page: int = 1, pageSize: int = 24, visibility: str = "active", search: str | None = None, keyword: str | None = None, sort: str = "updated", db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+def list_works(request: Request, page: int = 1, pageSize: int = 24, visibility: str = "active", search: str | None = None, keyword: str | None = None, seriesName: str | None = None, sort: str = "updated", db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
     user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
@@ -652,10 +701,17 @@ def list_works(request: Request, page: int = 1, pageSize: int = 24, visibility: 
         where.append("`hidden` = 0")
     term = (search or keyword or "").strip()
     if term:
-        where.append("(`title` LIKE :term OR `author` LIKE :term OR `seriesName` LIKE :term OR `tags` LIKE :term)")
+        search_fields = ["`title` LIKE :term", "`author` LIKE :term", "`tags` LIKE :term"]
+        if _has_column(db, "LibraryWork", "seriesName"):
+            search_fields.append("`seriesName` LIKE :term")
+        where.append(f"({' OR '.join(search_fields)})")
         params["term"] = f"%{term}%"
+    series_name = (seriesName or "").strip()
+    if series_name and _has_column(db, "LibraryWork", "seriesName"):
+        where.append("TRIM(`seriesName`) = :series_name")
+        params["series_name"] = series_name
     where_sql = " AND ".join(where) if where else "1 = 1"
-    order = "`title` ASC" if sort == "title" else "`author` ASC" if sort == "author" else "`updatedAt` DESC"
+    order = "CASE WHEN `seriesIndex` IS NULL THEN 1 ELSE 0 END ASC, `seriesIndex` ASC, `title` ASC" if sort == "series_index" and _has_column(db, "LibraryWork", "seriesIndex") else "`title` ASC" if sort == "title" else "`author` ASC" if sort == "author" else "`updatedAt` DESC"
     total = _table_count(db, "LibraryWork", where_sql, params)
     works = _rows(db, f"SELECT * FROM `LibraryWork` WHERE {where_sql} ORDER BY {order} LIMIT :limit OFFSET :offset", params)
     return ok({"books": [_work_view(db, work, user.id) for work in works], "page": page, "pageSize": page_size, "total": total, "totalPages": max(1, (total + page_size - 1) // page_size)})
@@ -1815,7 +1871,7 @@ def test_source(source_id: str, request: Request, db: Session = Depends(get_db),
     if not str(source.get("name") or "").strip():
         result = {"status": "failed", "message": "源名称为空"}
     elif source.get("providerType") not in PROVIDER_CAPABILITIES:
-        result = {"status": "failed", "message": f"源类型 {source.get('providerType')} 尚未实现 Provider。"}
+        result = {"status": "failed", "message": "这个来源暂不支持搜索或连接测试。"}
     else:
         provider_result = test_source_provider(source)
         result = {"status": "ok" if provider_result.ok else "failed", "message": provider_result.message, "details": provider_result.details}

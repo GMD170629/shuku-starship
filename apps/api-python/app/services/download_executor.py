@@ -202,7 +202,7 @@ def execute_http_download(db: Session, settings: Settings, task: dict[str, Any])
     ref = remote_ref(task.get("remoteRef"))
     download_url = string_value(ref.get("downloadUrl"))
     if not download_url:
-        raise ValueError("HTTP 下载任务缺少 remoteRef.downloadUrl")
+        raise ValueError("下载任务缺少下载地址")
     parsed = urlparse(download_url)
     if parsed.scheme not in {"http", "https"}:
         raise ValueError("只允许 http/https 下载地址")
@@ -451,7 +451,7 @@ def validate_inbox_file(settings: Settings, file_path: str | None) -> Path:
     inbox = settings.resolved_download_inbox_path
     resolved = Path(file_path).expanduser().resolve()
     if inbox != resolved and inbox not in resolved.parents:
-        raise ValueError("只能导入 downloads/inbox 内的文件")
+        raise ValueError("只能导入下载队列中的文件")
     if not resolved.exists() or not resolved.is_file():
         raise ValueError("下载任务文件不存在或不是普通文件")
     return resolved

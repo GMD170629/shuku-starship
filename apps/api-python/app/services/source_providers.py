@@ -482,7 +482,7 @@ def _fetch_comic_api_results(source: dict[str, Any], keyword: str, kind: str, pa
     config = source_config(source)
     url = string_value(config.get("searchUrl")) or string_value(config.get("apiUrl")) or string_value(config.get("url"))
     if not _is_http_url(url):
-        raise ValueError("漫画 API 源需要配置 searchUrl/apiUrl，或在 config.items 中配置结果。")
+        raise ValueError("请填写漫画搜索地址，或添加至少一条静态结果。")
     method = (string_value(config.get("method")) or "POST").upper()
     headers = {"Accept": "application/json"}
     api_key = string_value(config.get("apiKey"))
@@ -516,34 +516,34 @@ def _fetch_comic_api_results(source: dict[str, Any], keyword: str, kind: str, pa
 def test_source_provider(source: dict[str, Any]) -> ProviderResult:
     provider_type = source.get("providerType")
     if provider_type not in PROVIDER_CAPABILITIES:
-        return ProviderResult(False, f"源类型 {provider_type} 尚未实现 Provider。")
+        return ProviderResult(False, "这个来源暂不支持搜索或连接测试。")
 
     items = source_items(source)
     if provider_type == "manual":
         invalid_count = sum(1 for item in items if not string_value(item.get("externalId")) or not string_value(item.get("title")))
         if invalid_count:
-            return ProviderResult(False, f"manual items 中有 {invalid_count} 条缺少 externalId 或 title。")
-        return ProviderResult(True, f"manual 配置有效，可搜索 {len(items)} 条手动结果。")
+            return ProviderResult(False, f"手动源中有 {invalid_count} 条结果缺少编号或标题。")
+        return ProviderResult(True, f"手动源已就绪，可搜索 {len(items)} 条结果。")
 
     if provider_type == "http":
         if not items:
-            return ProviderResult(False, "HTTP 源需要在 config.items 中配置至少一条文件。")
+            return ProviderResult(False, "请先为 HTTP 源添加至少一条文件。")
         invalid_count = sum(
             1
             for item in items
             if not string_value(item.get("externalId")) or not string_value(item.get("title")) or not _is_http_url(string_value(item.get("downloadUrl")))
         )
         if invalid_count:
-            return ProviderResult(False, f"HTTP items 中有 {invalid_count} 条缺少 externalId、title 或有效 downloadUrl。")
-        return ProviderResult(True, f"HTTP 配置有效，可搜索 {len(items)} 条文件。")
+            return ProviderResult(False, f"HTTP 源中有 {invalid_count} 条文件缺少编号、标题或下载地址。")
+        return ProviderResult(True, f"HTTP 源已就绪，可搜索 {len(items)} 条文件。")
 
     if provider_type == "pt_rss":
         config = source_config(source)
         url = _rss_url(config)
         if not url:
-            return ProviderResult(False, "请配置 RSS URL。")
+            return ProviderResult(False, "请配置 RSS 订阅地址。")
         if (string_value(config.get("defaultType")) or "comic") != "comic":
-            return ProviderResult(False, "PT RSS 当前仅作为漫画源使用，defaultType 必须是 comic。")
+            return ProviderResult(False, "PT RSS 当前仅支持漫画内容。")
         try:
             preview = _fetch_rss_items(url)[:5]
         except Exception as exc:
@@ -554,7 +554,7 @@ def test_source_provider(source: dict[str, Any]) -> ProviderResult:
         config = source_config(source)
         url = _rss_url(config)
         if not url:
-            return ProviderResult(False, "请配置 RSS URL。")
+            return ProviderResult(False, "请配置 RSS 订阅地址。")
         try:
             preview = _fetch_rss_items(url)[:5]
         except Exception as exc:
@@ -567,26 +567,26 @@ def test_source_provider(source: dict[str, Any]) -> ProviderResult:
         api_url = string_value(config.get("searchUrl")) or string_value(config.get("apiUrl")) or string_value(config.get("url"))
         if api_url:
             if not _is_http_url(api_url):
-                return ProviderResult(False, "漫画 API URL 必须是 http/https URL。")
-            return ProviderResult(True, "漫画 API 配置有效，将通过远程 API 执行搜索。", {"apiConfigured": True})
+                return ProviderResult(False, "漫画搜索地址必须以 http 或 https 开头。")
+            return ProviderResult(True, "漫画源已就绪，将通过远程服务搜索。", {"apiConfigured": True})
         invalid_count = sum(1 for item in items if not string_value(item.get("title")))
         if invalid_count:
-            return ProviderResult(False, f"comic_api items 中有 {invalid_count} 条缺少 title。")
+            return ProviderResult(False, f"漫画源中有 {invalid_count} 条结果缺少标题。")
         if not items:
-            return ProviderResult(False, "漫画 API 源需要配置 searchUrl/apiUrl，或在 config.items 中配置至少一条结果。")
-        return ProviderResult(True, f"漫画 API 静态配置有效，可搜索 {len(items)} 条结果。", {"apiConfigured": False})
+            return ProviderResult(False, "请填写漫画搜索地址，或添加至少一条静态结果。")
+        return ProviderResult(True, f"漫画源已就绪，可搜索 {len(items)} 条结果。", {"apiConfigured": False})
 
     if provider_type == "zlibrary":
         config = _zlibrary_config(source)
         if not config.get("email") or not config.get("password"):
-            return ProviderResult(False, "请配置 Z-Library singlelogin 邮箱和密码。")
+            return ProviderResult(False, "请配置 Z-Library 账号和密码。")
         try:
             client, session = login_with_config(config)
         except ValueError as exc:
             return ProviderResult(False, str(exc))
         return ProviderResult(
             True,
-            f"Z-Library eapi 可用，当前使用 {session.base_url} 执行搜索和下载。",
+            "Z-Library 已连接，可用于搜索和下载。",
             {
                 "emailConfigured": True,
                 "passwordConfigured": True,
@@ -597,13 +597,13 @@ def test_source_provider(source: dict[str, Any]) -> ProviderResult:
             },
         )
 
-    return ProviderResult(False, f"源类型 {provider_type} 尚未实现 Provider。")
+    return ProviderResult(False, "这个来源暂不支持搜索或连接测试。")
 
 
 def search_source_provider(source: dict[str, Any], keyword: str, kind: str | None = None, page: int = 1, page_size: int = 20) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     provider_type = source.get("providerType")
     if provider_type not in PROVIDER_CAPABILITIES:
-        raise ValueError(f"源类型 {provider_type} 尚未实现 Provider。")
+        raise ValueError("这个来源暂不支持搜索。")
 
     if provider_type == "manual":
         items = source_items(source)
@@ -646,9 +646,9 @@ def search_source_provider(source: dict[str, Any], keyword: str, kind: str | Non
     config = source_config(source)
     url = _rss_url(config)
     if not url:
-        raise ValueError("请先配置 RSS URL")
+        raise ValueError("请先配置 RSS 订阅地址")
     if provider_type == "pt_rss" and (string_value(config.get("defaultType")) or "comic") != "comic":
-        raise ValueError("PT RSS 当前仅作为漫画源使用，defaultType 必须是 comic。")
+        raise ValueError("PT RSS 当前仅支持漫画内容。")
     try:
         items = _fetch_rss_items(url)
     except Exception as exc:

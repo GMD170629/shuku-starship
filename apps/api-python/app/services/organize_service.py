@@ -895,7 +895,7 @@ def run_ai_metadata_provider(db: Session, context: dict[str, Any], force: bool =
     api_key = string_value(settings.get("metadata.ai.apiKey"))
     model = string_value(settings.get("metadata.ai.model"))
     if not base_url or not api_key or not model:
-        return {"provider": "ai", "enabled": False, "added": 0, "cacheHit": False, "message": "AI 接口地址、模型或 API Key 未配置", "suggestions": []}
+        return {"provider": "ai", "enabled": False, "added": 0, "cacheHit": False, "message": "AI 服务地址、模型或 API Key 未配置", "suggestions": []}
     summary = local_metadata_summary(context)
     body = {
         "model": model,

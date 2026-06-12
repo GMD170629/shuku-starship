@@ -209,7 +209,7 @@ export function SourceSearchPage() {
     <div className="space-y-6">
       <PageTitle
         title="源搜索"
-        desc="通过统一 SourceProvider 接口搜索已配置的来源，可选择保存搜索结果。"
+        desc="搜索已启用的来源，保存结果或加入下载队列。"
         action={<Link href="/settings/sources" className="inline-flex min-h-11 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50"><Settings size={16} />源管理</Link>}
       />
       <form onSubmit={searchSources} className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
@@ -244,6 +244,7 @@ export function SourceSearchPage() {
         {results.map((result) => {
           const record = records.find((item) => item.externalId === result.externalId);
           const queued = record?.status === 'download_created';
+          const resultSource = sources.find((source) => source.id === result.sourceId);
           return (
           <article key={`${result.sourceId}-${result.externalId}`} className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
@@ -261,7 +262,7 @@ export function SourceSearchPage() {
                 </div>
                 {result.subtitle ? <div className="mt-1 text-sm text-slate-500">{result.subtitle}</div> : null}
                 <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
-                  <span className="rounded-full bg-slate-100 px-2 py-1">来源 {result.providerType}</span>
+                  <span className="rounded-full bg-slate-100 px-2 py-1">来源 {resultSource?.name ?? resultSource?.providerTypeLabel ?? '已配置来源'}</span>
                   {result.author ? <span className="rounded-full bg-slate-100 px-2 py-1">作者 {result.author}</span> : null}
                   {result.format ? <span className="rounded-full bg-slate-100 px-2 py-1">格式 {result.format}</span> : null}
                   {result.size ? <span className="rounded-full bg-slate-100 px-2 py-1">大小 {result.size}</span> : null}
@@ -285,7 +286,7 @@ export function SourceSearchPage() {
           </article>
           );
         })}
-        {!loading && results.length === 0 ? <div className="rounded-[24px] border border-slate-200 bg-white p-8 text-sm text-slate-500 shadow-sm">输入关键词后执行搜索。未实现的源类型会显示明确错误。</div> : null}
+        {!loading && results.length === 0 ? <div className="rounded-[24px] border border-slate-200 bg-white p-8 text-sm text-slate-500 shadow-sm">输入关键词后开始搜索。请选择已启用且支持搜索的来源。</div> : null}
       </div>
     </div>
   );

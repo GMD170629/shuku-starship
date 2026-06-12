@@ -84,21 +84,21 @@ class PathSecurityService:
             raise PathSecurityError("路径不能为空", "EMPTY_PATH")
         target = Path(trimmed)
         if not target.is_absolute():
-            raise PathSecurityError(f"请输入 MONITOR_ROOT 下的绝对路径：{trimmed}", "NOT_ABSOLUTE")
+            raise PathSecurityError(f"请输入监控根目录下的绝对路径：{trimmed}", "NOT_ABSOLUTE")
         if _is_sensitive(target):
             raise PathSecurityError(f"禁止访问系统敏感路径：{trimmed}", "SENSITIVE_PATH")
         if not self.monitor_root.is_absolute():
-            raise PathSecurityError(f"MONITOR_ROOT 必须是绝对路径：{self.monitor_root}", "MONITOR_ROOT_UNAVAILABLE")
+            raise PathSecurityError(f"监控根目录必须是绝对路径：{self.monitor_root}", "MONITOR_ROOT_UNAVAILABLE")
         if not self.monitor_root.exists():
-            raise PathSecurityError(f"MONITOR_ROOT 不存在或不可读：{self.monitor_root}", "MONITOR_ROOT_UNAVAILABLE")
+            raise PathSecurityError(f"监控根目录不存在或不可读：{self.monitor_root}", "MONITOR_ROOT_UNAVAILABLE")
         real_monitor_root = self.monitor_root.resolve()
         if _is_sensitive(real_monitor_root):
-            raise PathSecurityError(f"MONITOR_ROOT 不能指向系统敏感路径：{real_monitor_root}", "MONITOR_ROOT_UNAVAILABLE")
+            raise PathSecurityError(f"监控根目录不能指向系统敏感路径：{real_monitor_root}", "MONITOR_ROOT_UNAVAILABLE")
         if not target.exists():
             raise PathSecurityError(f"路径不存在或不可读：{trimmed}", "PATH_UNAVAILABLE")
         real_target = target.resolve()
         if _is_sensitive(real_target):
             raise PathSecurityError(f"禁止访问系统敏感路径：{real_target}", "SENSITIVE_PATH")
         if not _is_inside(real_monitor_root, real_target):
-            raise PathSecurityError(f"路径真实位置不在 MONITOR_ROOT 内：{trimmed} -> {real_target}", "OUTSIDE_MONITOR_ROOT")
+            raise PathSecurityError(f"路径真实位置不在监控根目录内：{trimmed} -> {real_target}", "OUTSIDE_MONITOR_ROOT")
         return PathSecurityValidation(trimmed, real_target, self.monitor_root, real_monitor_root)

@@ -200,7 +200,7 @@ export function DownloadsPage() {
     <div className="space-y-6">
       <PageTitle
         title="下载队列"
-        desc="外部下载只进入 downloads/inbox；这里负责排队、状态标记和后续导入衔接。"
+        desc="查看下载进度，完成后导入书库继续整理。"
         action={<Button variant="secondary" icon={RefreshCw} loading={loading} loadingText="刷新中" onClick={() => void loadTasks()}>刷新</Button>}
       />
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
@@ -214,7 +214,7 @@ export function DownloadsPage() {
       {message ? <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-sm text-emerald-700">{message}</div> : null}
       {error ? <div className="rounded-2xl border border-red-100 bg-red-50 p-4 text-sm text-red-700">{error}</div> : null}
       {loading ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取下载任务...</div> : null}
-      {!loading && tasks.length === 0 ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">暂无下载任务。可从源搜索结果加入队列。</div> : null}
+      {!loading && tasks.length === 0 ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">还没有下载任务。可以在源搜索中把结果加入队列。</div> : null}
       <div className="space-y-6">
         {taskGroups.filter((group) => group.tasks.length > 0).map((group) => (
           <section key={group.status} className="space-y-3">
@@ -250,7 +250,7 @@ export function DownloadsPage() {
                     ) : null}
                     {task.status === 'importing' ? (
                       <div className="mt-3 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-700">
-                        正在复用现有导入流程处理 inbox 文件。
+                        正在导入书库，请稍候。
                       </div>
                     ) : null}
                     {task.status === 'completed' ? (

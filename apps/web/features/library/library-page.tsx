@@ -257,7 +257,7 @@ export function LibraryPage() {
   async function deleteBook(book: WorkView) {
     const confirmed = await confirm({
       title: '确认删除记录',
-      description: `确认删除《${book.title}》的书库记录和 storage 中的托管文件吗？此操作不可撤销。`,
+      description: `确认删除《${book.title}》的书库记录和托管文件吗？此操作不可撤销。`,
       confirmLabel: '删除记录和文件',
       tone: 'danger'
     });
@@ -422,7 +422,7 @@ export function LibraryPage() {
               <Button disabled={parseTagInput().length === 0} loading={busy} loadingText="处理中" variant="secondary" className="bg-white" icon={Tags} onClick={() => performBulk({ removeTags: parseTagInput() }, '已批量移除标签')}>移除标签</Button>
               <Button loading={busy} loadingText="处理中" variant="secondary" className="bg-white" icon={RefreshCw} onClick={() => performBulk({ regenerateCover: true }, '已批量重新生成封面')}>重新生成封面</Button>
               <Button loading={busy} loadingText="处理中" variant="danger" icon={Trash2} onClick={() => void confirmBulk({ ignored: true }, '已批量隐藏读物', `确认隐藏选中的 ${selected.length} 本读物吗？不会删除源文件。`)}>隐藏</Button>
-              <Button loading={busy} loadingText="处理中" variant="danger" icon={Trash2} onClick={() => void confirmBulk({ deleteRecords: true }, '已删除书库记录和托管文件', `确认删除选中的 ${selected.length} 条书库记录和 storage 中的托管文件吗？此操作不可撤销。`)}>删除记录</Button>
+              <Button loading={busy} loadingText="处理中" variant="danger" icon={Trash2} onClick={() => void confirmBulk({ deleteRecords: true }, '已删除书库记录和托管文件', `确认删除选中的 ${selected.length} 条书库记录和托管文件吗？此操作不可撤销。`)}>删除记录</Button>
               {visibility !== 'active' ? <Button loading={busy} loadingText="处理中" variant="secondary" className="bg-white" icon={EyeOff} onClick={() => performBulk({ ignored: false }, '已恢复显示')}>恢复显示</Button> : null}
             </div>
           </div>

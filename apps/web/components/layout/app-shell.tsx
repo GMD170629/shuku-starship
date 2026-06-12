@@ -6,6 +6,7 @@ import {
   Download,
   FolderOpen,
   Home,
+  Layers,
   Library,
   LogIn,
   LogOut,
@@ -19,7 +20,7 @@ import {
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent, type ReactNode } from 'react';
-import type { WorkView } from '../../types/work';
+import type { SeriesSummary, WorkView } from '../../types/work';
 import { Cover } from '../book/cover';
 import { PwaClient, clearPrivatePwaStorage } from '../system/pwa-client';
 import { Badge } from '../ui/badge';
@@ -58,10 +59,26 @@ type BooksPayload = {
   error?: { message: string };
 };
 
+type SeriesPayload = {
+  ok: boolean;
+  data?: { series: SeriesSummary[]; total: number };
+  error?: { message: string };
+};
+
 type SystemSettingsPayload = {
   ok: boolean;
   data?: { settings?: Record<string, unknown> };
 };
+
+async function readApiJson<T>(response: Response): Promise<T | null> {
+  const text = await response.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    return null;
+  }
+}
 
 function isActive(pathname: string, href: string) {
   const cleanHref = href.split('?')[0];
@@ -92,6 +109,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [importTask, setImportTask] = useState<{ progress: number } | null>(null);
   const [user, setUser] = useState<{ email: string; name: string; role: string } | null>(null);
   const [systemName, setSystemName] = useState('书库星舰');
+  const [series, setSeries] = useState<SeriesSummary[]>([]);
+  const [seriesTotal, setSeriesTotal] = useState(0);
+  const [currentSeriesName, setCurrentSeriesName] = useState('');
   const [accountOpen, setAccountOpen] = useState(false);
   const [topSearch, setTopSearch] = useState('');
   const [topSearchFocused, setTopSearchFocused] = useState(false);
@@ -163,6 +183,23 @@ export function AppShell({ children }: { children: ReactNode }) {
   }, [pathname, router]);
 
   useEffect(() => {
+    function syncCurrentSeriesName() {
+      if (pathname !== '/series') {
+        setCurrentSeriesName('');
+        return;
+      }
+      setCurrentSeriesName(new URLSearchParams(window.location.search).get('name')?.trim() ?? '');
+    }
+    syncCurrentSeriesName();
+    window.addEventListener('popstate', syncCurrentSeriesName);
+    window.addEventListener('shuku:series-route-change', syncCurrentSeriesName);
+    return () => {
+      window.removeEventListener('popstate', syncCurrentSeriesName);
+      window.removeEventListener('shuku:series-route-change', syncCurrentSeriesName);
+    };
+  }, [pathname]);
+
+  useEffect(() => {
     if (isReader || isLogin || isMobileReader || isMobilePreview || isOffline) return;
     let active = true;
     Promise.all([
@@ -182,6 +219,27 @@ export function AppShell({ children }: { children: ReactNode }) {
         : '';
       if (nextSystemName) setSystemName(nextSystemName);
     });
+    return () => {
+      active = false;
+    };
+  }, [isLogin, isMobilePreview, isMobileReader, isOffline, isReader, pathname]);
+
+  useEffect(() => {
+    if (isReader || isLogin || isMobileReader || isMobilePreview || isOffline) return;
+    let active = true;
+    fetch('/api/series?visibility=active&limit=12')
+      .then((response) => readApiJson<SeriesPayload>(response))
+      .then((payload) => {
+        if (!active) return;
+        if (!payload?.ok) throw new Error(payload?.error?.message ?? '读取系列失败');
+        setSeries(payload.data?.series ?? []);
+        setSeriesTotal(payload.data?.total ?? 0);
+      })
+      .catch(() => {
+        if (!active) return;
+        setSeries([]);
+        setSeriesTotal(0);
+      });
     return () => {
       active = false;
     };
@@ -319,8 +377,8 @@ export function AppShell({ children }: { children: ReactNode }) {
 
   return (
     <div className="min-h-screen bg-[#F6F7F9] text-slate-950">
-      <aside className="fixed inset-y-0 left-0 z-20 hidden w-72 border-r border-slate-200 bg-white/88 px-4 py-5 shadow-sm backdrop-blur-xl lg:block">
-        <Link href="/" className="flex items-center gap-3 px-2">
+      <aside className="fixed inset-y-0 left-0 z-20 hidden w-72 flex-col border-r border-slate-200 bg-white/88 px-4 py-5 shadow-sm backdrop-blur-xl lg:flex">
+        <Link href="/" className="flex shrink-0 items-center gap-3 px-2">
           <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-950 text-white shadow-sm">
             <Library size={22} />
           </div>
@@ -329,28 +387,70 @@ export function AppShell({ children }: { children: ReactNode }) {
             <div className="text-xs text-slate-500">Self-hosted Reading Library</div>
           </div>
         </Link>
-        <nav className="mt-8 space-y-1.5">
-          {navItems.map(({ href, icon: Icon, label }) => (
-            <Link
-              key={`${href}-${label}`}
-              href={href}
-              className={cn(
-                'flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-sm transition',
-                isActive(pathname, href) ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-100'
-              )}
-            >
-              <Icon size={18} />
-              <span>{label}</span>
-            </Link>
-          ))}
-        </nav>
-        <div className="absolute inset-x-4 bottom-5 rounded-3xl border border-slate-200 bg-slate-50 p-4">
+        <div className="mt-8 min-h-0 flex-1 overflow-y-auto pr-1">
+          <nav className="space-y-1.5">
+            {navItems.map(({ href, icon: Icon, label }) => (
+              <Link
+                key={`${href}-${label}`}
+                href={href}
+                className={cn(
+                  'flex w-full items-center gap-3 rounded-2xl px-3 py-2.5 text-sm transition',
+                  isActive(pathname, href) ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-100'
+                )}
+              >
+                <Icon size={18} />
+                <span>{label}</span>
+              </Link>
+            ))}
+          </nav>
+          {series.length > 0 ? (
+            <section className="mt-7 border-t border-slate-100 pt-5">
+              <div className="mb-2 flex items-center justify-between px-3 text-xs font-semibold uppercase text-slate-400">
+                <span>系列</span>
+                <Layers size={14} />
+              </div>
+              <div className="space-y-1">
+                {series.map((item) => {
+                  const href = `/series?name=${encodeURIComponent(item.name)}`;
+                  const active = pathname === '/series' && currentSeriesName === item.name;
+                  return (
+                    <Link
+                      key={item.name}
+                      href={href}
+                      onClick={() => setCurrentSeriesName(item.name)}
+                      className={cn(
+                        'flex w-full items-center justify-between gap-2 rounded-2xl px-3 py-2 text-sm transition',
+                        active ? 'bg-blue-50 text-blue-700' : 'text-slate-600 hover:bg-slate-100'
+                      )}
+                    >
+                      <span className="min-w-0 truncate">{item.name}</span>
+                      <span className={cn('shrink-0 text-xs', active ? 'text-blue-500' : 'text-slate-400')}>{item.bookCount}</span>
+                    </Link>
+                  );
+                })}
+                {seriesTotal > series.length ? (
+                  <Link
+                    href="/series"
+                    onClick={() => setCurrentSeriesName('')}
+                    className={cn(
+                      'flex w-full items-center gap-2 rounded-2xl px-3 py-2 text-sm transition',
+                      pathname === '/series' && !currentSeriesName ? 'bg-blue-50 text-blue-700' : 'text-slate-500 hover:bg-slate-100'
+                    )}
+                  >
+                    全部系列
+                  </Link>
+                ) : null}
+              </div>
+            </section>
+          ) : null}
+        </div>
+        <div className="mt-5 shrink-0 rounded-3xl border border-slate-200 bg-slate-50 p-4">
           <div className="flex items-center gap-2 text-sm font-medium text-slate-800">
             <Server size={16} /> {healthOk ? '服务可用' : '待检测'}
           </div>
           <div className="mt-3 space-y-2 text-xs text-slate-500">
             <div className="flex justify-between">
-              <span>存储占用</span>
+              <span>文件占用</span>
               <span>{storageLabel}</span>
             </div>
             <Progress value={0} />

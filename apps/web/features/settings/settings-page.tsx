@@ -398,11 +398,6 @@ export function SettingsPage() {
                 系统名称
                 <input value={settings.systemName} onChange={(event) => setSettings({ ...settings, systemName: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none" />
               </label>
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                <div className="font-medium text-slate-800">界面语言</div>
-                <div className="mt-1">简体中文</div>
-                <div className="mt-1 text-xs text-slate-500">当前版本暂无多语言切换，因此这里不提供无效保存项。</div>
-              </div>
               {message ? <div className="md:col-span-2 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div> : null}
               {error ? <div className="md:col-span-2 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
             </div>
@@ -656,7 +651,7 @@ export function SettingsPage() {
           ) : active === '源管理' ? (
             <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-5">
               <div className="font-semibold">通用来源配置</div>
-              <div className="mt-1 text-sm leading-6 text-slate-500">集中管理手动源、PT RSS、Z-Library、漫画 API、通用 RSS 和 HTTP 源。可保存配置、脱敏展示，并通过已注册 Provider 执行测试和搜索。</div>
+              <div className="mt-1 text-sm leading-6 text-slate-500">集中管理手动源、PT RSS、Z-Library、漫画 API、通用 RSS 和 HTTP 源。可保存账号与连接信息，并用于搜索和下载。</div>
               <Link href="/settings/sources" className="mt-4 inline-flex min-h-11 items-center justify-center rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700">
                 打开源管理
               </Link>

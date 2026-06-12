@@ -92,3 +92,9 @@ export type WorkView = {
     volumes: WorkView['volumes'];
   }>;
 };
+
+export type SeriesSummary = {
+  name: string;
+  bookCount: number;
+  latestUpdatedAt: string | null;
+};

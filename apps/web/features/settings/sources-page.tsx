@@ -421,7 +421,7 @@ export function SourcesPage() {
             </div>
           </div>
           <div className="mt-3 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-500">
-            这里只展示后端已实现搜索或测试逻辑的 Provider；新建源不会带测试 URL 或示例资源。
+            这里只展示可用于搜索或连接测试的来源。新增来源后，可以先保存配置再测试连接。
           </div>
           <div className="mt-4 space-y-3">
             {sources.map((source) => (

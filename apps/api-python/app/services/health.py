@@ -21,14 +21,14 @@ def _check_monitor_root(path: Path | None) -> dict[str, str] | None:
     if path is None:
         return None
     if not path.exists():
-        return _check("monitorRootReadable", "error", f"MONITOR_ROOT 不存在：{path}")
+        return _check("monitorRootReadable", "error", f"监控文件夹不存在：{path}")
     if not path.is_dir():
-        return _check("monitorRootReadable", "error", "MONITOR_ROOT 不是目录")
+        return _check("monitorRootReadable", "error", "监控文件夹不是目录")
     try:
         next(path.iterdir(), None)
     except OSError as exc:
-        return _check("monitorRootReadable", "error", f"MONITOR_ROOT 不可读：{exc}")
-    return _check("monitorRootReadable", "ok", "MONITOR_ROOT 可读")
+        return _check("monitorRootReadable", "error", f"监控文件夹不可读：{exc}")
+    return _check("monitorRootReadable", "ok", "监控文件夹可读")
 
 
 def _check_storage_root(path: Path) -> dict[str, str]:
@@ -37,9 +37,9 @@ def _check_storage_root(path: Path) -> dict[str, str]:
         with NamedTemporaryFile(prefix=".health-", dir=path, delete=True) as probe:
             probe.write(b"ok")
             probe.flush()
-        return _check("storageWritable", "ok", "存储目录可写")
+        return _check("storageWritable", "ok", "书库文件夹可写")
     except OSError as exc:
-        return _check("storageWritable", "error", f"存储目录不可写：{exc}")
+        return _check("storageWritable", "error", f"书库文件夹不可写：{exc}")
 
 
 def run_system_health_checks(db: Session, settings: Settings) -> dict[str, object]:

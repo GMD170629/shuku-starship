@@ -634,6 +634,7 @@ def test_core_compat_endpoints_return_envelopes(client, db_session, test_setting
         "/api/dashboard/recent-books",
         "/api/dashboard/continue-reading",
         "/api/dashboard/system-status",
+        "/api/series",
         "/api/works",
         "/api/monitor-folders",
         "/api/system-settings",
@@ -655,6 +656,95 @@ def test_core_compat_endpoints_return_envelopes(client, db_session, test_setting
         payload = response.json()
         assert payload["ok"] is True, endpoint
         assert "data" in payload, endpoint
+
+
+def test_series_endpoint_lists_visible_non_empty_series(client, db_session):
+    create_worker_tables(db_session)
+    db_session.execute(text("ALTER TABLE LibraryWork ADD COLUMN seriesName TEXT"))
+    db_session.execute(text("ALTER TABLE LibraryWork ADD COLUMN seriesIndex REAL"))
+    _login(client, db_session)
+    for work_id, title, series_name, hidden, updated_at in [
+        ("series-visible-1", "星舰纪元 一", "星舰纪元", 0, "2026-06-11T10:00:00"),
+        ("series-visible-2", "星舰纪元 二", " 星舰纪元 ", 0, "2026-06-11T12:00:00"),
+        ("series-other", "午夜档案", "午夜档案", 0, "2026-06-10T00:00:00"),
+        ("series-hidden", "隐藏系列", "隐藏系列", 1, "2026-06-12T00:00:00"),
+        ("series-empty", "无系列", "", 0, "2026-06-12T01:00:00"),
+    ]:
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryWork (
+                    id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                    trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                    seriesName, mergeKey, createdAt, updatedAt
+                ) VALUES (
+                    :id, :title, :normalized_title, 'Author', 'author', 'EPUB', 'WANT', 'UNKNOWN',
+                    'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', :hidden, 0,
+                    :series_name, :merge_key, '2026-06-10T00:00:00', :updated_at
+                )"""
+            ),
+            {
+                "id": work_id,
+                "title": title,
+                "normalized_title": title.lower().replace(" ", ""),
+                "hidden": hidden,
+                "series_name": series_name,
+                "merge_key": f"epub:{work_id}:author",
+                "updated_at": updated_at,
+            },
+        )
+    db_session.commit()
+
+    response = client.get("/api/series?visibility=active&limit=10")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["data"]["total"] == 2
+    assert payload["data"]["series"] == [
+        {"name": "星舰纪元", "bookCount": 2, "latestUpdatedAt": "2026-06-11T12:00:00"},
+        {"name": "午夜档案", "bookCount": 1, "latestUpdatedAt": "2026-06-10T00:00:00"},
+    ]
+
+
+def test_works_series_filter_is_exact_and_accepts_unicode_names(client, db_session):
+    create_worker_tables(db_session)
+    db_session.execute(text("ALTER TABLE LibraryWork ADD COLUMN seriesName TEXT"))
+    db_session.execute(text("ALTER TABLE LibraryWork ADD COLUMN seriesIndex REAL"))
+    _login(client, db_session)
+    for work_id, title, series_name, series_index in [
+        ("exact-1", "第 2 卷", "午夜文库·大师系列：岛田庄司作品", 2),
+        ("exact-2", "第 1 卷", "午夜文库·大师系列：岛田庄司作品", 1),
+        ("fuzzy-title", "午夜文库·大师系列：岛田庄司作品 番外", "其他系列", 1),
+        ("near-series", "相近系列", "午夜文库·大师系列：岛田庄司作品 番外", 1),
+    ]:
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryWork (
+                    id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                    trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                    seriesName, seriesIndex, mergeKey, createdAt, updatedAt
+                ) VALUES (
+                    :id, :title, :normalized_title, 'Author', 'author', 'EPUB', 'WANT', 'UNKNOWN',
+                    'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', 0, 0,
+                    :series_name, :series_index, :merge_key, '2026-06-10T00:00:00', '2026-06-10T00:00:00'
+                )"""
+            ),
+            {
+                "id": work_id,
+                "title": title,
+                "normalized_title": title.lower().replace(" ", ""),
+                "series_name": series_name,
+                "series_index": series_index,
+                "merge_key": f"epub:{work_id}:author",
+            },
+        )
+    db_session.commit()
+
+    response = client.get("/api/works", params={"seriesName": "午夜文库·大师系列：岛田庄司作品", "sort": "series_index"})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["data"]["total"] == 2
+    assert [book["id"] for book in payload["data"]["books"]] == ["exact-2", "exact-1"]
 
 
 def test_bulk_works_delete_records_removes_selected_books(client, db_session, test_settings):
@@ -1071,7 +1161,7 @@ def test_source_manual_and_http_providers_execute_search_and_save_records(client
     http_test = client.post(f"/api/sources/{http_id}/test")
     assert http_test.status_code == 200
     assert http_test.json()["data"]["result"]["status"] == "failed"
-    assert "有效 downloadUrl" in http_test.json()["data"]["result"]["message"]
+    assert "下载地址" in http_test.json()["data"]["result"]["message"]
 
     http_search = client.post(f"/api/sources/{http_id}/search", json={"keyword": "space"})
     assert http_search.status_code == 200
@@ -1377,11 +1467,11 @@ def test_telegram_provider_is_no_longer_supported(client, db_session):
     tested = client.post(f"/api/sources/{source_id}/test")
     assert tested.status_code == 200
     assert tested.json()["data"]["result"]["status"] == "failed"
-    assert "尚未实现 Provider" in tested.json()["data"]["result"]["message"]
+    assert "这个来源暂不支持搜索或连接测试" in tested.json()["data"]["result"]["message"]
 
     searched = client.post(f"/api/sources/{source_id}/search", json={"keyword": "orbital"})
     assert searched.status_code == 400
-    assert "尚未实现 Provider" in searched.json()["error"]["message"]
+    assert "这个来源暂不支持搜索" in searched.json()["error"]["message"]
 
 
 def test_zlibrary_login_errors_return_search_failure(client, db_session):

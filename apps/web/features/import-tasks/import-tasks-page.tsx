@@ -70,7 +70,7 @@ export function ImportTasksPage() {
       const text = await response.text();
       const payload = text ? JSON.parse(text) as { ok: boolean; data?: { tasks: ImportTask[]; summary: typeof summary }; error?: { message: string } } : null;
       if (!response.ok) throw new Error(payload?.error?.message ?? `读取导入任务失败：HTTP ${response.status}`);
-      if (!payload) throw new Error('读取导入任务失败：接口返回为空');
+      if (!payload) throw new Error('读取导入任务失败：服务暂时没有返回内容');
       if (!payload.ok) throw new Error(payload.error?.message ?? '读取导入任务失败');
       setTasks((payload.data?.tasks ?? []).map(normalizeImportTask));
       setSummary({ ...emptySummary, ...(payload.data?.summary ?? {}) });

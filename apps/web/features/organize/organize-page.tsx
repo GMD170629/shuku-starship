@@ -234,7 +234,7 @@ export function OrganizePage() {
           <input value={tagInput} onChange={(event) => setTagInput(event.target.value)} placeholder="标签，用逗号分隔" className="h-10 min-w-[220px] flex-1 rounded-2xl border border-slate-200 px-3 text-sm outline-none focus:border-blue-300" />
           <Button disabled={busy || selectedBookIds.length === 0 || parseTags(tagInput).length === 0} variant="secondary" icon={Tags} onClick={() => void performBulkWork({ addTags: parseTags(tagInput) }, '标签已添加')}>添加标签</Button>
           <Button disabled={busy || selectedJobIds.length === 0} variant="secondary" icon={CheckCircle2} onClick={() => void bulkApplyJobs(false)}>应用建议</Button>
-          <Button disabled={busy || selectedJobIds.length === 0} variant="secondary" icon={CheckCircle2} onClick={() => void bulkApplyJobs(true)}>应用并确认</Button>
+          <Button disabled={busy || selectedJobIds.length === 0} variant="secondary" icon={CheckCircle2} onClick={() => void bulkApplyJobs(true)}>应用建议并完成</Button>
           <Button disabled={busy || selectedBookIds.length === 0} variant="danger" icon={EyeOff} onClick={() => void performBulkWork({ ignored: true }, '已隐藏，源文件未删除', `确认隐藏 ${selectedBookIds.length} 本读物吗？`)}>隐藏</Button>
         </div>
       </div>
@@ -298,7 +298,7 @@ export function OrganizePage() {
                     <td className="pr-4">
                       <div className="flex justify-end gap-2">
                         <Button variant="ghost" icon={Eye} className="min-h-9 px-3 py-2" onClick={() => router.push(`/organize/jobs/${job.id}`)}>详情</Button>
-                        <Button disabled={busy} variant="secondary" icon={CheckCircle2} className="min-h-9 px-3 py-2" onClick={() => void applyJob(job, { highConfidenceOnly: true, markOrganized: true }, '已应用建议并确认整理')}>完成</Button>
+                        <Button disabled={busy} variant="secondary" icon={CheckCircle2} className="min-h-9 px-3 py-2" onClick={() => void applyJob(job, { highConfidenceOnly: true, markOrganized: true }, '已应用建议并确认整理')}>确认整理</Button>
                       </div>
                     </td>
                   </tr>

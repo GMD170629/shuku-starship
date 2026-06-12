@@ -679,7 +679,7 @@ def _create_or_refresh_organize_job(db: Session, work_id: str, edition_id: str, 
     if existing:
         _update(db, "OrganizeJob", existing["id"], {"status": "REVIEWING", "updatedAt": _now()})
         return
-    _insert(db, "OrganizeJob", {"id": _id(), "workId": work_id, "editionId": edition_id, "importTaskId": task_id, "status": "REVIEWING", "issueCodes": "[]", "summary": "Python worker import metadata review", "createdAt": _now(), "updatedAt": _now()})
+    _insert(db, "OrganizeJob", {"id": _id(), "workId": work_id, "editionId": edition_id, "importTaskId": task_id, "status": "REVIEWING", "issueCodes": "[]", "summary": "新导入待整理", "createdAt": _now(), "updatedAt": _now()})
 
 
 def _auto_apply_epub_metadata(db: Session, work_id: str, edition_id: str, task_id: str) -> bool:
