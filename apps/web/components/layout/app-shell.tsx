@@ -127,9 +127,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const isMobileReader = pathname === '/mobile';
   const isMobilePreview = pathname === '/mobile-preview';
   const isOffline = pathname === '/offline';
-  const shellSurface = isReader
-    ? null
-    : isMobileReader || isMobilePreview
+  const shellSurface = isReader || isMobileReader || isMobilePreview
       ? shellSurfaces.mobile
       : isLogin
         ? shellSurfaces.login

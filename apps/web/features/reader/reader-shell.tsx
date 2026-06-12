@@ -1,7 +1,7 @@
 'use client';
 
 import { BookOpen, ChevronLeft, ChevronRight, ListTree, Minus, Moon, Plus, Settings, Sun, X } from 'lucide-react';
-import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
 import type { ComicDirection, ComicImageFit, ComicMode } from './comic-reader';
@@ -104,27 +104,11 @@ type ComicPagesPayload = {
 };
 
 export const readerThemeSurfaces: Record<ReaderTheme, { background: string; textClass: string; statusBarStyle: 'default' | 'black-translucent' }> = {
-  day: { background: '#F7F7F4', textClass: 'text-slate-950', statusBarStyle: 'black-translucent' },
-  warm: { background: '#FDF6EA', textClass: 'text-slate-950', statusBarStyle: 'black-translucent' },
+  day: { background: '#F7F7F4', textClass: 'text-slate-950', statusBarStyle: 'default' },
+  warm: { background: '#FDF6EA', textClass: 'text-slate-950', statusBarStyle: 'default' },
   night: { background: '#0F172A', textClass: 'text-slate-100', statusBarStyle: 'black-translucent' },
   black: { background: '#000000', textClass: 'text-slate-100', statusBarStyle: 'black-translucent' }
 };
-
-const readerControlSurfaces = {
-  light: '#FFFFFF',
-  dark: '#020617'
-} as const;
-
-const useIsoLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
-
-function ensureMeta(name: string) {
-  const existing = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`);
-  if (existing) return { meta: existing, created: false };
-  const meta = document.createElement('meta');
-  meta.setAttribute('name', name);
-  document.head.appendChild(meta);
-  return { meta, created: true };
-}
 
 function clampPercent(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
@@ -167,49 +151,6 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
   const [navLoading, setNavLoading] = useState(false);
   const dark = isDarkTheme(settings.theme);
   const themeSurface = readerThemeSurfaces[settings.theme];
-  const chromeSurface = controlsVisible || panel
-    ? {
-        background: dark ? readerControlSurfaces.dark : readerControlSurfaces.light,
-        statusBarStyle: 'black-translucent' as const
-      }
-    : {
-        background: themeSurface.background,
-        statusBarStyle: themeSurface.statusBarStyle
-      };
-
-  useIsoLayoutEffect(() => {
-    const previousHtmlBackground = document.documentElement.style.backgroundColor;
-    const previousBodyBackground = document.body.style.backgroundColor;
-    const previousColorScheme = document.documentElement.style.colorScheme;
-    const foundThemeColorMetas = Array.from(document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]'));
-    const createdThemeColor = foundThemeColorMetas.length === 0 ? ensureMeta('theme-color') : null;
-    const themeColorMetas = createdThemeColor ? [createdThemeColor.meta] : foundThemeColorMetas;
-    const { meta: statusBarMeta, created: createdStatusBarMeta } = ensureMeta('apple-mobile-web-app-status-bar-style');
-    const previousThemeColors = themeColorMetas.map((meta) => meta.content);
-    const previousStatusBarStyle = statusBarMeta.content;
-
-    document.documentElement.style.backgroundColor = chromeSurface.background;
-    document.body.style.backgroundColor = chromeSurface.background;
-    document.documentElement.style.colorScheme = chromeSurface.statusBarStyle === 'black-translucent' ? 'dark' : 'light';
-    themeColorMetas.forEach((meta) => meta.setAttribute('content', chromeSurface.background));
-    statusBarMeta?.setAttribute('content', chromeSurface.statusBarStyle);
-
-    return () => {
-      document.documentElement.style.backgroundColor = previousHtmlBackground;
-      document.body.style.backgroundColor = previousBodyBackground;
-      document.documentElement.style.colorScheme = previousColorScheme;
-      themeColorMetas.forEach((meta, index) => {
-        const previousThemeColor = previousThemeColors[index];
-        if (createdThemeColor?.meta === meta) {
-          meta.remove();
-          return;
-        }
-        meta.setAttribute('content', previousThemeColor);
-      });
-      if (createdStatusBarMeta) statusBarMeta.remove();
-      else statusBarMeta.setAttribute('content', previousStatusBarStyle);
-    };
-  }, [chromeSurface.background, chromeSurface.statusBarStyle]);
 
   function setControlsVisibility(visible: boolean) {
     controlsVisibleRef.current = visible;
@@ -410,7 +351,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
     >
       <div
         className="pointer-events-none absolute inset-x-0 top-0 z-40 transition-colors duration-200"
-        style={{ height: 'env(safe-area-inset-top)', backgroundColor: chromeSurface.background }}
+        style={{ height: 'env(safe-area-inset-top)', backgroundColor: themeSurface.background }}
         aria-hidden="true"
       />
       <main className="min-h-0 flex-1 w-full">
