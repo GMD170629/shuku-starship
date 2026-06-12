@@ -798,7 +798,7 @@ def get_system_settings(request: Request, db: Session = Depends(get_db), setting
     _user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    rows = _rows(db, "SELECT * FROM `SystemSetting`") if _has_table(db, "SystemSetting") else []
+    rows = _rows(db, "SELECT `key`, `value` FROM `SystemSetting`") if _has_table(db, "SystemSetting") else []
     return ok({"settings": {row["key"]: _parse_json(row.get("value"), row.get("value")) for row in rows}})
 
 
@@ -810,14 +810,30 @@ async def update_system_settings(request: Request, db: Session = Depends(get_db)
         return auth_error
     payload = await request.json()
     values = payload.get("settings", payload)
+    if not isinstance(values, dict):
+        return fail("设置格式不正确", status_code=400)
     saved = {}
-    for key, value in values.items():
+    if not _has_table(db, "SystemSetting"):
+        return ok({"settings": values})
+    keys = [str(key) for key in values.keys()]
+    existing: set[str] = set()
+    if keys:
+        placeholders = ", ".join(f":key_{index}" for index, _ in enumerate(keys))
+        params = {f"key_{index}": key for index, key in enumerate(keys)}
+        existing = {row["key"] for row in _rows(db, f"SELECT `key` FROM `SystemSetting` WHERE `key` IN ({placeholders})", params)}
+    now = _now()
+    for raw_key, value in values.items():
+        key = str(raw_key)
         serialized = _json_text(value)
-        if _row(db, "SELECT * FROM `SystemSetting` WHERE `key` = :key", {"key": key}) if _has_table(db, "SystemSetting") else None:
-            _update(db, "SystemSetting", key, {"value": serialized, "updatedAt": _now()}, id_column="key")
-        elif _has_table(db, "SystemSetting"):
-            _insert(db, "SystemSetting", {"key": key, "value": serialized, "createdAt": _now(), "updatedAt": _now()})
+        if key in existing:
+            db.execute(text("UPDATE `SystemSetting` SET `value` = :value, `updatedAt` = :updated_at WHERE `key` = :key"), {"key": key, "value": serialized, "updated_at": now})
+        else:
+            db.execute(
+                text("INSERT INTO `SystemSetting` (`key`, `value`, `createdAt`, `updatedAt`) VALUES (:key, :value, :created_at, :updated_at)"),
+                {"key": key, "value": serialized, "created_at": now, "updated_at": now},
+            )
         saved[key] = value
+    db.commit()
     return ok({"settings": saved})
 
 

@@ -59,8 +59,7 @@ async function main() {
     DOWNLOAD_INBOX_PATH: inbox,
     SCAN_WORKER_READY_FILE: readyFile,
     MONITOR_REFRESH_INTERVAL_MS: '10000',
-    MONITOR_FILE_STABLE_DELAY_MS: '100',
-    AUTOMATIC_BACKUP_ENABLED: 'false'
+    MONITOR_FILE_STABLE_DELAY_MS: '100'
   };
 
   let child;

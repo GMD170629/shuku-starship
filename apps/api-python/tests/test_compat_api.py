@@ -2172,6 +2172,10 @@ def test_backup_create_download_and_restore_database_export(client, db_session, 
         ),
         {"path": str(stored_file)},
     )
+    db_session.execute(
+        text("INSERT INTO SystemSetting (`key`, `value`, `createdAt`, `updatedAt`) VALUES ('backup.scope', :value, 'now', 'now')"),
+        {"value": json.dumps({"mode": "manual"})},
+    )
     db_session.commit()
 
     created = client.post("/api/backups")
@@ -2179,12 +2183,22 @@ def test_backup_create_download_and_restore_database_export(client, db_session, 
     assert created.status_code == 201
     backup = created.json()["data"]["backup"]
     assert backup["counts"]["works"] == 1
+    assert backup["counts"]["systemSettings"] == 1
+    assert backup["counts"]["libraryFiles"] == 0
     backup_path = test_settings.resolved_storage_root / "backups" / backup["filename"]
     with zipfile.ZipFile(backup_path) as archive:
         names = set(archive.namelist())
-        assert set(["metadata.json", "database-export.json", "settings.json", "library-files.json"]).issubset(names)
-        assert "library-files/books/backup-work/edition-1/book.epub" in names
-        assert json.loads(archive.read("metadata.json").decode("utf-8"))["counts"]["libraryFiles"] == 1
+        assert set(["metadata.json", "database-export.json", "settings.json"]).issubset(names)
+        assert "library-files.json" not in names
+        assert all(not name.startswith("library-files/") for name in names)
+        metadata = json.loads(archive.read("metadata.json").decode("utf-8"))
+        database_export = json.loads(archive.read("database-export.json").decode("utf-8"))
+        settings_export = json.loads(archive.read("settings.json").decode("utf-8"))
+        assert metadata["kind"] == "manual"
+        assert metadata["counts"]["libraryFiles"] == 0
+        assert "reader-content-files" in metadata["excludes"]
+        assert database_export["systemSettings"][0]["key"] == "backup.scope"
+        assert settings_export["backupMode"] == "manual"
 
     downloaded = client.get(f"/api/backups/{backup['id']}/download", headers={"Range": "bytes=0-3"})
     assert downloaded.status_code == 206
@@ -2201,73 +2215,38 @@ def test_backup_create_download_and_restore_database_export(client, db_session, 
     assert restored.status_code == 200
     assert restored.json()["data"]["restored"] is True
     assert restored.json()["data"]["restoredCounts"]["works"] == 1
-    assert restored.json()["data"]["restoredCounts"]["libraryFiles"] == 1
+    assert restored.json()["data"]["restoredCounts"]["systemSettings"] == 1
+    assert restored.json()["data"]["restoredCounts"]["libraryFiles"] == 0
     assert restored.json()["data"]["actualCounts"]["works"] == 1
     db_session.commit()
     restored_rows = db_session.execute(text("SELECT id, title FROM LibraryWork")).mappings().all()
     assert restored_rows
     assert db_session.execute(text("SELECT title FROM LibraryWork WHERE id = 'backup-work'")).scalar() == "Backup Book"
-    assert stored_file.read_bytes() == b"backup-file-content"
+    assert db_session.execute(text("SELECT `value` FROM SystemSetting WHERE `key` = 'backup.scope'")).scalar() == json.dumps({"mode": "manual"})
+    assert not stored_file.exists()
 
 
-def test_backup_automatic_schedule_and_retention(client, db_session, test_settings):
-    from datetime import datetime, timezone
+def test_backup_listing_keeps_legacy_automatic_files_manual_only(client, db_session, test_settings):
+    from app.services.backup_service import list_backups
 
-    from app.services.backup_service import ensure_automatic_backup, list_backups, prune_automatic_backups, state_path
-
-    create_worker_tables(db_session)
     test_settings.resolved_storage_root.mkdir(parents=True)
-    db_session.execute(
-        text(
-            """INSERT INTO LibraryWork (
-                id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
-                trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
-                mergeKey, createdAt, updatedAt
-            ) VALUES (
-                'auto-backup-work', 'Auto Backup Book', 'autobackupbook', '', '', 'EPUB', 'WANT', 'UNKNOWN',
-                'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', 0, 0, 'epub:auto-backup', 'now', 'now'
-            )"""
-        )
-    )
-    db_session.commit()
-
-    before_window = ensure_automatic_backup(db_session, test_settings, datetime(2026, 6, 10, 2, 59, tzinfo=timezone.utc))
-    assert before_window is None
-
-    first = ensure_automatic_backup(db_session, test_settings, datetime(2026, 6, 10, 3, 0, tzinfo=timezone.utc))
-    assert first is not None
-    assert first.id.startswith("automatic-")
-    assert state_path(test_settings).exists()
-    state = json.loads(state_path(test_settings).read_text(encoding="utf-8"))
-    assert state["lastAutomaticBackupDate"] == "2026-06-10"
-    assert state["lastBackupId"] == first.id
-
-    repeated = ensure_automatic_backup(db_session, test_settings, datetime(2026, 6, 10, 12, 0, tzinfo=timezone.utc))
-    assert repeated is None
-    second_day = ensure_automatic_backup(db_session, test_settings, datetime(2026, 6, 11, 3, 1, tzinfo=timezone.utc))
-    assert second_day is not None
-    assert second_day.id != first.id
-
-    backups = list_backups(test_settings)
-    assert len([backup for backup in backups if backup["kind"] == "automatic"]) == 2
-
-    manual_id = "manual-20260612-030000-keepme"
-    automatic_ids = [f"automatic-2026061{day}-030000-old00{day}" for day in range(2, 6)]
+    _login(client, db_session)
     backup_root = test_settings.resolved_storage_root / "backups"
+    backup_root.mkdir(parents=True)
+    manual_id = "manual-20260612-030000-keepme"
+    automatic_id = "automatic-20260612-030000-legacy"
     with zipfile.ZipFile(backup_root / f"{manual_id}.zip", "w") as archive:
         archive.writestr("metadata.json", json.dumps({"id": manual_id, "kind": "manual", "app": "shuku-starship", "version": 2, "createdAt": "2026-06-12T03:00:00+00:00", "counts": {}}))
-    for day, backup_id in enumerate(automatic_ids, start=2):
-        with zipfile.ZipFile(backup_root / f"{backup_id}.zip", "w") as archive:
-            archive.writestr("metadata.json", json.dumps({"id": backup_id, "kind": "automatic", "app": "shuku-starship", "version": 2, "createdAt": f"2026-06-1{day}T03:00:00+00:00", "counts": {}}))
+    with zipfile.ZipFile(backup_root / f"{automatic_id}.zip", "w") as archive:
+        archive.writestr("metadata.json", json.dumps({"id": automatic_id, "kind": "automatic", "app": "shuku-starship", "version": 2, "createdAt": "2026-06-11T03:00:00+00:00", "counts": {}}))
 
-    deleted = prune_automatic_backups(test_settings, 3)
+    backups = list_backups(test_settings)
+    assert {backup["id"] for backup in backups} == {manual_id, automatic_id}
 
-    remaining = list_backups(test_settings)
-    remaining_ids = {backup["id"] for backup in remaining}
-    assert manual_id in remaining_ids
-    assert len([backup for backup in remaining if backup["kind"] == "automatic"]) == 3
-    assert deleted
-    assert all(deleted_id.startswith("automatic-") for deleted_id in deleted)
+    deleted = client.delete(f"/api/backups/{automatic_id}")
+    assert deleted.status_code == 200
+    assert deleted.json()["data"]["deleted"] is True
+    assert not (backup_root / f"{automatic_id}.zip").exists()
 
 
 def test_manual_epub_upload_imports_book(client, db_session, test_settings, tmp_path):

@@ -19,13 +19,7 @@ Health check:
 curl http://localhost:8000/api/health
 ```
 
-Automatic backups run from the API process by default. Relevant environment variables:
-
-```bash
-AUTOMATIC_BACKUP_ENABLED=true
-AUTOMATIC_BACKUP_CHECK_ON_STARTUP=true
-AUTOMATIC_BACKUP_INTERVAL_SECONDS=3600
-```
+Backups are manual. Use the settings page or `POST /api/backups` to create a backup archive. Backup archives include system settings and database data, but exclude reader content files and cover image files.
 
 Torrent and magnet tasks can be submitted to qBittorrent Web API when configured through `SystemSetting` rows:
 

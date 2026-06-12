@@ -100,7 +100,6 @@ def main() -> None:
             "SCAN_WORKER_READY_FILE": str(ready_file),
             "MONITOR_REFRESH_INTERVAL_MS": "1000",
             "MONITOR_FILE_STABLE_DELAY_MS": "100",
-            "AUTOMATIC_BACKUP_ENABLED": "false",
         }
 
         process = subprocess.Popen(

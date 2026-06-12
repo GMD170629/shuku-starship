@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from secrets import token_hex
 from typing import Any
 
@@ -31,9 +30,13 @@ BACKUP_TABLES: list[tuple[str, str]] = [
     ("readingProgresses", "LibraryReadingProgress"),
     ("importTasks", "ImportTask"),
     ("importLogs", "ImportLog"),
+    ("readerPreferences", "ReaderPreference"),
+    ("systemSettings", "SystemSetting"),
 ]
 
 RESTORE_ORDER = [
+    "SystemSetting",
+    "ReaderPreference",
     "ImportLog",
     "ImportTask",
     "LibraryReadingProgress",
@@ -62,10 +65,6 @@ def backup_dir(settings: Settings) -> Path:
     path = settings.resolved_storage_root / "backups"
     path.mkdir(parents=True, exist_ok=True)
     return path
-
-
-def state_path(settings: Settings) -> Path:
-    return backup_dir(settings) / ".automatic-state.json"
 
 
 def backup_id(kind: str = "manual", created_at: datetime | None = None) -> str:
@@ -123,75 +122,15 @@ def counts_for_export(database_export: dict[str, list[dict[str, Any]]]) -> dict[
         "readingProgresses": len(database_export.get("readingProgresses", [])),
         "importTasks": len(database_export.get("importTasks", [])),
         "importLogs": len(database_export.get("importLogs", [])),
+        "readerPreferences": len(database_export.get("readerPreferences", [])),
+        "systemSettings": len(database_export.get("systemSettings", [])),
         "coverIndexEntries": len(database_export.get("coverIndex", [])),
     }
 
 
-def storage_relative_path(settings: Settings, value: Any) -> Path | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    storage_root = settings.resolved_storage_root
-    try:
-        path = Path(value).expanduser().resolve()
-    except (OSError, RuntimeError):
-        return None
-    if path == storage_root or storage_root not in path.parents:
-        return None
-    if not path.exists() or not path.is_file():
-        return None
-    return path.relative_to(storage_root)
-
-
-def collect_library_file_manifest(settings: Settings, database_export: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
-    candidates: list[Any] = []
-    candidates.extend(file.get("path") for file in database_export.get("files", []))
-    candidates.extend(work.get("coverPath") for work in database_export.get("works", []))
-    candidates.extend(edition.get("coverPath") for edition in database_export.get("editions", []))
-    candidates.extend(volume.get("coverPath") for volume in database_export.get("volumes", []))
-
-    seen: set[str] = set()
-    manifest: list[dict[str, Any]] = []
-    for candidate in candidates:
-        relative = storage_relative_path(settings, candidate)
-        if relative is None:
-            continue
-        relative_posix = relative.as_posix()
-        if relative_posix in seen:
-            continue
-        seen.add(relative_posix)
-        absolute = settings.resolved_storage_root / relative
-        manifest.append(
-            {
-                "path": relative_posix,
-                "archivePath": f"library-files/{relative_posix}",
-                "sizeBytes": absolute.stat().st_size,
-            }
-        )
-    return manifest
-
-
-def restore_library_files(settings: Settings, archive: zipfile.ZipFile) -> int:
-    restored = 0
-    storage_root = settings.resolved_storage_root
-    storage_root.mkdir(parents=True, exist_ok=True)
-    for info in archive.infolist():
-        if info.is_dir() or not info.filename.startswith("library-files/"):
-            continue
-        relative_name = info.filename.removeprefix("library-files/")
-        relative = PurePosixPath(relative_name)
-        if relative.is_absolute() or any(part in {"", ".", ".."} for part in relative.parts):
-            raise ValueError("BACKUP_FILE_PATH_UNSAFE")
-        target = (storage_root / Path(*relative.parts)).resolve()
-        if target == storage_root or storage_root not in target.parents:
-            raise ValueError("BACKUP_FILE_PATH_UNSAFE")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        with archive.open(info) as source, target.open("wb") as destination:
-            shutil.copyfileobj(source, destination)
-        restored += 1
-    return restored
-
-
 def create_backup(db: Session, settings: Settings, kind: str = "manual") -> BackupResult:
+    if kind != "manual":
+        raise ValueError("BACKUP_KIND_UNSUPPORTED")
     created_at = datetime.now(timezone.utc)
     backup_id_value = backup_id(kind, created_at)
     database_export = {export_key: fetch_table(db, table) for export_key, table in BACKUP_TABLES}
@@ -199,9 +138,8 @@ def create_backup(db: Session, settings: Settings, kind: str = "manual") -> Back
         {"workId": work.get("id"), "coverPath": work.get("coverPath"), "coverStatus": work.get("coverStatus")}
         for work in database_export.get("works", [])
     ]
-    library_files = collect_library_file_manifest(settings, database_export)
     counts = counts_for_export(database_export)
-    counts["libraryFiles"] = len(library_files)
+    counts["libraryFiles"] = 0
     metadata = {
         "id": backup_id_value,
         "kind": kind,
@@ -209,27 +147,24 @@ def create_backup(db: Session, settings: Settings, kind: str = "manual") -> Back
         "version": 2,
         "createdAt": created_at.isoformat(),
         "format": "zip",
-        "contents": ["metadata.json", "database-export.json", "settings.json", "library-files.json", "library-files/"],
-        "scope": ["database-v2", "library-works", "library-editions", "library-files", "reading-metadata", "tags", "reading-progress", "monitor-folder-settings", "cover-cache-index"],
+        "contents": ["metadata.json", "database-export.json", "settings.json"],
+        "scope": ["database-v2", "system-settings", "library-metadata", "reading-metadata", "tags", "reading-progress", "monitor-folder-settings", "cover-cache-index"],
+        "excludes": ["reader-content-files", "cover-image-files", "library-files/"],
         "counts": counts,
     }
     settings_export = {
         "monitorFolders": database_export.get("monitorFolders", []),
+        "systemSettings": database_export.get("systemSettings", []),
         "storageRoot": str(settings.resolved_storage_root),
         "backupRoot": str(backup_dir(settings)),
-        "automaticBackup": {"time": "03:00", "retentionCount": 7},
+        "backupMode": "manual",
     }
     path = backup_path(settings, backup_id_value)
     with zipfile.ZipFile(path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
         archive.writestr("metadata.json", json_bytes(metadata))
         archive.writestr("database-export.json", json_bytes(database_export))
         archive.writestr("settings.json", json_bytes(settings_export))
-        archive.writestr("library-files.json", json_bytes(library_files))
-        for item in library_files:
-            archive.write(settings.resolved_storage_root / item["path"], item["archivePath"])
     result = BackupResult(backup_id_value, path.name, path.stat().st_size, created_at.isoformat(), counts)
-    if kind == "automatic":
-        prune_automatic_backups(settings, 7)
     return result
 
 
@@ -266,60 +201,6 @@ def delete_backup_file(settings: Settings, backup_id_value: str) -> bool:
         return False
     path.unlink()
     return True
-
-
-def prune_automatic_backups(settings: Settings, retention_count: int = 7) -> list[str]:
-    if retention_count < 1:
-        retention_count = 1
-    automatic = [backup for backup in list_backups(settings) if backup.get("kind") == "automatic"]
-    stale = automatic[retention_count:]
-    deleted: list[str] = []
-    for backup in stale:
-        backup_id_value = str(backup.get("id") or "")
-        if backup_id_value and delete_backup_file(settings, backup_id_value):
-            deleted.append(backup_id_value)
-    return deleted
-
-
-def today_key(value: datetime) -> str:
-    return value.strftime("%Y-%m-%d")
-
-
-def has_passed_automatic_time(value: datetime) -> bool:
-    return value.hour > 3 or (value.hour == 3 and value.minute >= 0)
-
-
-def read_automatic_state(settings: Settings) -> dict[str, Any]:
-    try:
-        return json.loads(state_path(settings).read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-
-
-def write_automatic_state(settings: Settings, state: dict[str, Any]) -> None:
-    state_path(settings).write_bytes(json_bytes(state))
-
-
-def ensure_automatic_backup(db: Session, settings: Settings, current_time: datetime | None = None) -> BackupResult | None:
-    current = current_time or datetime.now(timezone.utc)
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=timezone.utc)
-    if not has_passed_automatic_time(current):
-        return None
-    key = today_key(current)
-    state = read_automatic_state(settings)
-    if state.get("lastAutomaticBackupDate") == key:
-        return None
-    backup = create_backup(db, settings, "automatic")
-    write_automatic_state(
-        settings,
-        {
-            "lastAutomaticBackupDate": key,
-            "lastBackupId": backup.id,
-            "updatedAt": datetime.now(timezone.utc).isoformat(),
-        },
-    )
-    return backup
 
 
 def parse_backup(path: Path) -> tuple[dict[str, Any], dict[str, list[dict[str, Any]]]]:
@@ -399,7 +280,6 @@ def restore_backup(db: Session, settings: Settings, backup_id_value: str) -> dic
     for export_key, table in BACKUP_TABLES:
         restored[export_key] = upsert_user_records(db, database_export.get(export_key, [])) if table == "User" else insert_records(db, table, database_export.get(export_key, []))
     db.commit()
-    with zipfile.ZipFile(path) as archive:
-        restored["libraryFiles"] = restore_library_files(settings, archive)
+    restored["libraryFiles"] = 0
     actual_counts = {export_key: len(fetch_table(db, table)) for export_key, table in BACKUP_TABLES}
     return {"id": backup_id_value, "restored": True, "restoredAt": datetime.now(timezone.utc).isoformat(), "counts": metadata.get("counts"), "restoredCounts": restored, "actualCounts": actual_counts}

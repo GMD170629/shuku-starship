@@ -61,8 +61,7 @@ async function main() {
     SESSION_SECRET: 'runtime-smoke-session-secret-32chars',
     MONITOR_ROOT: monitorRoot,
     STORAGE_ROOT: storageRoot,
-    DOWNLOAD_INBOX_PATH: inbox,
-    AUTOMATIC_BACKUP_ENABLED: 'false'
+    DOWNLOAD_INBOX_PATH: inbox
   };
 
   let child;

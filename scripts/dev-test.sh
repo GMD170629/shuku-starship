@@ -155,7 +155,6 @@ echo "  Storage root: $STORAGE_ROOT"
     STORAGE_ROOT="$STORAGE_ROOT" \
     DOWNLOAD_INBOX_PATH="$DOWNLOAD_INBOX_PATH" \
     SESSION_SECRET="$SESSION_SECRET" \
-    AUTOMATIC_BACKUP_ENABLED="${AUTOMATIC_BACKUP_ENABLED:-false}" \
     uv run --extra dev uvicorn app.main:app --host 127.0.0.1 --port "$PYTHON_API_PORT"
 ) &
 

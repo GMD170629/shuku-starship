@@ -440,8 +440,8 @@ export function SettingsPage() {
               <div className="flex flex-col gap-4 rounded-3xl border border-slate-200 bg-slate-50 p-5 md:flex-row md:items-center md:justify-between">
                 <div>
                   <div className="font-semibold">备份范围</div>
-                  <div className="mt-1 text-sm leading-6 text-slate-500">数据库数据、读物元数据、标签、阅读进度、监控文件夹配置和封面缓存索引。原始读物文件不会写入备份。</div>
-                  <div className="mt-2 text-xs text-slate-500">自动备份未配置；当前仅显示真实备份文件。</div>
+                  <div className="mt-1 text-sm leading-6 text-slate-500">仅包含系统设置和数据库数据，包括读物元数据、标签、阅读进度、监控文件夹配置和封面缓存索引；不包含原始读物文件或封面图片文件。</div>
+                  <div className="mt-2 text-xs text-slate-500">自动备份已关闭；请使用手动备份入口创建备份。</div>
                 </div>
                 <Button icon={Save} onClick={createBackup} loading={backupBusy === 'create'} loadingText="创建中">立即备份</Button>
               </div>
