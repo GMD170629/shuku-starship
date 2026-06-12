@@ -657,6 +657,161 @@ def test_core_compat_endpoints_return_envelopes(client, db_session, test_setting
         assert "data" in payload, endpoint
 
 
+def test_bulk_works_delete_records_removes_selected_books(client, db_session, test_settings):
+    create_worker_tables(db_session)
+    _login(client, db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    managed_file = test_settings.resolved_storage_root / "library" / "bulk-delete" / "book.epub"
+    managed_file.parent.mkdir(parents=True)
+    managed_file.write_bytes(b"bulk")
+    for work_id, title in [
+        ("bulk-delete-1", "Bulk Delete One"),
+        ("bulk-delete-2", "Bulk Delete Two"),
+        ("bulk-keep", "Bulk Keep"),
+    ]:
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryWork (
+                    id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                    trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                    mergeKey, createdAt, updatedAt
+                ) VALUES (
+                    :id, :title, :normalized_title, 'Author', 'author', 'EPUB', 'WANT', 'UNKNOWN',
+                    'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', 0, 0,
+                    :merge_key, '2026-06-11T00:00:00', '2026-06-11T00:00:00'
+                )"""
+            ),
+            {
+                "id": work_id,
+                "title": title,
+                "normalized_title": title.lower().replace(" ", ""),
+                "merge_key": f"epub:{work_id}:author",
+            },
+        )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryEdition (
+                id, workId, origin, format, versionName, versionKey, importStatus, sizeBytes,
+                chapterCount, coverStatus, "primary", hidden, createdAt, updatedAt
+            ) VALUES (
+                'bulk-delete-edition', 'bulk-delete-1', 'MANUAL', 'EPUB', 'Default', 'bulk-delete-edition',
+                'COMPLETED', 4, 1, 'PENDING', 1, 0, '2026-06-11T00:00:00', '2026-06-11T00:00:00'
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryFile (
+                id, editionId, path, filePathHash, fingerprint, fullHash, hashStatus, mtimeMs,
+                kind, mimeType, sizeBytes, sortOrder, createdAt, updatedAt
+            ) VALUES (
+                'bulk-delete-file', 'bulk-delete-edition', :path, 'bulk-delete-path',
+                'bulk-delete-fingerprint', 'bulk-delete-full', 'FAILED', 0, 'EPUB',
+                'application/epub+zip', 4, 0, '2026-06-11T00:00:00', '2026-06-11T00:00:00'
+            )"""
+        ),
+        {"path": str(managed_file)},
+    )
+    db_session.commit()
+
+    response = client.post("/api/works/bulk", json={"ids": ["bulk-delete-1", "bulk-delete-2"], "deleteRecords": True})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["data"]["deleted"] == 2
+    assert payload["data"]["deletedFiles"] == 1
+    assert not managed_file.exists()
+    remaining = db_session.execute(text("SELECT id FROM LibraryWork ORDER BY id")).scalars().all()
+    assert remaining == ["bulk-keep"]
+
+
+def test_delete_work_removes_storage_managed_files_only(client, db_session, test_settings):
+    create_worker_tables(db_session)
+    _login(client, db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    test_settings.resolved_monitor_root.mkdir(parents=True)
+    managed_file = test_settings.resolved_storage_root / "library" / "delete" / "book.epub"
+    cover_file = test_settings.resolved_storage_root / "covers" / "delete" / "cover.jpg"
+    monitor_file = test_settings.resolved_monitor_root / "original.epub"
+    managed_file.parent.mkdir(parents=True)
+    cover_file.parent.mkdir(parents=True)
+    managed_file.write_bytes(b"managed")
+    cover_file.write_bytes(b"cover")
+    monitor_file.write_bytes(b"monitor")
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryWork (
+                id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                trackingStatus, tags, metadataQuality, organizeStatus, coverPath, coverStatus, hidden, organized,
+                primaryEditionId, mergeKey, createdAt, updatedAt
+            ) VALUES (
+                'delete-with-files', 'Delete With Files', 'deletewithfiles', 'Author', 'author', 'EPUB',
+                'WANT', 'UNKNOWN', 'NOT_TRACKING', '[]', 0, 'REVIEWING', 'covers/delete/cover.jpg',
+                'READY', 0, 0, 'delete-edition', 'epub:delete-with-files:author',
+                '2026-06-11T00:00:00', '2026-06-11T00:00:00'
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryEdition (
+                id, workId, origin, format, versionName, versionKey, importStatus, sizeBytes,
+                chapterCount, coverPath, coverStatus, "primary", hidden, createdAt, updatedAt
+            ) VALUES (
+                'delete-edition', 'delete-with-files', 'MANUAL', 'EPUB', 'Default', 'delete-edition',
+                'COMPLETED', 7, 1, :cover_path, 'READY', 1, 0,
+                '2026-06-11T00:00:00', '2026-06-11T00:00:00'
+            )"""
+        ),
+        {"cover_path": str(cover_file)},
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryVolume (
+                id, editionId, title, volumeIndex, sortOrder, chapterCount, coverPath, createdAt, updatedAt
+            ) VALUES (
+                'delete-volume', 'delete-edition', 'Default', 1, 0, 1, :cover_path,
+                '2026-06-11T00:00:00', '2026-06-11T00:00:00'
+            )"""
+        ),
+        {"cover_path": str(cover_file)},
+    )
+    for file_id, path in [("delete-file-managed", managed_file), ("delete-file-monitor", monitor_file)]:
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryFile (
+                    id, editionId, volumeId, path, filePathHash, fingerprint, fullHash, hashStatus, mtimeMs,
+                    kind, mimeType, sizeBytes, sortOrder, createdAt, updatedAt
+                ) VALUES (
+                    :id, 'delete-edition', 'delete-volume', :path, :path_hash, :fingerprint, :full_hash,
+                    'FAILED', 0, 'EPUB', 'application/epub+zip', 7, 0,
+                    '2026-06-11T00:00:00', '2026-06-11T00:00:00'
+                )"""
+            ),
+            {
+                "id": file_id,
+                "path": str(path),
+                "path_hash": f"{file_id}-path",
+                "fingerprint": f"{file_id}-fingerprint",
+                "full_hash": f"{file_id}-full",
+            },
+        )
+    db_session.commit()
+
+    response = client.delete("/api/works/delete-with-files")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["data"]["deleted"] is True
+    assert payload["data"]["deletedFiles"] == 2
+    assert not managed_file.exists()
+    assert not cover_file.exists()
+    assert monitor_file.exists()
+    assert db_session.execute(text("SELECT COUNT(*) FROM LibraryWork WHERE id = 'delete-with-files'")).scalar() == 0
+
+
 def test_organize_jobs_return_frontend_contract(client, db_session):
     create_worker_tables(db_session)
     create_organize_detail_tables(db_session)

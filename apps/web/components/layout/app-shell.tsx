@@ -58,6 +58,11 @@ type BooksPayload = {
   error?: { message: string };
 };
 
+type SystemSettingsPayload = {
+  ok: boolean;
+  data?: { settings?: Record<string, unknown> };
+};
+
 function isActive(pathname: string, href: string) {
   const cleanHref = href.split('?')[0];
   if (cleanHref === '/') {
@@ -86,6 +91,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<{ status: string; checks: Array<{ name: string; status: string; message: string }> } | null>(null);
   const [importTask, setImportTask] = useState<{ progress: number } | null>(null);
   const [user, setUser] = useState<{ email: string; name: string; role: string } | null>(null);
+  const [systemName, setSystemName] = useState('书库星舰');
   const [accountOpen, setAccountOpen] = useState(false);
   const [topSearch, setTopSearch] = useState('');
   const [topSearchFocused, setTopSearchFocused] = useState(false);
@@ -163,13 +169,18 @@ export function AppShell({ children }: { children: ReactNode }) {
       fetch('/api/auth/me').then((response) => response.json()).catch(() => null),
       fetch('/api/dashboard/summary').then((response) => response.json()).catch(() => null),
       fetch('/api/system/health').then((response) => response.json()).catch(() => null),
-      fetch('/api/dashboard/system-status').then((response) => response.json()).catch(() => null)
-    ]).then(([mePayload, summaryPayload, healthPayload, systemPayload]) => {
+      fetch('/api/dashboard/system-status').then((response) => response.json()).catch(() => null),
+      fetch('/api/system-settings').then((response) => response.json() as Promise<SystemSettingsPayload>).catch(() => null)
+    ]).then(([mePayload, summaryPayload, healthPayload, systemPayload, settingsPayload]) => {
       if (!active) return;
       setUser(mePayload?.ok ? mePayload.data.user : null);
       if (summaryPayload?.ok) setSummary(summaryPayload.data);
       if (healthPayload?.ok) setStatus(healthPayload.data);
       if (systemPayload?.ok) setImportTask(systemPayload.data.currentImportTask);
+      const nextSystemName = settingsPayload?.ok && typeof settingsPayload.data?.settings?.systemName === 'string'
+        ? settingsPayload.data.settings.systemName.trim()
+        : '';
+      if (nextSystemName) setSystemName(nextSystemName);
     });
     return () => {
       active = false;
@@ -292,6 +303,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const storageLabel = storage > 0 ? `${(storage / 1024 / 1024 / 1024).toFixed(1)} GB` : '0 B';
   const healthOk = status?.status === 'ok';
 
+  useEffect(() => {
+    if (!systemName.trim()) return;
+    document.title = systemName;
+  }, [systemName]);
+
   if (isReader || isLogin || isMobileReader || isMobilePreview || isOffline) {
     return (
       <>
@@ -309,7 +325,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <Library size={22} />
           </div>
           <div>
-            <div className="text-base font-semibold">书库星舰</div>
+            <div className="text-base font-semibold">{systemName}</div>
             <div className="text-xs text-slate-500">Self-hosted Reading Library</div>
           </div>
         </Link>

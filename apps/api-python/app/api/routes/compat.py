@@ -453,6 +453,85 @@ def _delete(db: Session, table: str, row_id: str, id_column: str = "id") -> bool
     return bool(result.rowcount)
 
 
+def _storage_managed_path(path_value: str | None, settings: Settings) -> Path | None:
+    path = _stored_path(path_value, settings)
+    if not path:
+        return None
+    try:
+        storage = settings.resolved_storage_root.resolve()
+        resolved = path.resolve()
+    except OSError:
+        return None
+    if resolved == storage or storage in resolved.parents:
+        return resolved
+    return None
+
+
+def _collect_work_storage_paths(db: Session, work_id: str, settings: Settings) -> list[Path]:
+    paths: list[Path] = []
+
+    def add(path_value: str | None) -> None:
+        path = _storage_managed_path(path_value, settings)
+        if path:
+            paths.append(path)
+
+    if _has_table(db, "LibraryWork"):
+        work = _row(db, "SELECT `coverPath` FROM `LibraryWork` WHERE `id` = :work_id", {"work_id": work_id})
+        add((work or {}).get("coverPath"))
+    if not _has_table(db, "LibraryEdition"):
+        return list(dict.fromkeys(paths))
+
+    editions = _rows(db, "SELECT `id`, `coverPath` FROM `LibraryEdition` WHERE `workId` = :work_id", {"work_id": work_id})
+    edition_ids = [edition["id"] for edition in editions]
+    for edition in editions:
+        add(edition.get("coverPath"))
+    if not edition_ids:
+        return list(dict.fromkeys(paths))
+
+    for edition_id in edition_ids:
+        if _has_table(db, "LibraryVolume"):
+            volumes = _rows(db, "SELECT `coverPath` FROM `LibraryVolume` WHERE `editionId` = :edition_id", {"edition_id": edition_id})
+            for volume in volumes:
+                add(volume.get("coverPath"))
+        if _has_table(db, "LibraryFile"):
+            files = _rows(db, "SELECT `path` FROM `LibraryFile` WHERE `editionId` = :edition_id", {"edition_id": edition_id})
+            for file in files:
+                add(file.get("path"))
+    return list(dict.fromkeys(paths))
+
+
+def _delete_storage_paths(paths: list[Path], settings: Settings) -> dict[str, Any]:
+    deleted: list[str] = []
+    failed: list[dict[str, str]] = []
+    storage = settings.resolved_storage_root.resolve()
+    for path in paths:
+        try:
+            resolved = path.resolve()
+            if resolved != storage and storage not in resolved.parents:
+                continue
+            if resolved.is_file() or resolved.is_symlink():
+                resolved.unlink()
+                deleted.append(str(resolved))
+                parent = resolved.parent
+                while parent != storage and storage in parent.parents:
+                    try:
+                        parent.rmdir()
+                    except OSError:
+                        break
+                    parent = parent.parent
+        except OSError as exc:
+            failed.append({"path": str(path), "message": str(exc)})
+            logger.warning("failed to delete managed storage file: %s", path, exc_info=exc)
+    return {"deletedFiles": len(deleted), "failedFileDeletes": failed}
+
+
+def _delete_work_and_storage(db: Session, work_id: str, settings: Settings) -> dict[str, Any]:
+    paths = _collect_work_storage_paths(db, work_id, settings)
+    deleted = _delete(db, "LibraryWork", work_id)
+    cleanup = _delete_storage_paths(paths, settings) if deleted else {"deletedFiles": 0, "failedFileDeletes": []}
+    return {"deleted": deleted, "id": work_id, **cleanup}
+
+
 def _normalize_monitor_root_path(value: Any) -> str:
     root_path = str(value or "").strip()
     if not root_path:
@@ -615,7 +694,7 @@ def delete_work(work_id: str, request: Request, db: Session = Depends(get_db), s
     _user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    return ok({"deleted": _delete(db, "LibraryWork", work_id), "id": work_id})
+    return ok(_delete_work_and_storage(db, work_id, settings))
 
 
 @router.post("/works/bulk")
@@ -629,6 +708,18 @@ async def bulk_works(request: Request, db: Session = Depends(get_db), settings: 
     updated = 0
     if action is None and "ignored" in payload:
         action = "ignore" if payload.get("ignored") else "restore"
+    if action is None and payload.get("deleteRecords"):
+        action = "delete_records"
+    if _has_table(db, "LibraryWork") and ids and action in {"delete", "delete_records"}:
+        deleted_files = 0
+        failed_file_deletes: list[dict[str, str]] = []
+        for work_id in ids:
+            result = _delete_work_and_storage(db, str(work_id), settings)
+            if result["deleted"]:
+                updated += 1
+                deleted_files += int(result.get("deletedFiles") or 0)
+                failed_file_deletes.extend(result.get("failedFileDeletes") or [])
+        return ok({"updated": updated, "deleted": updated, "deletedFiles": deleted_files, "failedFileDeletes": failed_file_deletes, "ids": ids})
     if _has_table(db, "LibraryWork") and ids and action in {"hide", "ignore", "restore", "unignore", "mark_organized"}:
         hidden = action in {"hide", "ignore"}
         organized = action == "mark_organized"

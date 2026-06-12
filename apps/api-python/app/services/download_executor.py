@@ -92,7 +92,14 @@ def system_setting(db: Session, key: str) -> str | None:
     if not has_table(db, "SystemSetting"):
         return None
     item = row(db, "SELECT `value` FROM `SystemSetting` WHERE `key` = :key", {"key": key})
-    return string_value((item or {}).get("value")) or None
+    value = (item or {}).get("value")
+    if value is None:
+        return None
+    try:
+        parsed = json.loads(str(value))
+    except json.JSONDecodeError:
+        parsed = value
+    return string_value(parsed) or None
 
 
 def qbittorrent_config(db: Session, settings: Settings) -> QbittorrentConfig:

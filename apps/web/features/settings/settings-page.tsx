@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertTriangle, CheckCircle2, ChevronRight, Database, Download, FolderOpen, KeyRound, RefreshCw, RotateCcw, Save, Smartphone, Trash2 } from 'lucide-react';
+import { CheckCircle2, ChevronRight, Database, Download, FolderOpen, RotateCcw, Save, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 import { FormEvent, useEffect, useState } from 'react';
 import { Button } from '../../components/ui/button';
@@ -41,9 +41,6 @@ type BackupItem = {
 
 type AppSettings = {
   systemName: string;
-  theme: string;
-  language: string;
-  timezone: string;
   [key: string]: string;
 };
 
@@ -74,29 +71,51 @@ function hasCompleteAiSettings(settings: AppSettings) {
   return Boolean(settings['metadata.ai.baseUrl']?.trim() && settings['metadata.ai.model']?.trim() && settings['metadata.ai.apiKey']?.trim());
 }
 
-const themeOptions = [
-  { value: 'system', label: '跟随系统' },
-  { value: 'light', label: '浅色' },
-  { value: 'dark', label: '深色' }
-];
-
 const importModeOptions = [
   { value: 'COPY', label: '复制到项目文件夹' },
   { value: 'MOVE', label: '移动到项目文件夹' }
 ];
 
+const editableSystemSettingKeys = new Set([
+  'systemName',
+  'metadata.external.enabled',
+  'metadata.douban.enabled',
+  'metadata.douban.mode',
+  'metadata.douban.baseUrl',
+  'metadata.douban.apiKey',
+  'metadata.douban.userAgent',
+  'metadata.bangumi.enabled',
+  'metadata.bangumi.baseUrl',
+  'metadata.bangumi.accessToken',
+  'metadata.bangumi.userAgent',
+  'metadata.ai.enabled',
+  'metadata.ai.baseUrl',
+  'metadata.ai.apiKey',
+  'metadata.ai.model',
+  'download.qbittorrent.url',
+  'download.qbittorrent.username',
+  'download.qbittorrent.password',
+  'download.qbittorrent.category',
+  'download.qbittorrent.savePath'
+]);
+
+function settingsForSave(settings: AppSettings) {
+  const next: Record<string, string> = {};
+  for (const [key, value] of Object.entries(settings)) {
+    if (!editableSystemSettingKeys.has(key)) continue;
+    if (key === 'download.qbittorrent.password' && !value.trim()) continue;
+    next[key] = value;
+  }
+  return next;
+}
+
 export function SettingsPage() {
-  const groups = ['基础设置', '监控文件夹', '监控规则', '备份与恢复', '元数据', '源管理', '用户与权限', '多端同步', '安全与 API'];
-  const [active, setActive] = useState('监控文件夹');
+  const groups = ['基础设置', '监控文件夹', '监控规则', '备份与恢复', '元数据', '下载设置', '源管理'];
+  const [active, setActive] = useState('基础设置');
   const [folders, setFolders] = useState<MonitorFolder[]>([]);
   const [backups, setBackups] = useState<BackupItem[]>([]);
-  const [health, setHealth] = useState<{ status: string; checks: Array<{ name: string; status: string; message: string }> } | null>(null);
-  const [summary, setSummary] = useState<{ latestSyncAt: string | null } | null>(null);
   const [settings, setSettings] = useState<AppSettings>({
     systemName: '书库星舰',
-    theme: 'system',
-    language: 'zh-CN',
-    timezone: 'Asia/Shanghai',
     'metadata.external.enabled': 'false',
     'metadata.douban.enabled': 'false',
     'metadata.douban.mode': 'crawler',
@@ -109,7 +128,12 @@ export function SettingsPage() {
     'metadata.ai.enabled': 'false',
     'metadata.ai.baseUrl': '',
     'metadata.ai.apiKey': '',
-    'metadata.ai.model': ''
+    'metadata.ai.model': '',
+    'download.qbittorrent.url': '',
+    'download.qbittorrent.username': '',
+    'download.qbittorrent.password': '',
+    'download.qbittorrent.category': '',
+    'download.qbittorrent.savePath': ''
   });
   const [name, setName] = useState('我的监控文件夹');
   const [rootPath, setRootPath] = useState('/books');
@@ -147,9 +171,21 @@ export function SettingsPage() {
   useEffect(() => {
     loadPaths();
     loadBackups();
-    fetch('/api/system/health').then((response) => response.json()).then((payload) => payload.ok && setHealth(payload.data)).catch(() => undefined);
-    fetch('/api/dashboard/summary').then((response) => response.json()).then((payload) => payload.ok && setSummary(payload.data)).catch(() => undefined);
-    fetch('/api/system-settings').then((response) => response.json()).then((payload) => payload.ok && setSettings((current) => ({ ...current, ...payload.data.settings }))).catch(() => undefined);
+    fetch('/api/system-settings').then((response) => response.json()).then((payload) => {
+      if (!payload.ok) return;
+      const loaded = { ...payload.data.settings } as Record<string, unknown>;
+      const passwordConfigured = typeof loaded['download.qbittorrent.password'] === 'string' && loaded['download.qbittorrent.password'].trim().length > 0;
+      delete loaded.theme;
+      delete loaded.timezone;
+      delete loaded.language;
+      delete loaded['download.qbittorrent.password'];
+      setSettings((current) => ({
+        ...current,
+        ...Object.fromEntries(Object.entries(loaded).map(([key, value]) => [key, typeof value === 'string' ? value : String(value ?? '')])),
+        'download.qbittorrent.password': '',
+        'download.qbittorrent.passwordConfigured': String(passwordConfigured)
+      }));
+    }).catch(() => undefined);
   }, []);
 
   async function savePath(event: FormEvent<HTMLFormElement>) {
@@ -312,9 +348,9 @@ export function SettingsPage() {
     setError('');
     setMessage('');
     setSettingsBusy(true);
-    const settingsToSave = hasCompleteAiSettings(settings)
+    const settingsToSave = settingsForSave(hasCompleteAiSettings(settings)
       ? { ...settings, 'metadata.ai.enabled': 'true' }
-      : settings;
+      : settings);
     const response = await fetch('/api/system-settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
@@ -327,7 +363,12 @@ export function SettingsPage() {
       setError(nextError);
       toast.error('保存设置失败', nextError);
     } else {
-      setSettings(settingsToSave);
+      setSettings((current) => ({
+        ...current,
+        ...settingsToSave,
+        'download.qbittorrent.password': '',
+        'download.qbittorrent.passwordConfigured': settingsToSave['download.qbittorrent.password'] ? 'true' : current['download.qbittorrent.passwordConfigured'] ?? 'false'
+      }));
       setMessage('系统设置已保存');
       toast.success('系统设置已保存');
     }
@@ -335,7 +376,7 @@ export function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      <PageTitle title="系统设置" desc="配置系统、监控文件夹、监控规则、同步、安全和备份。" action={<Button icon={CheckCircle2} loading={settingsBusy} loadingText="保存中" onClick={saveSettings}>保存设置</Button>} />
+      <PageTitle title="系统设置" desc="配置系统名称、监控导入、备份、元数据、下载和来源。" action={<Button icon={CheckCircle2} loading={settingsBusy} loadingText="保存中" onClick={saveSettings}>保存设置</Button>} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
         <div className="rounded-[28px] border border-slate-200 bg-white p-4 shadow-sm lg:col-span-3">
           {groups.map((group) => (
@@ -357,18 +398,13 @@ export function SettingsPage() {
                 系统名称
                 <input value={settings.systemName} onChange={(event) => setSettings({ ...settings, systemName: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none" />
               </label>
-              <label className="text-sm text-slate-600">
-                主题
-                <Select value={settings.theme} options={themeOptions} onChange={(theme) => setSettings({ ...settings, theme })} ariaLabel="主题" className="mt-2 w-full" />
-              </label>
-              <label className="text-sm text-slate-600">
-                语言
-                <input value={settings.language} onChange={(event) => setSettings({ ...settings, language: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none" />
-              </label>
-              <label className="text-sm text-slate-600">
-                时区
-                <input value={settings.timezone} onChange={(event) => setSettings({ ...settings, timezone: event.target.value })} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-slate-900 outline-none" />
-              </label>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                <div className="font-medium text-slate-800">界面语言</div>
+                <div className="mt-1">简体中文</div>
+                <div className="mt-1 text-xs text-slate-500">当前版本暂无多语言切换，因此这里不提供无效保存项。</div>
+              </div>
+              {message ? <div className="md:col-span-2 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div> : null}
+              {error ? <div className="md:col-span-2 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
             </div>
           ) : active === '监控文件夹' ? (
             <div className="mt-6 space-y-5">
@@ -441,7 +477,7 @@ export function SettingsPage() {
                 <div>
                   <div className="font-semibold">备份范围</div>
                   <div className="mt-1 text-sm leading-6 text-slate-500">仅包含系统设置和数据库数据，包括读物元数据、标签、阅读进度、监控文件夹配置和封面缓存索引；不包含原始读物文件或封面图片文件。</div>
-                  <div className="mt-2 text-xs text-slate-500">自动备份已关闭；请使用手动备份入口创建备份。</div>
+                  <div className="mt-2 text-xs text-slate-500">当前支持手动备份；恢复备份会覆盖数据库中的相关记录。</div>
                 </div>
                 <Button icon={Save} onClick={createBackup} loading={backupBusy === 'create'} loadingText="创建中">立即备份</Button>
               </div>
@@ -580,6 +616,43 @@ export function SettingsPage() {
               {message ? <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div> : null}
               {error ? <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
             </div>
+          ) : active === '下载设置' ? (
+            <div className="mt-6 space-y-5">
+              <section className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+                <div className="font-semibold">qBittorrent</div>
+                <div className="mt-1 text-sm leading-6 text-slate-500">配置后，torrent 和 magnet 下载任务会提交到 qBittorrent；未配置时仍使用本地下载收件箱交接。</div>
+                <div className="mt-5 grid gap-4 md:grid-cols-2">
+                  <label className="text-sm text-slate-600">
+                    Web API 地址
+                    <input value={settings['download.qbittorrent.url']} onChange={(event) => setSettings({ ...settings, 'download.qbittorrent.url': event.target.value })} placeholder="http://qbittorrent:8080" className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none" />
+                  </label>
+                  <label className="text-sm text-slate-600">
+                    用户名
+                    <input value={settings['download.qbittorrent.username']} onChange={(event) => setSettings({ ...settings, 'download.qbittorrent.username': event.target.value })} placeholder="admin" className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none" />
+                  </label>
+                  <label className="text-sm text-slate-600">
+                    密码
+                    <input
+                      type="password"
+                      value={settings['download.qbittorrent.password']}
+                      onChange={(event) => setSettings({ ...settings, 'download.qbittorrent.password': event.target.value })}
+                      placeholder={settings['download.qbittorrent.passwordConfigured'] === 'true' ? '已配置；留空则保留原密码' : 'qBittorrent 密码'}
+                      className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none"
+                    />
+                  </label>
+                  <label className="text-sm text-slate-600">
+                    分类
+                    <input value={settings['download.qbittorrent.category']} onChange={(event) => setSettings({ ...settings, 'download.qbittorrent.category': event.target.value })} placeholder="shuku" className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none" />
+                  </label>
+                  <label className="text-sm text-slate-600 md:col-span-2">
+                    保存路径
+                    <input value={settings['download.qbittorrent.savePath']} onChange={(event) => setSettings({ ...settings, 'download.qbittorrent.savePath': event.target.value })} placeholder="/downloads/books" className="mt-2 h-11 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none" />
+                  </label>
+                </div>
+              </section>
+              {message ? <div className="rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div> : null}
+              {error ? <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
+            </div>
           ) : active === '源管理' ? (
             <div className="mt-6 rounded-3xl border border-slate-200 bg-slate-50 p-5">
               <div className="font-semibold">通用来源配置</div>
@@ -589,31 +662,8 @@ export function SettingsPage() {
               </Link>
             </div>
           ) : (
-            <div className="mt-6 grid grid-cols-1 gap-5 md:grid-cols-2">
-              {[
-                { icon: RefreshCw, title: '实时导入', desc: folders.some((path) => path.enabled) ? '已启用监控文件夹实时导入。' : '未启用监控文件夹。' },
-                { icon: Database, title: '监控根目录', desc: health?.checks.find((check) => check.name === 'monitorRootReadable')?.message ?? '待检测' },
-                { icon: Smartphone, title: '多端同步', desc: summary?.latestSyncAt ? `最近进度更新 ${new Date(summary.latestSyncAt).toLocaleString()}` : '暂无阅读进度同步' },
-                { icon: KeyRound, title: 'API Token', desc: '尚未启用 API Token。' }
-              ].map(({ icon: Icon, title, desc }) => (
-                <div key={title} className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
-                  <div className="flex gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-white text-blue-600 shadow-sm"><Icon size={18} /></div>
-                    <div>
-                      <div className="font-semibold">{title}</div>
-                      <div className="mt-1 text-sm leading-6 text-slate-500">{desc}</div>
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
+            null
           )}
-          <div className="mt-6 rounded-3xl border border-red-100 bg-red-50 p-5">
-            <div className="flex items-center gap-2 font-semibold text-red-700">
-              <AlertTriangle size={18} />危险操作
-            </div>
-            <p className="mt-2 text-sm text-red-600">重建索引、清空缩略图缓存和恢复备份会影响当前服务状态，请谨慎操作。</p>
-          </div>
         </div>
       </div>
     </div>

@@ -75,9 +75,7 @@ def seed_baseline_data(db: Session, settings: Settings) -> None:
 
     system_settings = {
         "systemName": "书库星舰",
-        "theme": "system",
         "language": "zh-CN",
-        "timezone": "Asia/Shanghai",
     }
     for key, value in system_settings.items():
         exists = db.execute(text("SELECT `key` FROM `SystemSetting` WHERE `key` = :key"), {"key": key}).scalar()

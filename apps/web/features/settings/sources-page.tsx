@@ -51,22 +51,12 @@ const kindOptions = [
 ];
 
 const defaultConfig: Record<SourceProviderType, unknown> = {
-  manual: { note: '手动维护的来源' },
+  manual: { items: [] },
   zlibrary: { email: '', password: '', baseUrl: '', languages: ['chinese', 'english'], extensions: ['EPUB', 'PDF'], exact: false, pageSize: 20 },
   pt_rss: { rssUrl: '', keywordInclude: [], keywordExclude: [], category: '', defaultType: 'comic', cooldown: 0 },
-  comic_api: { baseUrl: '', apiKey: '' },
-  rss: { url: '', rssKey: '' },
-  http: {
-    items: [
-      {
-        externalId: 'http-demo-1',
-        title: 'HTTP 测试 EPUB',
-        format: 'epub',
-        downloadUrl: 'https://example.com/book.epub',
-        size: '1MB'
-      }
-    ]
-  }
+  comic_api: { searchUrl: '', apiKey: '', items: [] },
+  rss: { rssUrl: '', keywordInclude: [], keywordExclude: [], category: '' },
+  http: { items: [] }
 };
 
 const zlibraryCapabilities = { search: true, download: true, requiresAuth: true };
@@ -237,10 +227,10 @@ export function SourcesPage() {
   const [priority, setPriority] = useState('100');
   const [configText, setConfigText] = useState(stringifyJson(defaultConfig.manual));
   const [capabilitiesText, setCapabilitiesText] = useState('{}');
-  const [rateLimitText, setRateLimitText] = useState('{}');
   const [zlibraryForm, setZlibraryForm] = useState<ZlibraryForm>(zlibraryFormFromConfig(defaultConfig.zlibrary));
   const [ptRssForm, setPtRssForm] = useState<PtRssForm>(ptRssFormFromConfig(defaultConfig.pt_rss));
   const [rssPreview, setRssPreview] = useState<SourceTestPreview[]>([]);
+  const [showAdvancedJson, setShowAdvancedJson] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
@@ -271,10 +261,10 @@ export function SourcesPage() {
     setPriority('100');
     setConfigText(stringifyJson(defaultConfig[nextProvider]));
     setCapabilitiesText(nextProvider === 'zlibrary' ? stringifyJson(zlibraryCapabilities) : nextProvider === 'pt_rss' ? stringifyJson(ptRssCapabilities) : '{}');
-    setRateLimitText('{}');
     setZlibraryForm(zlibraryFormFromConfig(defaultConfig[nextProvider]));
     setPtRssForm(ptRssFormFromConfig(defaultConfig[nextProvider]));
     setRssPreview([]);
+    setShowAdvancedJson(false);
     setError('');
     setMessage('');
   }
@@ -288,10 +278,10 @@ export function SourcesPage() {
     setPriority(String(source.priority));
     setConfigText(stringifyJson(source.config));
     setCapabilitiesText(stringifyJson(source.capabilities));
-    setRateLimitText(stringifyJson(source.rateLimit));
     setZlibraryForm(zlibraryFormFromConfig(source.config));
     setPtRssForm(ptRssFormFromConfig(source.config));
     setRssPreview([]);
+    setShowAdvancedJson(false);
     setError('');
     setMessage('');
   }
@@ -313,8 +303,7 @@ export function SourcesPage() {
           : providerType === 'pt_rss'
             ? ptRssConfigFromForm(ptRssForm, editingSource?.config)
             : parseJsonInput(configText, '配置'),
-        capabilities: providerType === 'zlibrary' ? zlibraryCapabilities : providerType === 'pt_rss' ? ptRssCapabilities : parseJsonInput(capabilitiesText, '能力'),
-        rateLimit: parseJsonInput(rateLimitText, '限流')
+        capabilities: providerType === 'zlibrary' ? zlibraryCapabilities : providerType === 'pt_rss' ? ptRssCapabilities : parseJsonInput(capabilitiesText, '能力')
       };
       const response = await fetch(selectedId ? `/api/sources/${selectedId}` : '/api/sources', {
         method: selectedId ? 'PUT' : 'POST',
@@ -416,7 +405,7 @@ export function SourcesPage() {
     <div className="space-y-6">
       <PageTitle
         title="源管理"
-        desc="管理小说源、漫画源、PT RSS、Z-Library、RSS 与 HTTP 等通用来源。"
+        desc="管理已实现的手动源、Z-Library、PT RSS、RSS、HTTP 和漫画 API 来源。"
         action={<Link href="/settings" className="inline-flex min-h-11 items-center rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50">返回系统设置</Link>}
       />
       {message ? <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4 text-sm text-emerald-700">{message}</div> : null}
@@ -430,6 +419,9 @@ export function SourcesPage() {
               <Button variant="secondary" icon={Plus} onClick={() => resetForm('pt_rss')}>PT RSS</Button>
               <Button variant="secondary" icon={Plus} onClick={() => resetForm('zlibrary')}>Z-Library</Button>
             </div>
+          </div>
+          <div className="mt-3 rounded-2xl bg-slate-50 px-4 py-3 text-sm text-slate-500">
+            这里只展示后端已实现搜索或测试逻辑的 Provider；新建源不会带测试 URL 或示例资源。
           </div>
           <div className="mt-4 space-y-3">
             {sources.map((source) => (
@@ -590,16 +582,19 @@ export function SourcesPage() {
                   配置 JSON
                   <textarea value={configText} onChange={(event) => setConfigText(event.target.value)} rows={9} spellCheck={false} className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 font-mono text-xs text-slate-900 outline-none focus:border-blue-300" />
                 </label>
-                <label className="block text-sm text-slate-600">
-                  能力 JSON
-                  <textarea value={capabilitiesText} onChange={(event) => setCapabilitiesText(event.target.value)} rows={4} spellCheck={false} className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 font-mono text-xs text-slate-900 outline-none focus:border-blue-300" />
-                </label>
               </>
             )}
-            <label className="block text-sm text-slate-600">
-              限流 JSON
-              <textarea value={rateLimitText} onChange={(event) => setRateLimitText(event.target.value)} rows={4} spellCheck={false} className="mt-2 w-full rounded-2xl border border-slate-200 px-4 py-3 font-mono text-xs text-slate-900 outline-none focus:border-blue-300" />
-            </label>
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+              <button type="button" onClick={() => setShowAdvancedJson((open) => !open)} className="text-sm font-medium text-slate-700">
+                {showAdvancedJson ? '隐藏高级能力 JSON' : '显示高级能力 JSON'}
+              </button>
+              {showAdvancedJson ? (
+                <label className="mt-3 block text-sm text-slate-600">
+                  能力 JSON
+                  <textarea value={capabilitiesText} onChange={(event) => setCapabilitiesText(event.target.value)} rows={4} spellCheck={false} className="mt-2 w-full rounded-2xl border border-slate-200 bg-white px-4 py-3 font-mono text-xs text-slate-900 outline-none focus:border-blue-300" />
+                </label>
+              ) : null}
+            </div>
           </div>
           <div className="mt-5 flex justify-end gap-3">
             <Button type="button" variant="secondary" onClick={() => resetForm()}>新建</Button>
