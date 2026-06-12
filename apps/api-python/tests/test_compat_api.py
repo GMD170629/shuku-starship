@@ -10,7 +10,7 @@ from sqlalchemy import text
 from app.api.routes import compat
 from app.core.auth import hash_password
 from app.models.auth import User
-from app.services.organize_service import bangumi_candidates, douban_candidates
+from app.services.organize_service import bangumi_candidates, douban_candidates, system_settings
 from app.services.download_queue import process_next_download_task
 from app.worker.importer import _auto_apply_epub_metadata
 from tests.test_worker_importer import create_worker_tables, write_comic_fixture, write_epub_fixture, write_pdf_fixture
@@ -601,6 +601,28 @@ def test_metadata_candidate_parsers_accept_common_provider_shapes():
     assert douban[0]["coverUrl"] == "https://example.test/cover.jpg"
     assert bangumi[0]["title"] == "中文条目"
     assert bangumi[0]["coverUrl"] == "https://example.test/bgm.jpg"
+
+
+def test_metadata_system_settings_decode_json_saved_values(db_session):
+    db_session.execute(text("CREATE TABLE IF NOT EXISTS SystemSetting (`key` TEXT PRIMARY KEY, `value` TEXT, `createdAt` TEXT, `updatedAt` TEXT)"))
+    for key, value in {
+        "metadata.douban.baseUrl": '""',
+        "metadata.douban.enabled": "true",
+        "metadata.bangumi.userAgent": '"ShukuStarship/0.1 (https://github.com/GMD170629/shuku-starship)"',
+    }.items():
+        db_session.execute(
+            text("INSERT INTO SystemSetting (`key`, `value`, `createdAt`, `updatedAt`) VALUES (:key, :value, 'now', 'now')"),
+            {"key": key, "value": value},
+        )
+    db_session.commit()
+
+    settings = system_settings(db_session, ["metadata.douban.baseUrl", "metadata.douban.enabled", "metadata.bangumi.userAgent"])
+
+    assert settings == {
+        "metadata.douban.baseUrl": "",
+        "metadata.douban.enabled": "true",
+        "metadata.bangumi.userAgent": "ShukuStarship/0.1 (https://github.com/GMD170629/shuku-starship)",
+    }
 
 
 def test_core_compat_endpoints_return_envelopes(client, db_session, test_settings):
@@ -2331,6 +2353,69 @@ def test_reader_bootstrap_matches_node_shapes_for_epub_and_comic(client, db_sess
     assert comic_detail_data["book"]["editionId"] == comic_payload["editionId"]
     assert comic_detail_data["readingUnits"] == []
     assert comic_detail_data["comicSections"] == [{"id": comic_payload["volumeId"], "title": "第 1 卷", "index": 1, "fileId": comic_payload["volumeId"], "pageCount": 2, "coverUrl": f"/api/volumes/{comic_payload['volumeId']}/cover?editionId={comic_payload['editionId']}"}]
+
+    db_session.execute(
+        text(
+            """
+            INSERT INTO LibraryEdition (
+                id, workId, monitorFolderId, origin, format, versionName, versionKey, sourceGroupKey,
+                description, language, publisher, publishedAt, identifier, isbn, importStatus, importError,
+                sizeBytes, pageCount, chapterCount, coverPath, coverStatus, "primary", hidden, createdAt, updatedAt
+            ) VALUES (
+                'comic-edition-alt', :work_id, NULL, 'MANUAL', 'COMIC', '备用版本', 'alt', NULL,
+                NULL, NULL, NULL, NULL, NULL, NULL, 'COMPLETED', NULL,
+                0, 5, NULL, NULL, 'PENDING', 0, 0, 'now', 'now'
+            )
+            """
+        ),
+        {"work_id": comic_payload["workId"]},
+    )
+    db_session.execute(
+        text(
+            """
+            INSERT INTO LibraryVolume (
+                id, editionId, title, volumeIndex, sortOrder, pageCount, chapterCount, coverPath, createdAt, updatedAt
+            ) VALUES
+                ('comic-alt-volume-1', 'comic-edition-alt', '第 1 话', 1, 0, 2, NULL, NULL, 'now', 'now'),
+                ('comic-alt-volume-2', 'comic-edition-alt', '第 2 话', 2, 1, 3, NULL, NULL, 'now', 'now')
+            """
+        )
+    )
+    db_session.execute(
+        text(
+            """
+            INSERT INTO LibraryReadingUnit (
+                id, editionId, volumeId, fileId, unitType, title, href, mediaType, sortOrder,
+                width, height, size, metadataJson, createdAt, updatedAt
+            ) VALUES
+                ('comic-alt-page-1', 'comic-edition-alt', 'comic-alt-volume-1', NULL, 'page', '001.jpg', '001.jpg', 'image/jpeg', 0, NULL, NULL, NULL, '{}', 'now', 'now'),
+                ('comic-alt-page-2', 'comic-edition-alt', 'comic-alt-volume-1', NULL, 'page', '002.jpg', '002.jpg', 'image/jpeg', 1, NULL, NULL, NULL, '{}', 'now', 'now'),
+                ('comic-alt-page-3', 'comic-edition-alt', 'comic-alt-volume-2', NULL, 'page', '001.jpg', '001.jpg', 'image/jpeg', 0, NULL, NULL, NULL, '{}', 'now', 'now'),
+                ('comic-alt-page-4', 'comic-edition-alt', 'comic-alt-volume-2', NULL, 'page', '002.jpg', '002.jpg', 'image/jpeg', 1, NULL, NULL, NULL, '{}', 'now', 'now'),
+                ('comic-alt-page-5', 'comic-edition-alt', 'comic-alt-volume-2', NULL, 'page', '003.jpg', '003.jpg', 'image/jpeg', 2, NULL, NULL, NULL, '{}', 'now', 'now')
+            """
+        )
+    )
+    db_session.commit()
+
+    multi_detail = client.get(f"/api/works/{comic_payload['workId']}")
+    assert multi_detail.status_code == 200
+    multi_book = multi_detail.json()["data"]["book"]
+    assert multi_book["versionCount"] == 2
+    assert [edition["versionName"] for edition in multi_book["editions"]] == ["漫画版本", "备用版本"]
+    assert [volume["title"] for volume in multi_book["editions"][1]["volumes"]] == ["第 1 话", "第 2 话"]
+
+    alt_bootstrap = client.get("/api/reader/comic-edition-alt/bootstrap?volume=comic-alt-volume-2")
+    assert alt_bootstrap.status_code == 200
+    alt_data = alt_bootstrap.json()["data"]
+    assert alt_data["readerType"] == "comic"
+    assert alt_data["book"]["editionId"] == "comic-edition-alt"
+    assert alt_data["section"] == {"id": "comic-alt-volume-2", "title": "第 2 话", "pageCount": 3}
+    assert alt_data["sections"] == [
+        {"id": "comic-alt-volume-1", "title": "第 1 话", "pageCount": 2},
+        {"id": "comic-alt-volume-2", "title": "第 2 话", "pageCount": 3},
+    ]
+    assert [page["pageIndex"] for page in alt_data["pages"]] == [1, 2, 3]
 
 
 def test_file_streams_are_limited_per_user(client, db_session, test_settings, tmp_path, monkeypatch):

@@ -181,8 +181,19 @@ def system_settings(db: Session, keys: list[str]) -> dict[str, str | None]:
         return {key: None for key in keys}
     placeholders = ", ".join(f":key_{index}" for index, _ in enumerate(keys))
     params = {f"key_{index}": key for index, key in enumerate(keys)}
-    found = {item["key"]: item.get("value") for item in rows(db, f"SELECT `key`, `value` FROM `SystemSetting` WHERE `key` IN ({placeholders})", params)}
+    found = {item["key"]: system_setting_string(item.get("value")) for item in rows(db, f"SELECT `key`, `value` FROM `SystemSetting` WHERE `key` IN ({placeholders})", params)}
     return {key: found.get(key) for key in keys}
+
+
+def system_setting_string(value: Any) -> str | None:
+    parsed = parse_json_value(value)
+    if parsed is None:
+        return None
+    if isinstance(parsed, bool):
+        return "true" if parsed else "false"
+    if isinstance(parsed, (dict, list)):
+        return json_text(parsed)
+    return str(parsed).strip()
 
 
 def selected_suggestions(db: Session, job_id: str, suggestion_ids: list[str] | None, high_confidence_only: bool) -> list[dict[str, Any]]:
@@ -909,7 +920,7 @@ def run_ai_metadata_provider(db: Session, context: dict[str, Any], force: bool =
 def run_bangumi_metadata_provider(db: Session, context: dict[str, Any], settings: dict[str, str | None], force: bool = True, query: str | None = None, match_title: str | None = None) -> dict[str, Any]:
     if not force and not coerce_bool(settings.get("metadata.bangumi.enabled")):
         return {"provider": "bangumi", "enabled": False, "added": 0, "cacheHit": False, "message": "Bangumi 元数据源未启用", "suggestions": []}
-    user_agent = string_value(settings.get("metadata.bangumi.userAgent")) or "Shuku Starship Python"
+    user_agent = string_value(settings.get("metadata.bangumi.userAgent")) or "ShukuStarship/0.1 (https://github.com/GMD170629/shuku-starship)"
     if not user_agent:
         return {"provider": "bangumi", "enabled": False, "added": 0, "cacheHit": False, "message": "Bangumi User-Agent 未配置", "suggestions": []}
     base_url = string_value(settings.get("metadata.bangumi.baseUrl")).rstrip("/") or "https://api.bgm.tv"

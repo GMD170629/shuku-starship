@@ -59,6 +59,7 @@ type ReaderShellProps = {
   onBack: () => void;
   onSettingsChange: (settings: ReaderSettings) => void;
   navigationItems?: ReaderNavigationItem[];
+  comicNavigation?: ReaderComicNavigation;
   children: ReactNode | ((events: ReaderShellEvents) => ReactNode);
 };
 
@@ -66,6 +67,25 @@ export type ReaderNavigationItem = {
   index: number;
   title: string;
   href?: string;
+};
+
+export type ReaderComicNavigation = {
+  editions: Array<{
+    id: string;
+    versionName: string;
+    format: string;
+    progress: number;
+    lastReadAt: string | null;
+    volumes: Array<{ id: string; title: string; pageCount: number | null }>;
+  }>;
+  sections: Array<{ id: string; title: string; pageCount: number }>;
+  pages: ReaderNavigationItem[];
+  currentEditionId: string;
+  currentSectionId: string | null;
+  loading: boolean;
+  onSelectEdition: (editionId: string) => void;
+  onSelectSection: (sectionId: string) => void;
+  onSelectPage: (pageIndex: number) => void;
 };
 
 type ReadingUnitsPayload = {
@@ -130,7 +150,7 @@ function shouldIgnoreReaderInteraction(target: EventTarget | null) {
   return isEditableTarget(target) || Boolean(target.closest('[data-reader-control="true"]'));
 }
 
-export function ReaderShell({ editionId, title, readerType, progress, controls, settings, onBack, onSettingsChange, navigationItems, children }: ReaderShellProps) {
+export function ReaderShell({ editionId, title, readerType, progress, controls, settings, onBack, onSettingsChange, navigationItems, comicNavigation, children }: ReaderShellProps) {
   const controlsVisibleRef = useRef(false);
   const controlsRef = useRef<ReaderControls | null>(null);
   const panelRef = useRef<'toc' | 'settings' | null>(null);
@@ -409,7 +429,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
-            <button type="button" onClick={() => setPanel((value) => (value === 'toc' ? null : 'toc'))} className="flex h-11 w-11 items-center justify-center rounded-full transition active:scale-[0.98] hover:bg-white/10" aria-label={readerType === 'comic' ? '页码' : '目录'}>
+            <button type="button" onClick={() => setPanel((value) => (value === 'toc' ? null : 'toc'))} className="flex h-11 w-11 items-center justify-center rounded-full transition active:scale-[0.98] hover:bg-white/10" aria-label="目录">
               <ListTree size={19} />
             </button>
             <button type="button" onClick={() => setPanel((value) => (value === 'settings' ? null : 'settings'))} className="flex h-11 w-11 items-center justify-center rounded-full transition active:scale-[0.98] hover:bg-white/10" aria-label="阅读设置">
@@ -466,7 +486,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
         >
           <div className="flex items-center justify-between gap-3">
             <div>
-              <div className="text-sm font-semibold">{panel === 'toc' ? (readerType === 'comic' ? '页码' : '目录') : '阅读设置'}</div>
+              <div className="text-sm font-semibold">{panel === 'toc' ? '目录' : '阅读设置'}</div>
               <div className="mt-0.5 text-xs opacity-60">{progress.label}</div>
             </div>
             <button type="button" onClick={() => { setPanel(null); keepControlsOpen(); }} className="flex h-11 w-11 items-center justify-center rounded-full transition active:scale-[0.98] hover:bg-white/10" aria-label="关闭面板">
@@ -474,7 +494,19 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
             </button>
           </div>
 
-          {panel === 'toc' ? (
+          {panel === 'toc' && readerType === 'comic' && comicNavigation ? (
+            <ComicNavigationPanel
+              navigation={comicNavigation}
+              progress={progress}
+              dark={dark}
+              onJumpPage={(pageIndex) => {
+                comicNavigation.onSelectPage(pageIndex);
+                keepControlsOpen();
+              }}
+            />
+          ) : null}
+
+          {panel === 'toc' && (readerType !== 'comic' || !comicNavigation) ? (
             <div className="mt-5 max-h-[calc(82dvh-6rem)] overflow-auto pr-1 md:h-[calc(100%-4rem)] md:max-h-none">
               {navLoading ? <div className="py-6 text-sm opacity-60">正在读取...</div> : null}
               {!navLoading && navItems.length === 0 ? <div className="py-6 text-sm opacity-60">暂无可跳转条目</div> : null}
@@ -593,6 +625,112 @@ function SettingStepper({ label, value, onMinus, onPlus }: { label: string; valu
         </button>
       </div>
     </div>
+  );
+}
+
+function ComicNavigationPanel({ navigation, progress, dark, onJumpPage }: { navigation: ReaderComicNavigation; progress: ReaderProgress; dark: boolean; onJumpPage: (pageIndex: number) => void }) {
+  const currentEdition = navigation.editions.find((edition) => edition.id === navigation.currentEditionId);
+  const currentSection = navigation.sections.find((section) => section.id === navigation.currentSectionId);
+  const showEditions = navigation.editions.length > 1;
+  const showSections = navigation.sections.length > 1;
+  const idleText = navigation.loading ? '正在切换...' : null;
+
+  return (
+    <div className="mt-5 max-h-[calc(82dvh-6rem)] overflow-auto pr-1 md:h-[calc(100%-4rem)] md:max-h-none">
+      {idleText ? <div className="mb-3 rounded-xl bg-white/10 px-3 py-2 text-xs opacity-70">{idleText}</div> : null}
+      {showEditions ? (
+        <ComicNavigationGroup title="版本">
+          {navigation.editions.map((edition) => {
+            const selected = edition.id === navigation.currentEditionId;
+            const detail = [
+              edition.format,
+              edition.volumes.length > 0 ? `${edition.volumes.length} 卷/话` : '',
+              edition.progress > 0 ? `${edition.progress}%` : ''
+            ].filter(Boolean).join(' · ');
+            return (
+              <button
+                key={edition.id}
+                type="button"
+                disabled={navigation.loading}
+                onClick={() => navigation.onSelectEdition(edition.id)}
+                className={comicNavButtonClass(selected, dark)}
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-medium">{edition.versionName}</span>
+                  <span className="mt-0.5 block truncate text-xs opacity-65">{detail || '默认版本'}</span>
+                </span>
+              </button>
+            );
+          })}
+        </ComicNavigationGroup>
+      ) : currentEdition ? (
+        <div className={cn('mb-4 rounded-xl px-3 py-2 text-sm', dark ? 'bg-white/10' : 'bg-slate-100')}>
+          <div className="truncate font-medium">{currentEdition.versionName}</div>
+          <div className="mt-0.5 truncate text-xs opacity-60">{currentEdition.format}</div>
+        </div>
+      ) : null}
+
+      {showSections ? (
+        <ComicNavigationGroup title="卷/话">
+          {navigation.sections.map((section, index) => (
+            <button
+              key={section.id}
+              type="button"
+              disabled={navigation.loading}
+              onClick={() => navigation.onSelectSection(section.id)}
+              className={comicNavButtonClass(section.id === navigation.currentSectionId, dark)}
+            >
+              <span className="w-8 shrink-0 tabular-nums opacity-60">{index + 1}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium">{section.title || `第 ${index + 1} 话`}</span>
+                <span className="mt-0.5 block truncate text-xs opacity-65">{section.pageCount || 0} 页</span>
+              </span>
+            </button>
+          ))}
+        </ComicNavigationGroup>
+      ) : currentSection ? (
+        <div className={cn('mb-4 rounded-xl px-3 py-2 text-sm', dark ? 'bg-white/10' : 'bg-slate-100')}>
+          <div className="truncate font-medium">{currentSection.title}</div>
+          <div className="mt-0.5 truncate text-xs opacity-60">{currentSection.pageCount || progress.total || 0} 页</div>
+        </div>
+      ) : null}
+
+      <ComicNavigationGroup title="当前卷页码">
+        {navigation.pages.length === 0 ? <div className="py-6 text-sm opacity-60">暂无可跳转页码</div> : null}
+        <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-3">
+          {navigation.pages.map((item) => (
+            <button
+              key={`${item.index}-${item.title}`}
+              type="button"
+              disabled={navigation.loading}
+              onClick={() => onJumpPage(item.index)}
+              className={cn(
+                'min-h-11 rounded-xl px-2 text-sm tabular-nums transition active:scale-[0.98] disabled:cursor-wait disabled:opacity-60',
+                item.index === progress.page ? 'bg-blue-500 text-white' : dark ? 'bg-white/10 hover:bg-white/15' : 'bg-slate-100 hover:bg-slate-200'
+              )}
+            >
+              {item.index}
+            </button>
+          ))}
+        </div>
+      </ComicNavigationGroup>
+    </div>
+  );
+}
+
+function ComicNavigationGroup({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="mb-5">
+      <div className="mb-2 text-xs font-semibold uppercase opacity-50">{title}</div>
+      <div className="space-y-1">{children}</div>
+    </section>
+  );
+}
+
+function comicNavButtonClass(selected: boolean, dark: boolean) {
+  return cn(
+    'flex min-h-12 w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition active:scale-[0.99] disabled:cursor-wait disabled:opacity-60',
+    selected ? 'bg-blue-500 text-white' : dark ? 'hover:bg-white/10' : 'hover:bg-slate-100'
   );
 }
 
