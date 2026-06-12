@@ -52,6 +52,14 @@ class ImportResult:
     merge_reason: str
 
 
+@dataclass(frozen=True)
+class SeriesVolumeInfo:
+    series_name: str
+    series_index: float
+    title: str
+    author: str | None = None
+
+
 def is_supported_import_file(path: str | Path) -> bool:
     return Path(path).suffix.lower() in SUPPORTED_EXTS
 
@@ -125,8 +133,85 @@ def import_managed_book(db: Session, settings: Settings, options: ImportOptions)
 def _import_epub(db: Session, settings: Settings, options: ImportOptions, task_id: str, file_size: int, ext: str) -> ImportResult:
     metadata = parse_epub_metadata(options.source_file_path)
     metadata = _resolve_epub_import_metadata(metadata, options)
+    volume_info = parse_series_volume_info(options.source_file_path, options.original_name, options.origin) if options.origin == "WATCH" else None
+    if volume_info:
+        metadata = dict(metadata)
+        raw_metadata = dict(metadata.get("rawMetadata") or {})
+        raw_metadata["sourceSeriesTitle"] = volume_info.series_name
+        raw_metadata["sourceVolumeIndex"] = volume_info.series_index
+        raw_metadata["sourceVolumeTitle"] = volume_info.title
+        if volume_info.author:
+            raw_metadata["sourceSeriesAuthor"] = volume_info.author
+        metadata["rawMetadata"] = raw_metadata
+        metadata["title"] = volume_info.series_name
+        if volume_info.author:
+            metadata["author"] = volume_info.author
     merge_key = _work_merge_key("epub", metadata["title"], metadata["author"], metadata.get("identifier"), metadata.get("isbn"))
     work, created = _ensure_work(db, {"title": metadata["title"], "author": metadata["author"], "description": metadata.get("description"), "workType": "EPUB", "tags": metadata.get("subjects") or ["epub"], "mergeKey": merge_key, "origin": options.origin, "monitorFolderId": options.monitor_folder_id})
+    if volume_info:
+        duplicate = _find_edition_duplicate_volume(db, work["id"], "EPUB", volume_info.series_index, volume_info.title)
+        if duplicate:
+            return ImportResult(work["id"], work["id"], duplicate["editionId"], duplicate["id"], work["title"], "ebook", "epub", duplicate.get("chapterCount") or metadata["chapterCount"], "completed", True, True, "duplicate-epub-volume")
+        source_key = _source_group_key(options, metadata["title"])
+        edition = _select_volume_edition(db, work["id"], "EPUB", source_key, volume_info.series_index, volume_info.title)
+        created_edition = False
+        if not edition:
+            created_edition = True
+            edition = _insert(
+                db,
+                "LibraryEdition",
+                {
+                    "id": _id(),
+                    "workId": work["id"],
+                    "monitorFolderId": options.monitor_folder_id,
+                    "origin": options.origin,
+                    "format": "EPUB",
+                    "versionName": _next_edition_name(db, work["id"], "EPUB"),
+                    "versionKey": f"epub:{source_key}",
+                    "sourceGroupKey": source_key,
+                    "description": metadata.get("description"),
+                    "language": metadata.get("language"),
+                    "publisher": metadata.get("publisher"),
+                    "publishedAt": metadata.get("publishedAt"),
+                    "identifier": metadata.get("identifier"),
+                    "isbn": metadata.get("isbn"),
+                    "sizeBytes": 0,
+                    "chapterCount": 0,
+                    "coverStatus": "PENDING",
+                    "importStatus": "PARSING",
+                    "primary": not bool(work.get("primaryEditionId")),
+                    "hidden": False,
+                    "createdAt": _now(),
+                    "updatedAt": _now(),
+                },
+            )
+        staged = None
+        cover_path = None
+        try:
+            sort_order = int(volume_info.series_index * 1000)
+            volume = _insert(db, "LibraryVolume", {"id": _id(), "editionId": edition["id"], "title": volume_info.title, "volumeIndex": volume_info.series_index, "sortOrder": sort_order, "chapterCount": metadata["chapterCount"], "coverPath": None, "createdAt": _now(), "updatedAt": _now()})
+            managed = _managed_path_for(settings, task_id, ext)
+            staged = stage_managed_import_file(options.source_file_path, managed, options.import_mode)
+            _update(db, "ImportTask", task_id, {"managedFilePath": str(managed), "message": "正在建立 EPUB 卷册记录"})
+            if metadata.get("coverPath"):
+                cover_path = _extract_epub_cover(settings, staged, work["id"], edition["id"], metadata, volume["id"])
+            managed_stat = staged.stat()
+            file = _insert(db, "LibraryFile", {"id": _id(), "editionId": edition["id"], "volumeId": volume["id"], "path": str(staged), "filePathHash": _hash_text(str(staged)), "hashStatus": "PARTIAL_PENDING", "kind": "EPUB", "mimeType": "application/epub+zip", "sizeBytes": file_size, "mtimeMs": int(managed_stat.st_mtime * 1000), "sortOrder": sort_order, "createdAt": _now(), "updatedAt": _now()})
+            for chapter in metadata["chapters"]:
+                _insert(db, "LibraryReadingUnit", {"id": _id(), "editionId": edition["id"], "volumeId": volume["id"], "fileId": file["id"], "unitType": "chapter", "title": chapter["title"], "href": chapter["href"], "mediaType": chapter.get("mediaType"), "sortOrder": chapter["sortOrder"], "metadataJson": json.dumps({"idref": chapter.get("idref"), "volumeIndex": volume_info.series_index}, ensure_ascii=False), "createdAt": _now(), "updatedAt": _now()})
+            _insert(db, "LibraryMetadata", {"id": _id(), "editionId": edition["id"], "source": "epub_opf", "rawJson": json.dumps(metadata["rawMetadata"], ensure_ascii=False), "createdAt": _now(), "updatedAt": _now()})
+            _update(db, "LibraryVolume", volume["id"], {"coverPath": cover_path, "chapterCount": metadata["chapterCount"], "updatedAt": _now()})
+            size_total = _scalar(db, "SELECT COALESCE(SUM(`sizeBytes`), 0) FROM `LibraryFile` WHERE `editionId` = :edition_id", {"edition_id": edition["id"]}, 0)
+            chapter_total = _scalar(db, "SELECT COALESCE(SUM(`chapterCount`), 0) FROM `LibraryVolume` WHERE `editionId` = :edition_id", {"edition_id": edition["id"]}, 0)
+            _update(db, "LibraryEdition", edition["id"], {"sizeBytes": int(size_total), "chapterCount": int(chapter_total), "coverPath": edition.get("coverPath") or cover_path, "coverStatus": "READY" if (edition.get("coverPath") or cover_path) else "PENDING", "importStatus": "COMPLETED", "updatedAt": _now()})
+            _finalize_work_primary(db, work["id"], edition["id"], cover_path)
+            return ImportResult(work["id"], work["id"], edition["id"], volume["id"], work["title"], "ebook", "epub", metadata["chapterCount"], "completed", False, (not created) or (not created_edition), "new-epub-work" if created else "new-epub-version" if created_edition else "same-epub-series")
+        except Exception:
+            if cover_path:
+                Path(cover_path).unlink(missing_ok=True)
+            if staged:
+                _rollback_staged(options.source_file_path, staged, options.import_mode)
+            raise
     existing = None if created else _row(db, "SELECT * FROM `LibraryEdition` WHERE `workId` = :work_id AND `format` = 'EPUB' AND `hidden` = 0 ORDER BY `createdAt` ASC LIMIT 1", {"work_id": work["id"]})
     if existing:
         volume = _row(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC LIMIT 1", {"edition_id": existing["id"]})
@@ -260,10 +345,10 @@ def _import_comic(db: Session, settings: Settings, options: ImportOptions, task_
     volume_index = (volume_info or {}).get("seriesIndex")
     volume_title = f"第 {volume_index:g} 卷" if volume_index is not None else ((parsed.get("comicInfo") or {}).get("title") or parsed["title"])
     work, created = _ensure_work(db, {"title": title, "author": author, "description": parsed.get("description"), "workType": "COMIC", "tags": (parsed.get("comicInfo") or {}).get("tags") or ["comic", parsed["format"]], "mergeKey": merge_key, "origin": options.origin, "monitorFolderId": options.monitor_folder_id})
-    duplicate = _find_comic_duplicate_volume(db, work["id"], volume_index, volume_title)
+    duplicate = _find_edition_duplicate_volume(db, work["id"], "COMIC", volume_index, volume_title)
     if duplicate:
         return ImportResult(work["id"], work["id"], duplicate["editionId"], duplicate["id"], work["title"], "comic", parsed["format"], duplicate.get("pageCount") or 0, "completed", True, True, "duplicate-comic-metadata")
-    edition = _select_comic_edition(db, work["id"], source_key, volume_index, volume_title)
+    edition = _select_volume_edition(db, work["id"], "COMIC", source_key, volume_index, volume_title)
     created_edition = False
     if not edition:
         created_edition = True
@@ -507,6 +592,35 @@ def parse_comic_volume_from_name(path: Path, original_name: str | None = None) -
     return None
 
 
+def parse_series_volume_info(path: Path, original_name: str | None = None, origin: str = "WATCH") -> SeriesVolumeInfo | None:
+    source = original_name or path.name
+    base = _clean_title_part(Path(source).stem)
+    folder = _series_folder_metadata(path.parent.name) if origin == "WATCH" else None
+    folder_title = (folder or {}).get("title")
+    author = (folder or {}).get("author")
+    if folder_title:
+        suffix = base
+        title_key = _normalize_key(folder_title)
+        base_key = _normalize_key(base)
+        if base_key.startswith(title_key):
+            suffix = base[len(folder_title) :].strip()
+        volume_index = _volume_index_from_suffix(suffix)
+        if volume_index is not None:
+            return SeriesVolumeInfo(series_name=folder_title, series_index=volume_index, title=f"第 {volume_index:g} 卷", author=author)
+    for pattern in [
+        r"^(.+?)\s*(?:vol\.?|volume)\s*(\d+(?:\.\d+)?)$",
+        r"^(.+?)\s*(?:第\s*)?(\d+(?:\.\d+)?)\s*(?:卷|冊|册|集)$",
+        r"^(.+?)\s+(\d+(?:\.\d+)?)$",
+    ]:
+        match = re.match(pattern, base, re.I)
+        if match:
+            series = _clean_title_part(match.group(1))
+            index = float(match.group(2))
+            if series:
+                return SeriesVolumeInfo(series_name=series, series_index=index, title=f"第 {index:g} 卷", author=author)
+    return None
+
+
 def parse_comic_volume_info(parsed: dict[str, Any], path: Path, original_name: str | None = None) -> dict[str, Any] | None:
     comic_info = parsed.get("comicInfo") if isinstance(parsed.get("comicInfo"), dict) else {}
     if comic_info.get("series") and comic_info.get("volume") is not None:
@@ -736,8 +850,8 @@ def _finalize_work_primary(db: Session, work_id: str, edition_id: str, cover_pat
     _update(db, "LibraryWork", work_id, {"primaryEditionId": work.get("primaryEditionId") or edition_id, "coverPath": work.get("coverPath") or cover_path, "coverStatus": "READY" if (work.get("coverPath") or cover_path) else work.get("coverStatus"), "updatedAt": _now()})
 
 
-def _find_comic_duplicate_volume(db: Session, work_id: str, volume_index: float | None, volume_title: str) -> dict[str, Any] | None:
-    volumes = _rows(db, "SELECT v.* FROM `LibraryVolume` v JOIN `LibraryEdition` e ON e.`id` = v.`editionId` WHERE e.`workId` = :work_id AND e.`format` = 'COMIC' AND e.`hidden` = 0", {"work_id": work_id})
+def _find_edition_duplicate_volume(db: Session, work_id: str, fmt: str, volume_index: float | None, volume_title: str) -> dict[str, Any] | None:
+    volumes = _rows(db, "SELECT v.* FROM `LibraryVolume` v JOIN `LibraryEdition` e ON e.`id` = v.`editionId` WHERE e.`workId` = :work_id AND e.`format` = :fmt AND e.`hidden` = 0", {"work_id": work_id, "fmt": fmt})
     for volume in volumes:
         if volume_index is not None and volume.get("volumeIndex") == volume_index:
             return volume
@@ -746,13 +860,13 @@ def _find_comic_duplicate_volume(db: Session, work_id: str, volume_index: float 
     return None
 
 
-def _select_comic_edition(db: Session, work_id: str, source_key: str, volume_index: float | None, volume_title: str) -> dict[str, Any] | None:
-    editions = _rows(db, "SELECT * FROM `LibraryEdition` WHERE `workId` = :work_id AND `format` = 'COMIC' AND `hidden` = 0 ORDER BY `createdAt` ASC", {"work_id": work_id})
+def _select_volume_edition(db: Session, work_id: str, fmt: str, source_key: str, volume_index: float | None, volume_title: str) -> dict[str, Any] | None:
+    editions = _rows(db, "SELECT * FROM `LibraryEdition` WHERE `workId` = :work_id AND `format` = :fmt AND `hidden` = 0 ORDER BY `createdAt` ASC", {"work_id": work_id, "fmt": fmt})
     for edition in editions:
-        conflict = _find_comic_duplicate_volume(db, work_id, volume_index, volume_title)
+        conflict = _find_edition_duplicate_volume(db, work_id, fmt, volume_index, volume_title)
         if not conflict and edition.get("sourceGroupKey") == source_key:
             return edition
-    return editions[0] if editions and not _find_comic_duplicate_volume(db, work_id, volume_index, volume_title) else None
+    return editions[0] if editions and not _find_edition_duplicate_volume(db, work_id, fmt, volume_index, volume_title) else None
 
 
 def _rows(db: Session, sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -900,12 +1014,12 @@ def _read_zip_text_optional(archive: zipfile.ZipFile, entry: str) -> str | None:
         return None
 
 
-def _extract_epub_cover(settings: Settings, staged: Path, work_id: str, edition_id: str, metadata: dict[str, Any]) -> str | None:
+def _extract_epub_cover(settings: Settings, staged: Path, work_id: str, edition_id: str, metadata: dict[str, Any], volume_id: str | None = None) -> str | None:
     if not metadata.get("coverPath"):
         return None
     rel = _epub_zip_path(metadata["opfPath"], metadata["coverPath"])
     ext = Path(metadata["coverPath"]).suffix or ".jpg"
-    target = settings.resolved_storage_root / "books" / work_id / edition_id / f"cover{ext}"
+    target = settings.resolved_storage_root / "books" / work_id / edition_id / (volume_id or "") / f"cover{ext}"
     target.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(staged) as archive:
         target.write_bytes(archive.read(rel))
@@ -1027,6 +1141,36 @@ def _bracketed_folder_metadata(value: str) -> dict[str, str] | None:
     parts = [_clean_title_part(match.group(1)) for match in re.finditer(r"\[([^\]]+)\]", value)]
     if len(parts) == 2 and "".join(parts) and "".join(parts) == value.replace(" ", "").replace("[", "").replace("]", ""):
         return {"title": parts[0], "author": parts[1]}
+    return None
+
+
+def _series_folder_metadata(value: str) -> dict[str, str] | None:
+    raw_parts = [match.group(1) for match in re.finditer(r"\[([^\]]+)\]", value)]
+    parts = [_clean_title_part(part) for part in raw_parts]
+    if len(parts) >= 3 and parts[0] and parts[1] and _volume_range_part(raw_parts[2]):
+        return {"title": parts[0], "author": parts[1]}
+    if len(parts) == 2 and "".join(parts) and "".join(parts) == value.replace(" ", "").replace("[", "").replace("]", ""):
+        return {"title": parts[0], "author": parts[1]}
+    return None
+
+
+def _volume_range_part(value: str) -> bool:
+    return bool(re.search(r"(?:vol\.?|volume|v|第)?\s*\d+(?:\.\d+)?\s*[-~至到]\s*(?:vol\.?|volume|v|第)?\s*\d+(?:\.\d+)?", value, re.I))
+
+
+def _volume_index_from_suffix(value: str) -> float | None:
+    suffix = _clean_title_part(value).strip()
+    suffix = re.sub(r"^[\s._\-~～]+", "", suffix)
+    if not suffix:
+        return None
+    for pattern in [
+        r"^(?:vol\.?|volume|v)\s*(\d+(?:\.\d+)?)$",
+        r"^(?:第\s*)?(\d+(?:\.\d+)?)\s*(?:卷|冊|册|集)$",
+        r"^(\d+(?:\.\d+)?)$",
+    ]:
+        match = re.match(pattern, suffix, re.I)
+        if match:
+            return float(match.group(1))
     return None
 
 

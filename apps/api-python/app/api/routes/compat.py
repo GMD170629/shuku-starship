@@ -51,7 +51,7 @@ from app.services.organize_service import (
     refresh_organize_job,
 )
 from app.services.source_providers import PROVIDER_CAPABILITIES, search_source_provider, test_source_provider
-from app.worker.importer import ImportOptions, import_managed_book, is_supported_import_file, parse_comic_archive
+from app.worker.importer import ImportOptions, import_managed_book, is_supported_import_file, parse_comic_archive, parse_series_volume_info
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -908,10 +908,23 @@ def reader_bootstrap(edition_id: str, request: Request, db: Session = Depends(ge
     reader_type = "comic" if edition.get("format") == "COMIC" else ("ebook" if edition.get("format") == "EPUB" else "unknown")
     base_payload = {"book": book_view, "edition": edition, "units": units, "progress": progress, "preferences": preferences, "readerType": reader_type}
     if reader_type == "ebook":
-        reading_units = [_reading_unit_view(unit) for unit in units]
-        return ok({**base_payload, "readingUnits": reading_units, "totalUnits": len(reading_units)})
+        requested_volume_id = request.query_params.get("volume")
+        volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
+        volume = next((item for item in volumes if item["id"] == requested_volume_id), None) if requested_volume_id else None
+        volume = volume or (volumes[0] if volumes else None)
+        scoped_units = [unit for unit in units if not volume or unit.get("volumeId") == volume["id"]]
+        reading_units = [_reading_unit_view(unit) for unit in scoped_units]
+        return ok(
+            {
+                **base_payload,
+                "volumeSection": _volume_section_view(volume, "EPUB", len(scoped_units)) if volume else None,
+                "volumeSections": [_volume_section_view(item, "EPUB") for item in volumes],
+                "readingUnits": reading_units,
+                "totalUnits": len(reading_units),
+            }
+        )
     if reader_type == "comic":
-        requested_volume_id = request.query_params.get("volume") or request.query_params.get("section")
+        requested_volume_id = request.query_params.get("volume")
         volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
         volume = next((item for item in volumes if item["id"] == requested_volume_id), None) if requested_volume_id else None
         volume = volume or (volumes[0] if volumes else None)
@@ -933,8 +946,8 @@ def reader_bootstrap(edition_id: str, request: Request, db: Session = Depends(ge
         return ok(
             {
                 **base_payload,
-                "section": {"id": volume["id"], "title": volume.get("title"), "pageCount": len(page_units)} if volume else None,
-                "sections": [{"id": item["id"], "title": item.get("title"), "pageCount": item.get("pageCount") or 0} for item in volumes],
+                "volumeSection": _volume_section_view(volume, "COMIC", len(page_units)) if volume else None,
+                "volumeSections": [_volume_section_view(item, "COMIC") for item in volumes],
                 "pageCount": len(page_units),
                 "pages": pages,
             }
@@ -946,30 +959,38 @@ def _reading_unit_view(unit: dict[str, Any]) -> dict[str, Any]:
     return {**unit, "metadataJson": _parse_json(unit.get("metadataJson"), {})}
 
 
+def _volume_section_view(volume: dict[str, Any], fmt: str, count_override: int | None = None) -> dict[str, Any]:
+    count_key = "pageCount" if fmt == "COMIC" else "chapterCount"
+    return {
+        "id": volume["id"],
+        "title": volume.get("title") or "未命名卷",
+        "index": volume.get("volumeIndex") or volume.get("sortOrder") or 0,
+        "fileId": volume.get("fileId") or volume["id"],
+        "pageCount": count_override if count_override is not None else (volume.get(count_key) or 0),
+        "coverUrl": f"/api/volumes/{volume['id']}/cover?editionId={volume.get('editionId')}",
+    }
+
+
 def _work_detail_navigation(db: Session, edition_id: str | None) -> dict[str, Any]:
     if not edition_id or not _has_table(db, "LibraryEdition"):
-        return {"readingUnits": [], "comicSections": []}
+        return {"readingUnits": [], "volumeSections": []}
     edition = _row(db, "SELECT * FROM `LibraryEdition` WHERE `id` = :id", {"id": edition_id})
     if not edition:
-        return {"readingUnits": [], "comicSections": []}
+        return {"readingUnits": [], "volumeSections": []}
     if edition.get("format") == "COMIC":
         volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
         return {
             "readingUnits": [],
-            "comicSections": [
-                {
-                    "id": volume["id"],
-                    "title": volume.get("title") or "未命名卷",
-                    "index": volume.get("volumeIndex") or volume.get("sortOrder") or 0,
-                    "fileId": volume.get("fileId") or volume["id"],
-                    "pageCount": volume.get("pageCount") or 0,
-                    "coverUrl": f"/api/volumes/{volume['id']}/cover?editionId={edition_id}",
-                }
-                for volume in volumes
-            ],
+            "volumeSections": [_volume_section_view(volume, "COMIC") for volume in volumes],
+        }
+    volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
+    if len(volumes) > 1:
+        return {
+            "readingUnits": [],
+            "volumeSections": [_volume_section_view(volume, "EPUB") for volume in volumes],
         }
     units = _rows(db, "SELECT * FROM `LibraryReadingUnit` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryReadingUnit") else []
-    return {"readingUnits": [_reading_unit_view(unit) for unit in units], "comicSections": []}
+    return {"readingUnits": [_reading_unit_view(unit) for unit in units], "volumeSections": []}
 
 
 @router.get("/editions/{edition_id}/progress")
@@ -993,7 +1014,7 @@ async def save_progress(edition_id: str, request: Request, db: Session = Depends
     if not edition:
         return fail("版本不存在", status_code=404)
     existing = _row(db, "SELECT * FROM `LibraryReadingProgress` WHERE `userId` = :user_id AND `editionId` = :edition_id", {"user_id": user.id, "edition_id": edition_id}) if _has_table(db, "LibraryReadingProgress") else None
-    values = {"position": str(payload.get("position", "0")), "page": payload.get("page"), "percent": float(payload.get("percent", 0)), "extra": _json_text(payload.get("extra", {})), "updatedAt": _now()}
+    values = {"position": str(payload.get("position", "0")), "page": payload.get("page"), "percent": float(payload.get("percent", 0)), "extra": _json_text(payload.get("extra", {})), "volumeId": payload.get("volumeId"), "updatedAt": _now()}
     if existing:
         progress = _update(db, "LibraryReadingProgress", existing["id"], values)
     elif _has_table(db, "LibraryReadingProgress"):
@@ -1319,7 +1340,12 @@ def get_edition_file(edition_id: str, request: Request, db: Session = Depends(ge
     user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    file = _row(db, "SELECT * FROM `LibraryFile` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC LIMIT 1", {"edition_id": edition_id}) if _has_table(db, "LibraryFile") else None
+    volume_id = request.query_params.get("volume")
+    if volume_id and _has_table(db, "LibraryFile"):
+        file = _row(db, "SELECT * FROM `LibraryFile` WHERE `editionId` = :edition_id AND `volumeId` = :volume_id ORDER BY `sortOrder` ASC LIMIT 1", {"edition_id": edition_id, "volume_id": volume_id})
+    else:
+        file = None
+    file = file or (_row(db, "SELECT * FROM `LibraryFile` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC LIMIT 1", {"edition_id": edition_id}) if _has_table(db, "LibraryFile") else None)
     return _send_file(_stored_path((file or {}).get("path"), settings), request, user.id, media_type=(file or {}).get("mimeType"), name=Path((file or {}).get("path") or "file").name, route="edition-file", file_id=(file or {}).get("id") or edition_id)
 
 
@@ -2504,6 +2530,33 @@ async def compatible_work_action(work_id: str, request: Request, edition_id: str
     if request.url.path.endswith("/primary") and edition_id:
         _update(db, "LibraryWork", work_id, {"primaryEditionId": edition_id})
         _update(db, "LibraryEdition", edition_id, {"primary": True})
+    if request.url.path.endswith("/move") and volume_id:
+        payload = await request.json()
+        direction = str(payload.get("direction") or "").lower()
+        if direction not in {"up", "down"}:
+            return fail("请选择上移或下移", status_code=400)
+        volume = _row(
+            db,
+            """
+            SELECT v.* FROM `LibraryVolume` v
+            JOIN `LibraryEdition` e ON e.`id` = v.`editionId`
+            WHERE v.`id` = :volume_id AND e.`workId` = :work_id
+            """,
+            {"volume_id": volume_id, "work_id": work_id},
+        ) if _has_table(db, "LibraryVolume") and _has_table(db, "LibraryEdition") else None
+        if not volume:
+            return fail("卷册不存在或不属于该作品", status_code=404)
+        volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC, `id` ASC", {"edition_id": volume["editionId"]})
+        index = next((item_index for item_index, item in enumerate(volumes) if item["id"] == volume_id), -1)
+        target_index = index - 1 if direction == "up" else index + 1
+        if index < 0 or target_index < 0 or target_index >= len(volumes):
+            work = _get_work(db, work_id)
+            return ok({"book": _work_view(db, work, user.id) if work else None, "workId": work_id, "volumeId": volume_id})
+        target = volumes[target_index]
+        _update(db, "LibraryVolume", volume_id, {"sortOrder": target.get("sortOrder") or 0, "updatedAt": _now()})
+        _update(db, "LibraryVolume", target["id"], {"sortOrder": volume.get("sortOrder") or 0, "updatedAt": _now()})
+        work = _get_work(db, work_id)
+        return ok({"book": _work_view(db, work, user.id) if work else None, "workId": work_id, "volumeId": volume_id})
     work = _get_work(db, work_id)
     return ok({"book": _work_view(db, work, user.id) if work else None, "workId": work_id, "editionId": edition_id, "volumeId": volume_id})
 
@@ -2513,9 +2566,9 @@ def release_title_parser_get(request: Request, title: str = "", db: Session = De
     _user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    volume = re.search(r"(?:vol(?:ume)?\.?|第)\s*(\d+(?:\.\d+)?)", title, flags=re.IGNORECASE)
+    volume_info = parse_series_volume_info(Path(f"{title}.epub"), f"{title}.epub", "MANUAL")
     chapter = re.search(r"(?:ch(?:apter)?\.?|第)\s*(\d+(?:\.\d+)?)\s*(?:话|章|ch)?", title, flags=re.IGNORECASE)
-    return ok({"parsed": {"title": title, "volume": float(volume.group(1)) if volume else None, "chapter": float(chapter.group(1)) if chapter else None}})
+    return ok({"parsed": {"title": title, "volume": volume_info.series_index if volume_info else None, "chapter": float(chapter.group(1)) if chapter else None}})
 
 
 @router.post("/tracking/release-title-parser")
@@ -2525,6 +2578,6 @@ async def release_title_parser(request: Request, db: Session = Depends(get_db), 
         return auth_error
     payload = await request.json()
     title = str(payload.get("title") or "")
-    volume = re.search(r"(?:vol(?:ume)?\.?|第)\s*(\d+(?:\.\d+)?)", title, flags=re.IGNORECASE)
+    volume_info = parse_series_volume_info(Path(f"{title}.epub"), f"{title}.epub", "MANUAL")
     chapter = re.search(r"(?:ch(?:apter)?\.?|第)\s*(\d+(?:\.\d+)?)\s*(?:话|章|ch)?", title, flags=re.IGNORECASE)
-    return ok({"parsed": {"title": title, "volume": float(volume.group(1)) if volume else None, "chapter": float(chapter.group(1)) if chapter else None}})
+    return ok({"parsed": {"title": title, "volume": volume_info.series_index if volume_info else None, "chapter": float(chapter.group(1)) if chapter else None}})

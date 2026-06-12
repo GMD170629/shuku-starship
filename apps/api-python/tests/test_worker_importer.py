@@ -6,7 +6,7 @@ from threading import Thread
 
 from sqlalchemy import text
 
-from app.worker.importer import ImportOptions, _work_merge_key, import_managed_book, parse_comic_volume_from_name, parse_epub_metadata, parse_pdf_metadata, stage_managed_import_file
+from app.worker.importer import ImportOptions, _work_merge_key, import_managed_book, parse_comic_volume_from_name, parse_epub_metadata, parse_pdf_metadata, parse_series_volume_info, stage_managed_import_file
 from app.worker.path_security import PathSecurityError, PathSecurityService, normalize_configured_path
 from app.worker.watcher import MonitorFolderConfig, should_ignore_file
 
@@ -412,6 +412,53 @@ def test_watch_epub_prefers_filename_when_opf_title_conflicts(db_session, test_s
     raw = json.loads(db_session.execute(text("SELECT rawJson FROM LibraryMetadata")).scalar())
     assert raw["originalDcTitle"].startswith("岛田庄司精选作品合集共14册")
     assert raw["titleOverrideReason"] == "watch-source-filename-conflicts-with-opf"
+
+
+def test_parse_series_volume_info_from_real_watch_layout():
+    path = Path("/monitor/[辣妹因为惩罚游戏才向我这个边缘人告白，但显然是真心爱上我了][結石][Vol.01-Vol.10]/辣妹因为惩罚游戏才向我这个边缘人告白，但显然是真心爱上我了 10.epub")
+
+    parsed = parse_series_volume_info(path, path.name, "WATCH")
+
+    assert parsed is not None
+    assert parsed.series_name == "辣妹因为惩罚游戏才向我这个边缘人告白，但显然是真心爱上我了"
+    assert parsed.author == "結石"
+    assert parsed.series_index == 10
+    assert parsed.title == "第 10 卷"
+
+
+def test_watch_epub_import_merges_series_volumes_from_folder_layout(db_session, test_settings, tmp_path):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    series_dir = tmp_path / "[辣妹因为惩罚游戏才向我这个边缘人告白，但显然是真心爱上我了][結石][Vol.01-Vol.10]"
+    series_dir.mkdir()
+    first = series_dir / "辣妹因为惩罚游戏才向我这个边缘人告白，但显然是真心爱上我了 01.epub"
+    tenth = series_dir / "辣妹因为惩罚游戏才向我这个边缘人告白，但显然是真心爱上我了 10.epub"
+    duplicate_tenth = series_dir / "辣妹因为惩罚游戏才向我这个边缘人告白，但显然是真心爱上我了 10 copy.epub"
+    write_epub_metadata_fixture(first, "第 1 卷", "封面作者")
+    write_epub_metadata_fixture(tenth, "第 10 卷", "封面作者")
+    write_epub_metadata_fixture(duplicate_tenth, "第 10 卷", "封面作者")
+
+    first_result = import_managed_book(db_session, test_settings, ImportOptions(source_file_path=first, origin="WATCH", original_name=first.name, monitor_folder_id="folder-1"))
+    tenth_result = import_managed_book(db_session, test_settings, ImportOptions(source_file_path=tenth, origin="WATCH", original_name=tenth.name, monitor_folder_id="folder-1"))
+    duplicate_result = import_managed_book(db_session, test_settings, ImportOptions(source_file_path=duplicate_tenth, origin="WATCH", original_name=tenth.name, monitor_folder_id="folder-1"))
+
+    assert first_result.work_id == tenth_result.work_id == duplicate_result.work_id
+    assert first_result.edition_id == tenth_result.edition_id == duplicate_result.edition_id
+    assert duplicate_result.duplicate is True
+    assert _count(db_session, "LibraryWork") == 1
+    assert _count(db_session, "LibraryEdition") == 1
+    assert _count(db_session, "LibraryVolume") == 2
+    work = db_session.execute(text("SELECT title, author FROM LibraryWork")).mappings().first()
+    assert work["title"] == "辣妹因为惩罚游戏才向我这个边缘人告白，但显然是真心爱上我了"
+    assert work["author"] == "結石"
+    edition = db_session.execute(text("SELECT chapterCount, sizeBytes FROM LibraryEdition")).mappings().first()
+    assert edition["chapterCount"] == 2
+    assert edition["sizeBytes"] > 0
+    volumes = db_session.execute(text("SELECT title, volumeIndex, sortOrder, chapterCount FROM LibraryVolume ORDER BY sortOrder")).mappings().all()
+    assert [dict(volume) for volume in volumes] == [
+        {"title": "第 1 卷", "volumeIndex": 1, "sortOrder": 1000, "chapterCount": 1},
+        {"title": "第 10 卷", "volumeIndex": 10, "sortOrder": 10000, "chapterCount": 1},
+    ]
 
 
 def test_import_epub_merges_same_title_author_despite_different_identifiers(db_session, test_settings, tmp_path):

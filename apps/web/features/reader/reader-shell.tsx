@@ -1,7 +1,7 @@
 'use client';
 
 import { BookOpen, ChevronLeft, ChevronRight, ListTree, Minus, Moon, Plus, Settings, Sun, X } from 'lucide-react';
-import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
 import type { ComicDirection, ComicImageFit, ComicMode } from './comic-reader';
@@ -59,7 +59,7 @@ type ReaderShellProps = {
   onBack: () => void;
   onSettingsChange: (settings: ReaderSettings) => void;
   navigationItems?: ReaderNavigationItem[];
-  comicNavigation?: ReaderComicNavigation;
+  volumeNavigation?: ReaderVolumeNavigation;
   children: ReactNode | ((events: ReaderShellEvents) => ReactNode);
 };
 
@@ -69,7 +69,7 @@ export type ReaderNavigationItem = {
   href?: string;
 };
 
-export type ReaderComicNavigation = {
+export type ReaderVolumeNavigation = {
   editions: Array<{
     id: string;
     versionName: string;
@@ -78,13 +78,13 @@ export type ReaderComicNavigation = {
     lastReadAt: string | null;
     volumes: Array<{ id: string; title: string; pageCount: number | null }>;
   }>;
-  sections: Array<{ id: string; title: string; pageCount: number }>;
+  volumeSections: Array<{ id: string; title: string; pageCount: number }>;
   pages: ReaderNavigationItem[];
   currentEditionId: string;
-  currentSectionId: string | null;
+  currentVolumeId: string | null;
   loading: boolean;
   onSelectEdition: (editionId: string) => void;
-  onSelectSection: (sectionId: string) => void;
+  onSelectVolume: (volumeId: string) => void;
   onSelectPage: (pageIndex: number) => void;
 };
 
@@ -110,7 +110,12 @@ export const readerThemeSurfaces: Record<ReaderTheme, { background: string; text
   black: { background: '#000000', textClass: 'text-slate-100', statusBarStyle: 'black-translucent' }
 };
 
-const readerControlSurface = '#FFFFFF';
+const readerControlSurfaces = {
+  light: '#FFFFFF',
+  dark: '#020617'
+} as const;
+
+const useIsoLayoutEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
 
 function ensureMeta(name: string) {
   const existing = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`);
@@ -150,7 +155,7 @@ function shouldIgnoreReaderInteraction(target: EventTarget | null) {
   return isEditableTarget(target) || Boolean(target.closest('[data-reader-control="true"]'));
 }
 
-export function ReaderShell({ editionId, title, readerType, progress, controls, settings, onBack, onSettingsChange, navigationItems, comicNavigation, children }: ReaderShellProps) {
+export function ReaderShell({ editionId, title, readerType, progress, controls, settings, onBack, onSettingsChange, navigationItems, volumeNavigation, children }: ReaderShellProps) {
   const controlsVisibleRef = useRef(false);
   const controlsRef = useRef<ReaderControls | null>(null);
   const panelRef = useRef<'toc' | 'settings' | null>(null);
@@ -162,10 +167,17 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
   const [navLoading, setNavLoading] = useState(false);
   const dark = isDarkTheme(settings.theme);
   const themeSurface = readerThemeSurfaces[settings.theme];
-  const topSafeAreaBackground = controlsVisible || panel ? readerControlSurface : themeSurface.background;
-  const topSafeAreaStatusBarStyle = controlsVisible || panel ? 'default' : themeSurface.statusBarStyle;
+  const chromeSurface = controlsVisible || panel
+    ? {
+        background: dark ? readerControlSurfaces.dark : readerControlSurfaces.light,
+        statusBarStyle: dark ? 'black-translucent' as const : 'default' as const
+      }
+    : {
+        background: themeSurface.background,
+        statusBarStyle: themeSurface.statusBarStyle
+      };
 
-  useEffect(() => {
+  useIsoLayoutEffect(() => {
     const previousHtmlBackground = document.documentElement.style.backgroundColor;
     const previousBodyBackground = document.body.style.backgroundColor;
     const previousColorScheme = document.documentElement.style.colorScheme;
@@ -176,11 +188,11 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
     const previousThemeColors = themeColorMetas.map((meta) => meta.content);
     const previousStatusBarStyle = statusBarMeta.content;
 
-    document.documentElement.style.backgroundColor = topSafeAreaBackground;
-    document.body.style.backgroundColor = themeSurface.background;
-    document.documentElement.style.colorScheme = dark ? 'dark' : 'light';
-    themeColorMetas.forEach((meta) => meta.setAttribute('content', topSafeAreaBackground));
-    statusBarMeta?.setAttribute('content', topSafeAreaStatusBarStyle);
+    document.documentElement.style.backgroundColor = chromeSurface.background;
+    document.body.style.backgroundColor = chromeSurface.background;
+    document.documentElement.style.colorScheme = chromeSurface.statusBarStyle === 'black-translucent' ? 'dark' : 'light';
+    themeColorMetas.forEach((meta) => meta.setAttribute('content', chromeSurface.background));
+    statusBarMeta?.setAttribute('content', chromeSurface.statusBarStyle);
 
     return () => {
       document.documentElement.style.backgroundColor = previousHtmlBackground;
@@ -197,7 +209,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
       if (createdStatusBarMeta) statusBarMeta.remove();
       else statusBarMeta.setAttribute('content', previousStatusBarStyle);
     };
-  }, [dark, themeSurface.background, topSafeAreaBackground, topSafeAreaStatusBarStyle]);
+  }, [chromeSurface.background, chromeSurface.statusBarStyle]);
 
   function setControlsVisibility(visible: boolean) {
     controlsVisibleRef.current = visible;
@@ -398,7 +410,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
     >
       <div
         className="pointer-events-none absolute inset-x-0 top-0 z-40 transition-colors duration-200"
-        style={{ height: 'env(safe-area-inset-top)', backgroundColor: topSafeAreaBackground }}
+        style={{ height: 'env(safe-area-inset-top)', backgroundColor: chromeSurface.background }}
         aria-hidden="true"
       />
       <main className="min-h-0 flex-1 w-full">
@@ -494,19 +506,20 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
             </button>
           </div>
 
-          {panel === 'toc' && readerType === 'comic' && comicNavigation ? (
-            <ComicNavigationPanel
-              navigation={comicNavigation}
+          {panel === 'toc' && volumeNavigation ? (
+            <VolumeNavigationPanel
+              navigation={volumeNavigation}
+              readerType={readerType}
               progress={progress}
               dark={dark}
               onJumpPage={(pageIndex) => {
-                comicNavigation.onSelectPage(pageIndex);
+                volumeNavigation.onSelectPage(pageIndex);
                 keepControlsOpen();
               }}
             />
           ) : null}
 
-          {panel === 'toc' && (readerType !== 'comic' || !comicNavigation) ? (
+          {panel === 'toc' && !volumeNavigation ? (
             <div className="mt-5 max-h-[calc(82dvh-6rem)] overflow-auto pr-1 md:h-[calc(100%-4rem)] md:max-h-none">
               {navLoading ? <div className="py-6 text-sm opacity-60">正在读取...</div> : null}
               {!navLoading && navItems.length === 0 ? <div className="py-6 text-sm opacity-60">暂无可跳转条目</div> : null}
@@ -628,23 +641,24 @@ function SettingStepper({ label, value, onMinus, onPlus }: { label: string; valu
   );
 }
 
-function ComicNavigationPanel({ navigation, progress, dark, onJumpPage }: { navigation: ReaderComicNavigation; progress: ReaderProgress; dark: boolean; onJumpPage: (pageIndex: number) => void }) {
+function VolumeNavigationPanel({ navigation, readerType, progress, dark, onJumpPage }: { navigation: ReaderVolumeNavigation; readerType: ReaderKind; progress: ReaderProgress; dark: boolean; onJumpPage: (pageIndex: number) => void }) {
   const currentEdition = navigation.editions.find((edition) => edition.id === navigation.currentEditionId);
-  const currentSection = navigation.sections.find((section) => section.id === navigation.currentSectionId);
+  const currentVolume = navigation.volumeSections.find((volume) => volume.id === navigation.currentVolumeId);
   const showEditions = navigation.editions.length > 1;
-  const showSections = navigation.sections.length > 1;
+  const showVolumes = navigation.volumeSections.length > 1;
   const idleText = navigation.loading ? '正在切换...' : null;
+  const isComic = readerType === 'comic';
 
   return (
     <div className="mt-5 max-h-[calc(82dvh-6rem)] overflow-auto pr-1 md:h-[calc(100%-4rem)] md:max-h-none">
       {idleText ? <div className="mb-3 rounded-xl bg-white/10 px-3 py-2 text-xs opacity-70">{idleText}</div> : null}
       {showEditions ? (
-        <ComicNavigationGroup title="版本">
+        <VolumeNavigationGroup title="版本">
           {navigation.editions.map((edition) => {
             const selected = edition.id === navigation.currentEditionId;
             const detail = [
               edition.format,
-              edition.volumes.length > 0 ? `${edition.volumes.length} 卷/话` : '',
+              edition.volumes.length > 0 ? `${edition.volumes.length} ${isComic ? '卷/话' : '卷'}` : '',
               edition.progress > 0 ? `${edition.progress}%` : ''
             ].filter(Boolean).join(' · ');
             return (
@@ -662,7 +676,7 @@ function ComicNavigationPanel({ navigation, progress, dark, onJumpPage }: { navi
               </button>
             );
           })}
-        </ComicNavigationGroup>
+        </VolumeNavigationGroup>
       ) : currentEdition ? (
         <div className={cn('mb-4 rounded-xl px-3 py-2 text-sm', dark ? 'bg-white/10' : 'bg-slate-100')}>
           <div className="truncate font-medium">{currentEdition.versionName}</div>
@@ -670,33 +684,33 @@ function ComicNavigationPanel({ navigation, progress, dark, onJumpPage }: { navi
         </div>
       ) : null}
 
-      {showSections ? (
-        <ComicNavigationGroup title="卷/话">
-          {navigation.sections.map((section, index) => (
+      {showVolumes ? (
+        <VolumeNavigationGroup title={isComic ? '卷/话' : '卷册'}>
+          {navigation.volumeSections.map((volume, index) => (
             <button
-              key={section.id}
+              key={volume.id}
               type="button"
               disabled={navigation.loading}
-              onClick={() => navigation.onSelectSection(section.id)}
-              className={comicNavButtonClass(section.id === navigation.currentSectionId, dark)}
+              onClick={() => navigation.onSelectVolume(volume.id)}
+              className={comicNavButtonClass(volume.id === navigation.currentVolumeId, dark)}
             >
               <span className="w-8 shrink-0 tabular-nums opacity-60">{index + 1}</span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate font-medium">{section.title || `第 ${index + 1} 话`}</span>
-                <span className="mt-0.5 block truncate text-xs opacity-65">{section.pageCount || 0} 页</span>
+                <span className="block truncate font-medium">{volume.title || `第 ${index + 1} ${isComic ? '话' : '卷'}`}</span>
+                <span className="mt-0.5 block truncate text-xs opacity-65">{volume.pageCount || 0} {isComic ? '页' : '章'}</span>
               </span>
             </button>
           ))}
-        </ComicNavigationGroup>
-      ) : currentSection ? (
+        </VolumeNavigationGroup>
+      ) : currentVolume ? (
         <div className={cn('mb-4 rounded-xl px-3 py-2 text-sm', dark ? 'bg-white/10' : 'bg-slate-100')}>
-          <div className="truncate font-medium">{currentSection.title}</div>
-          <div className="mt-0.5 truncate text-xs opacity-60">{currentSection.pageCount || progress.total || 0} 页</div>
+          <div className="truncate font-medium">{currentVolume.title}</div>
+          <div className="mt-0.5 truncate text-xs opacity-60">{currentVolume.pageCount || progress.total || 0} {isComic ? '页' : '章'}</div>
         </div>
       ) : null}
 
-      <ComicNavigationGroup title="当前卷页码">
-        {navigation.pages.length === 0 ? <div className="py-6 text-sm opacity-60">暂无可跳转页码</div> : null}
+      <VolumeNavigationGroup title={isComic ? '当前卷页码' : '当前卷章节'}>
+        {navigation.pages.length === 0 ? <div className="py-6 text-sm opacity-60">{isComic ? '暂无可跳转页码' : '暂无可跳转章节'}</div> : null}
         <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-3">
           {navigation.pages.map((item) => (
             <button
@@ -713,12 +727,12 @@ function ComicNavigationPanel({ navigation, progress, dark, onJumpPage }: { navi
             </button>
           ))}
         </div>
-      </ComicNavigationGroup>
+      </VolumeNavigationGroup>
     </div>
   );
 }
 
-function ComicNavigationGroup({ title, children }: { title: string; children: ReactNode }) {
+function VolumeNavigationGroup({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="mb-5">
       <div className="mb-2 text-xs font-semibold uppercase opacity-50">{title}</div>

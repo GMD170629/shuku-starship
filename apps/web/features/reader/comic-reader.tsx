@@ -11,8 +11,8 @@ export type ComicImageFit = 'width' | 'height' | 'contain' | 'original';
 
 type ComicReaderProps = {
   book: WorkView;
-  sectionId?: string | null;
-  sectionTitle?: string | null;
+  volumeId?: string | null;
+  volumeTitle?: string | null;
   initialPages?: ComicPageMeta[];
   initialPageCount?: number | null;
   dark: boolean;
@@ -48,12 +48,12 @@ export type ComicPageMeta = {
   size?: number | null;
 };
 
-function archivePageUrl(bookId: string, pageIndex: number, sectionId?: string | null, retryToken = 0) {
+function archivePageUrl(bookId: string, pageIndex: number, volumeId?: string | null, retryToken = 0) {
   const params = new URLSearchParams();
   if (retryToken > 0) params.set('retry', String(retryToken));
   const query = params.toString();
-  const volumeId = sectionId ?? bookId;
-  return `/api/volumes/${volumeId}/pages/${pageIndex}${query ? `?${query}` : ''}`;
+  const resolvedVolumeId = volumeId ?? bookId;
+  return `/api/volumes/${resolvedVolumeId}/pages/${pageIndex}${query ? `?${query}` : ''}`;
 }
 
 function isArchiveComicFile(file: WorkView['files'][number] | undefined) {
@@ -89,8 +89,8 @@ function spreadLabel(pages: number[], total: number) {
 
 export function ComicReader({
   book,
-  sectionId,
-  sectionTitle,
+  volumeId: requestedVolumeId,
+  volumeTitle,
   initialPages,
   initialPageCount,
   dark,
@@ -121,8 +121,8 @@ export function ComicReader({
   const [failedPages, setFailedPages] = useState<Set<number>>(() => new Set());
   const [retryTokens, setRetryTokens] = useState<Record<number, number>>({});
   const archiveComic = book.files.some(isArchiveComicFile);
-  const progressPrefix = sectionTitle ? `${sectionTitle} · ` : '';
-  const volumeId = sectionId ?? book.volumes[0]?.id ?? null;
+  const progressPrefix = volumeTitle ? `${volumeTitle} · ` : '';
+  const volumeId = requestedVolumeId ?? book.volumes[0]?.id ?? null;
   const pageIndexKey = `${book.editionId ?? book.id}:${volumeId ?? 'none'}`;
 
   const orderedPages = useMemo(() => {
@@ -251,13 +251,13 @@ export function ComicReader({
           percent,
           position: String(Math.round(root.scrollTop)),
           label: `${progressPrefix}第 ${pageIndex} / ${Math.max(1, pageCount ?? 1)} 页`
-        }, { pageIndex, totalPages: pageCount ?? 1, percentage: percent, mode, direction, fitMode: imageFit, reversePages, sectionId, sectionTitle });
+        }, { pageIndex, totalPages: pageCount ?? 1, percentage: percent, mode, direction, fitMode: imageFit, reversePages, volumeId, volumeTitle });
       },
       { root, threshold: [0.35, 0.6, 0.85], rootMargin: '800px 0px' }
     );
     pageRefs.current.forEach((element) => observer.observe(element));
     return () => observer.disconnect();
-  }, [direction, imageFit, mode, onProgress, pageCount, progressPrefix, reversePages, sectionId, sectionTitle]);
+  }, [direction, imageFit, mode, onProgress, pageCount, progressPrefix, reversePages, volumeId, volumeTitle]);
 
   useEffect(() => {
     return () => {
@@ -275,8 +275,8 @@ export function ComicReader({
       percent,
       position: String(page),
       label: `${progressPrefix}${spreadLabel(spreadPages, total)}`
-    }, { pageIndex: page, visiblePages: spreadPages, totalPages: total, percentage: percent, mode, direction, fitMode: imageFit, reversePages, sectionId, sectionTitle });
-  }, [direction, imageFit, mode, onProgress, orderedPages, page, pageCount, progressPrefix, reversePages, sectionId, sectionTitle, spreadPages]);
+    }, { pageIndex: page, visiblePages: spreadPages, totalPages: total, percentage: percent, mode, direction, fitMode: imageFit, reversePages, volumeId, volumeTitle });
+  }, [direction, imageFit, mode, onProgress, orderedPages, page, pageCount, progressPrefix, reversePages, volumeId, volumeTitle, spreadPages]);
 
   function moveOrdered(step: number) {
     const currentIndex = Math.max(0, orderedPages.indexOf(page));
@@ -380,7 +380,7 @@ export function ComicReader({
       percent,
       position: String(Math.round(element.scrollTop)),
       label: `${progressPrefix}第 ${page} / ${Math.max(1, pageCount ?? 1)} 页`
-    }, { pageIndex: page, totalPages: pageCount ?? 1, percentage: percent, mode, direction, fitMode: imageFit, reversePages, sectionId, sectionTitle });
+    }, { pageIndex: page, totalPages: pageCount ?? 1, percentage: percent, mode, direction, fitMode: imageFit, reversePages, volumeId, volumeTitle });
     onActivity();
   }
 

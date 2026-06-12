@@ -6,7 +6,7 @@ import type { WorkView } from '../../types/work';
 import { enqueuePreference, enqueueProgress, flushPreferenceQueue, flushProgressQueue } from '../../lib/pwa/progressQueue';
 import { ComicReader, type ComicImageFit, type ComicMode, type ComicPageMeta } from './comic-reader';
 import { EbookReader } from './epub-reader';
-import { ReaderShell, type EbookFlow, type EbookPageTurnAnimation, type ReaderComicNavigation, type ReaderControls, type ReaderFontFamily, type ReaderKind, type ReaderNavigationItem, type ReaderProgress, type ReaderSettings, type ReaderTheme } from './reader-shell';
+import { ReaderShell, type EbookFlow, type EbookPageTurnAnimation, type ReaderVolumeNavigation, type ReaderControls, type ReaderFontFamily, type ReaderKind, type ReaderNavigationItem, type ReaderProgress, type ReaderSettings, type ReaderTheme } from './reader-shell';
 
 const readerOpeningStorageKey = 'shuku:reader:opening';
 
@@ -31,6 +31,7 @@ type ProgressPayload = {
   id?: string;
   readerType: string;
   position: string;
+  volumeId?: string | null;
   page?: number | null;
   percent: number;
   extra: string | Record<string, unknown>;
@@ -51,13 +52,13 @@ type BootstrapPayload = {
     readingUnits?: Array<{ title: string; sortOrder: number; href?: string }>;
     pages?: ComicPageMeta[];
     pageCount?: number;
-    section?: { id: string; title: string; pageCount: number } | null;
-    sections?: Array<{ id: string; title: string; pageCount: number }>;
+    volumeSection?: { id: string; title: string; pageCount: number } | null;
+    volumeSections?: Array<{ id: string; title: string; pageCount: number }>;
   };
   error?: { message: string };
 };
 
-type ComicSection = { id: string; title: string; pageCount: number };
+type VolumeSection = { id: string; title: string; pageCount: number };
 
 const defaultProgress: ReaderProgress = {
   page: 1,
@@ -131,8 +132,8 @@ function progressCacheKey(editionId: string) {
   return `shuku:reader:progress:${editionId}`;
 }
 
-function comicSectionProgressCacheKey(editionId: string, sectionId: string) {
-  return `shuku:reader:progress:${editionId}:section:${sectionId}`;
+function volumeProgressCacheKey(editionId: string, volumeId: string) {
+  return `shuku:reader:progress:${editionId}:volume:${volumeId}`;
 }
 
 function settingsCacheKey(type: string) {
@@ -221,7 +222,9 @@ function progressFromPayload(savedProgress: ProgressPayload | null | undefined) 
       percent: savedProgress.percent,
       position: typeof extra.cfi === 'string' ? extra.cfi : savedProgress.position ?? '',
       label: savedProgress.readerType === 'comic' && (savedProgress.page || extra.pageIndex)
-        ? `${typeof extra.sectionTitle === 'string' ? `${extra.sectionTitle} · ` : ''}第 ${savedProgress.page ?? extra.pageIndex} 页`
+        ? `${typeof extra.volumeTitle === 'string' ? `${extra.volumeTitle} · ` : ''}第 ${savedProgress.page ?? extra.pageIndex} 页`
+        : savedProgress.readerType === 'epub' && savedProgress.page
+          ? `第 ${savedProgress.page} 章`
         : '正在定位'
     } satisfies ReaderProgress,
     extra
@@ -260,11 +263,11 @@ export function ReaderPage({ editionId }: { editionId: string }) {
   const [hydrated, setHydrated] = useState(false);
   const [readerReady, setReaderReady] = useState(false);
   const [bootstrapRetryToken, setBootstrapRetryToken] = useState(0);
-  const [comicSection, setComicSection] = useState<ComicSection | null>(null);
-  const [comicSections, setComicSections] = useState<ComicSection[]>([]);
+  const [currentVolumeSection, setCurrentVolumeSection] = useState<VolumeSection | null>(null);
+  const [volumeSections, setVolumeSections] = useState<VolumeSection[]>([]);
   const [comicPages, setComicPages] = useState<ComicPageMeta[]>([]);
   const [comicPageCount, setComicPageCount] = useState<number | null>(null);
-  const [comicNavigationLoading, setComicNavigationLoading] = useState(false);
+  const [volumeNavigationLoading, setVolumeNavigationLoading] = useState(false);
 
   const bookRef = useRef<WorkView | null>(null);
   const readerTypeRef = useRef<ReaderKind | 'unknown'>('unknown');
@@ -293,7 +296,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
     setReaderReady(false);
   }, [editionId, bootstrapRetryToken]);
 
-  function defaultComicProgress(section: ComicSection | null | undefined, pageCount: number) {
+  function defaultComicProgress(volume: VolumeSection | null | undefined, pageCount: number) {
     const total = Math.max(1, pageCount || 1);
     return {
       progress: {
@@ -301,28 +304,28 @@ export function ReaderPage({ editionId }: { editionId: string }) {
         total,
         percent: 0,
         position: '1',
-        label: `${section?.title ? `${section.title} · ` : ''}第 1 / ${total} 页`
+        label: `${volume?.title ? `${volume.title} · ` : ''}第 1 / ${total} 页`
       } satisfies ReaderProgress,
-      extra: { pageIndex: 1, totalPages: total, percentage: 0, sectionId: section?.id, sectionTitle: section?.title }
+      extra: { pageIndex: 1, totalPages: total, percentage: 0, volumeId: volume?.id, volumeTitle: volume?.title }
     };
   }
 
-  function progressForComicBootstrap(targetEditionId: string, section: ComicSection | null | undefined, pageCount: number, savedProgress: ProgressPayload | null | undefined) {
-    if (section) {
-      const cached = readCache<{ progress: ReaderProgress; extra: Record<string, unknown> }>(comicSectionProgressCacheKey(targetEditionId, section.id));
+  function progressForComicBootstrap(targetEditionId: string, volume: VolumeSection | null | undefined, pageCount: number, savedProgress: ProgressPayload | null | undefined) {
+    if (volume) {
+      const cached = readCache<{ progress: ReaderProgress; extra: Record<string, unknown> }>(volumeProgressCacheKey(targetEditionId, volume.id));
       if (cached) return cached;
     }
     const parsedProgress = progressFromPayload(savedProgress);
-    if (parsedProgress && (!section || parsedProgress.extra.sectionId === section.id || typeof parsedProgress.extra.sectionId !== 'string')) return parsedProgress;
-    return defaultComicProgress(section, pageCount);
+    if (parsedProgress && (!volume || parsedProgress.extra.volumeId === volume.id || typeof parsedProgress.extra.volumeId !== 'string')) return parsedProgress;
+    return defaultComicProgress(volume, pageCount);
   }
 
   function applyBootstrapData(data: NonNullable<BootstrapPayload['data']>, targetEditionId: string) {
-    const { book: nextBook, progress: savedProgress, preferences, readerType: bootstrapReaderType, section } = data;
-    const nextSection = section ? { id: section.id, title: section.title, pageCount: section.pageCount } : null;
+    const { book: nextBook, progress: savedProgress, preferences, readerType: bootstrapReaderType, volumeSection } = data;
+    const nextVolumeSection = volumeSection ? { id: volumeSection.id, title: volumeSection.title, pageCount: volumeSection.pageCount } : null;
     setBook(nextBook);
-    setComicSection(nextSection);
-    setComicSections((data.sections ?? []).map((item) => ({ id: item.id, title: item.title, pageCount: item.pageCount })));
+    setCurrentVolumeSection(nextVolumeSection);
+    setVolumeSections((data.volumeSections ?? []).map((item) => ({ id: item.id, title: item.title, pageCount: item.pageCount })));
 
     const nextReaderType = bootstrapReaderType === 'comic' ? 'comic' : bootstrapReaderType === 'ebook' ? 'epub' : 'unknown';
     const nextPreferenceType = preferenceTypeForReader(nextReaderType);
@@ -335,7 +338,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
     if (nextReaderType === 'comic') {
       const pages: ComicPageMeta[] = data.pages?.length ? data.pages : Array.from({ length: data.pageCount ?? 0 }, (_, index) => ({ pageIndex: index + 1 }));
       const pageCount = data.pageCount ?? pages.length;
-      const nextProgress = progressForComicBootstrap(targetEditionId, nextSection, pageCount, savedProgress);
+      const nextProgress = progressForComicBootstrap(targetEditionId, nextVolumeSection, pageCount, savedProgress);
       setProgress(nextProgress.progress);
       setProgressExtra(nextProgress.extra);
       setComicPages(pages);
@@ -343,9 +346,19 @@ export function ReaderPage({ editionId }: { editionId: string }) {
       setNavigationItems(pages.map((page) => ({ index: page.pageIndex, title: page.title || `第 ${page.pageIndex} 页` })));
     } else {
       const parsedProgress = progressFromPayload(savedProgress);
-      if (parsedProgress) {
+      if (parsedProgress && (!nextVolumeSection || parsedProgress.extra.volumeId === nextVolumeSection.id || typeof parsedProgress.extra.volumeId !== 'string')) {
         setProgress(parsedProgress.progress);
-        setProgressExtra(parsedProgress.extra);
+        setProgressExtra({ ...parsedProgress.extra, volumeId: nextVolumeSection?.id, volumeTitle: nextVolumeSection?.title });
+      } else {
+        const total = Math.max(1, data.readingUnits?.length ?? 1);
+        setProgress({
+          page: 1,
+          total,
+          percent: 0,
+          position: '',
+          label: nextVolumeSection?.title ? `${nextVolumeSection.title} · 第 1 / ${total} 章` : '正在定位'
+        });
+        setProgressExtra({ volumeId: nextVolumeSection?.id, volumeTitle: nextVolumeSection?.title });
       }
       setComicPages([]);
       setComicPageCount(null);
@@ -372,7 +385,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
 
     let active = true;
     const searchParams = typeof window === 'undefined' ? new URLSearchParams() : new URLSearchParams(window.location.search);
-    loadBootstrap(editionId, searchParams.get('volume') ?? searchParams.get('section'))
+    loadBootstrap(editionId, searchParams.get('volume'))
       .catch((reason) => {
         if (active) setError(reason instanceof Error ? reason.message : '读取阅读器启动信息失败');
       });
@@ -389,6 +402,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
     return {
       readerType: currentReaderType,
       position: currentProgress.position,
+      volumeId: typeof progressExtraRef.current.volumeId === 'string' ? progressExtraRef.current.volumeId : null,
       page: currentProgress.page,
       percent: currentProgress.percent,
       extra: progressExtraRef.current
@@ -468,11 +482,11 @@ export function ReaderPage({ editionId }: { editionId: string }) {
   useEffect(() => {
     if (!book || readerType === 'unknown') return;
     writeCache(progressCacheKey(editionId), { progress, extra: progressExtra });
-    if (readerType === 'comic' && comicSection) {
-      writeCache(comicSectionProgressCacheKey(editionId, comicSection.id), { progress, extra: progressExtra });
+    if (readerType === 'comic' && currentVolumeSection) {
+      writeCache(volumeProgressCacheKey(editionId, currentVolumeSection.id), { progress, extra: progressExtra });
     }
     scheduleProgressSync();
-  }, [book, comicSection, editionId, progress, progressExtra, readerType]);
+  }, [book, currentVolumeSection, editionId, progress, progressExtra, readerType]);
 
   useEffect(() => {
     if (!book || readerType !== 'comic') return undefined;
@@ -528,11 +542,10 @@ export function ReaderPage({ editionId }: { editionId: string }) {
     if (bookRef.current) router.push(`/works/${bookRef.current.workId ?? bookRef.current.id}`);
   }
 
-  function replaceReaderVolumeUrl(sectionId: string) {
+  function replaceReaderVolumeUrl(volumeId: string) {
     if (typeof window === 'undefined') return;
     const url = new URL(window.location.href);
-    url.searchParams.set('volume', sectionId);
-    url.searchParams.delete('section');
+    url.searchParams.set('volume', volumeId);
     window.history.replaceState(window.history.state, '', `${url.pathname}?${url.searchParams.toString()}`);
   }
 
@@ -545,24 +558,24 @@ export function ReaderPage({ editionId }: { editionId: string }) {
     router.push(`/reader/${nextEditionId}${query}`);
   }
 
-  function handleSelectComicSection(sectionId: string) {
-    if (sectionId === comicSection?.id || comicNavigationLoading) return;
+  function handleSelectVolume(volumeId: string) {
+    if (volumeId === currentVolumeSection?.id || volumeNavigationLoading) return;
     sendProgress(true);
-    setComicNavigationLoading(true);
+    setVolumeNavigationLoading(true);
     setReaderReady(false);
-    replaceReaderVolumeUrl(sectionId);
-    loadBootstrap(editionId, sectionId)
+    replaceReaderVolumeUrl(volumeId);
+    loadBootstrap(editionId, volumeId)
       .then(() => setReaderReady(true))
-      .catch((reason) => setError(reason instanceof Error ? reason.message : '读取漫画卷册失败'))
-      .finally(() => setComicNavigationLoading(false));
+      .catch((reason) => setError(reason instanceof Error ? reason.message : '读取卷册失败'))
+      .finally(() => setVolumeNavigationLoading(false));
   }
 
   function handleSelectComicPage(pageIndex: number) {
     void controls?.jumpToIndex?.(pageIndex);
   }
 
-  const comicNavigation = useMemo<ReaderComicNavigation | undefined>(() => {
-    if (!book || readerType !== 'comic') return undefined;
+  const volumeNavigation = useMemo<ReaderVolumeNavigation | undefined>(() => {
+    if (!book || (readerType !== 'comic' && !(readerType === 'epub' && volumeSections.length > 1))) return undefined;
     const pages = settings.reversePages ? [...navigationItems].reverse() : navigationItems;
     return {
       editions: book.editions.map((edition) => ({
@@ -573,16 +586,16 @@ export function ReaderPage({ editionId }: { editionId: string }) {
         lastReadAt: edition.lastReadAt,
         volumes: edition.volumes.map((volume) => ({ id: volume.id, title: volume.title, pageCount: volume.pageCount }))
       })),
-      sections: comicSections,
+      volumeSections,
       pages,
       currentEditionId: editionId,
-      currentSectionId: comicSection?.id ?? null,
-      loading: comicNavigationLoading,
+      currentVolumeId: currentVolumeSection?.id ?? null,
+      loading: volumeNavigationLoading,
       onSelectEdition: handleSelectComicEdition,
-      onSelectSection: handleSelectComicSection,
+      onSelectVolume: handleSelectVolume,
       onSelectPage: handleSelectComicPage
     };
-  }, [book, comicNavigationLoading, comicSection?.id, comicSections, controls, editionId, navigationItems, readerType, settings.reversePages]);
+  }, [book, volumeNavigationLoading, currentVolumeSection?.id, volumeSections, controls, editionId, navigationItems, readerType, settings.reversePages]);
 
   if (error) {
     return (
@@ -614,13 +627,14 @@ export function ReaderPage({ editionId }: { editionId: string }) {
         controls={controls}
         settings={settings}
         navigationItems={navigationItems}
-        comicNavigation={comicNavigation}
+        volumeNavigation={volumeNavigation}
         onBack={leaveReader}
         onSettingsChange={updateSettings}
       >
         {(readerEvents) => readerType === 'epub' ? (
           <EbookReader
             editionId={editionId}
+            volumeId={currentVolumeSection?.id ?? null}
             title={book.title}
             theme={settings.theme}
             fontSize={settings.fontSize}
@@ -641,8 +655,8 @@ export function ReaderPage({ editionId }: { editionId: string }) {
         ) : (
           <ComicReader
             book={book}
-            sectionId={comicSection?.id ?? null}
-            sectionTitle={comicSection?.title ?? null}
+            volumeId={currentVolumeSection?.id ?? null}
+            volumeTitle={currentVolumeSection?.title ?? null}
             initialPages={comicPages}
             initialPageCount={comicPageCount}
             dark={settings.theme === 'night' || settings.theme === 'black'}

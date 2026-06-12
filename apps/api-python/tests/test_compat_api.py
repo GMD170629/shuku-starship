@@ -12,7 +12,7 @@ from app.core.auth import hash_password
 from app.models.auth import User
 from app.services.organize_service import bangumi_candidates, douban_candidates, system_settings
 from app.services.download_queue import process_next_download_task
-from app.worker.importer import _auto_apply_epub_metadata
+from app.worker.importer import ImportOptions, _auto_apply_epub_metadata, import_managed_book
 from tests.test_worker_importer import create_worker_tables, write_comic_fixture, write_epub_fixture, write_pdf_fixture
 
 
@@ -2284,6 +2284,51 @@ def test_manual_epub_upload_imports_book(client, db_session, test_settings, tmp_
     assert invalid.headers["content-range"].startswith("bytes */")
 
 
+def test_epub_volume_file_and_bootstrap_use_requested_volume(client, db_session, test_settings, tmp_path):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    _login(client, db_session)
+    series_dir = tmp_path / "[星舰小说][作者甲][Vol.01-Vol.02]"
+    series_dir.mkdir()
+    first = series_dir / "星舰小说 01.epub"
+    second = series_dir / "星舰小说 02.epub"
+    write_epub_fixture(first)
+    with zipfile.ZipFile(second, "w") as archive:
+        archive.writestr("mimetype", "application/epub+zip")
+        archive.writestr("META-INF/container.xml", """<?xml version="1.0"?><container><rootfiles><rootfile full-path="OEBPS/content.opf"/></rootfiles></container>""")
+        archive.writestr(
+            "OEBPS/content.opf",
+            """<?xml version="1.0"?><package><metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:title>第二卷</dc:title><dc:creator>作者甲</dc:creator>
+            </metadata><manifest>
+            <item id="c1" href="three.xhtml" media-type="application/xhtml+xml"/>
+            </manifest><spine><itemref idref="c1"/></spine></package>""",
+        )
+        archive.writestr("OEBPS/three.xhtml", "<html><body><h1>第三节</h1></body></html>")
+
+    first_result = import_managed_book(db_session, test_settings, ImportOptions(source_file_path=first, origin="WATCH", original_name=first.name, monitor_folder_id="folder-1"))
+    second_result = import_managed_book(db_session, test_settings, ImportOptions(source_file_path=second, origin="WATCH", original_name=second.name, monitor_folder_id="folder-1"))
+
+    bootstrap = client.get(f"/api/reader/{first_result.edition_id}/bootstrap?volume={second_result.volume_id}")
+    assert bootstrap.status_code == 200
+    data = bootstrap.json()["data"]
+    assert data["readerType"] == "ebook"
+    assert "section" not in data
+    assert "sections" not in data
+    assert data["volumeSection"]["id"] == second_result.volume_id
+    assert data["volumeSection"]["title"] == "第 2 卷"
+    assert data["volumeSection"]["pageCount"] == 1
+    assert [(item["id"], item["title"], item["pageCount"]) for item in data["volumeSections"]] == [
+        (first_result.volume_id, "第 1 卷", 2),
+        (second_result.volume_id, "第 2 卷", 1),
+    ]
+    assert [unit["title"] for unit in data["readingUnits"]] == ["第三节"]
+
+    second_file = client.get(f"/api/editions/{first_result.edition_id}/file?volume={second_result.volume_id}", headers={"Range": "bytes=0-3"})
+    assert second_file.status_code == 206
+    assert second_file.content == second.read_bytes()[:4]
+
+
 def test_reader_bootstrap_matches_node_shapes_for_epub_and_comic(client, db_session, test_settings, tmp_path):
     create_worker_tables(db_session)
     test_settings.resolved_storage_root.mkdir(parents=True)
@@ -2313,7 +2358,7 @@ def test_reader_bootstrap_matches_node_shapes_for_epub_and_comic(client, db_sess
     epub_detail_data = epub_detail.json()["data"]
     assert epub_detail_data["book"]["editionId"] == epub_payload["editionId"]
     assert [unit["title"] for unit in epub_detail_data["readingUnits"]] == ["第一节", "第二节"]
-    assert epub_detail_data["comicSections"] == []
+    assert epub_detail_data["volumeSections"] == []
 
     comic_payload = comic_imported.json()["data"]["results"][0]
     comic_bootstrap = client.get(f"/api/reader/{comic_payload['editionId']}/bootstrap")
@@ -2322,8 +2367,10 @@ def test_reader_bootstrap_matches_node_shapes_for_epub_and_comic(client, db_sess
     assert comic_data["readerType"] == "comic"
     assert comic_data["book"]["editionId"] == comic_payload["editionId"]
     assert comic_data["book"]["formatValue"] == "COMIC"
-    assert comic_data["section"]["id"] == comic_payload["volumeId"]
-    assert comic_data["sections"] == [{"id": comic_payload["volumeId"], "title": "第 1 卷", "pageCount": 2}]
+    assert "section" not in comic_data
+    assert "sections" not in comic_data
+    assert comic_data["volumeSection"]["id"] == comic_payload["volumeId"]
+    assert [(item["id"], item["title"], item["pageCount"]) for item in comic_data["volumeSections"]] == [(comic_payload["volumeId"], "第 1 卷", 2)]
     assert comic_data["pageCount"] == 2
     assert [page["pageIndex"] for page in comic_data["pages"]] == [1, 2]
     comic_detail = client.get(f"/api/works/{comic_payload['workId']}")
@@ -2331,7 +2378,7 @@ def test_reader_bootstrap_matches_node_shapes_for_epub_and_comic(client, db_sess
     comic_detail_data = comic_detail.json()["data"]
     assert comic_detail_data["book"]["editionId"] == comic_payload["editionId"]
     assert comic_detail_data["readingUnits"] == []
-    assert comic_detail_data["comicSections"] == [{"id": comic_payload["volumeId"], "title": "第 1 卷", "index": 1, "fileId": comic_payload["volumeId"], "pageCount": 2, "coverUrl": f"/api/volumes/{comic_payload['volumeId']}/cover?editionId={comic_payload['editionId']}"}]
+    assert comic_detail_data["volumeSections"] == [{"id": comic_payload["volumeId"], "title": "第 1 卷", "index": 1, "fileId": comic_payload["volumeId"], "pageCount": 2, "coverUrl": f"/api/volumes/{comic_payload['volumeId']}/cover?editionId={comic_payload['editionId']}"}]
 
     db_session.execute(
         text(
@@ -2389,12 +2436,56 @@ def test_reader_bootstrap_matches_node_shapes_for_epub_and_comic(client, db_sess
     alt_data = alt_bootstrap.json()["data"]
     assert alt_data["readerType"] == "comic"
     assert alt_data["book"]["editionId"] == "comic-edition-alt"
-    assert alt_data["section"] == {"id": "comic-alt-volume-2", "title": "第 2 话", "pageCount": 3}
-    assert alt_data["sections"] == [
-        {"id": "comic-alt-volume-1", "title": "第 1 话", "pageCount": 2},
-        {"id": "comic-alt-volume-2", "title": "第 2 话", "pageCount": 3},
+    assert alt_data["volumeSection"]["id"] == "comic-alt-volume-2"
+    assert alt_data["volumeSection"]["title"] == "第 2 话"
+    assert alt_data["volumeSection"]["pageCount"] == 3
+    assert [(item["id"], item["title"], item["pageCount"]) for item in alt_data["volumeSections"]] == [
+        ("comic-alt-volume-1", "第 1 话", 2),
+        ("comic-alt-volume-2", "第 2 话", 3),
     ]
     assert [page["pageIndex"] for page in alt_data["pages"]] == [1, 2, 3]
+
+
+def test_volume_move_reorders_epub_and_comic_volumes_and_rejects_cross_work(client, db_session, test_settings, tmp_path):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    _login(client, db_session)
+    series_dir = tmp_path / "[星舰小说][作者甲][Vol.01-Vol.02]"
+    series_dir.mkdir()
+    first = series_dir / "星舰小说 01.epub"
+    second = series_dir / "星舰小说 02.epub"
+    write_epub_fixture(first)
+    write_epub_fixture(second)
+    first_result = import_managed_book(db_session, test_settings, ImportOptions(source_file_path=first, origin="WATCH", original_name=first.name, monitor_folder_id="folder-1"))
+    second_result = import_managed_book(db_session, test_settings, ImportOptions(source_file_path=second, origin="WATCH", original_name=second.name, monitor_folder_id="folder-1"))
+
+    moved_epub = client.post(f"/api/works/{first_result.work_id}/volumes/{second_result.volume_id}/move", json={"direction": "up"})
+    assert moved_epub.status_code == 200
+    epub_order = db_session.execute(text("SELECT id FROM LibraryVolume WHERE editionId = :edition_id ORDER BY sortOrder ASC"), {"edition_id": first_result.edition_id}).scalars().all()
+    assert epub_order == [second_result.volume_id, first_result.volume_id]
+
+    comic = tmp_path / "comic.zip"
+    write_comic_fixture(comic)
+    with comic.open("rb") as handle:
+        comic_imported = client.post("/api/works/import", files={"file": ("comic.zip", handle, "application/zip")})
+    comic_payload = comic_imported.json()["data"]["results"][0]
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryVolume (
+                id, editionId, title, volumeIndex, sortOrder, pageCount, chapterCount, coverPath, createdAt, updatedAt
+            ) VALUES ('comic-extra-volume', :edition_id, '第 2 卷', 2, 2000, 1, NULL, NULL, 'now', 'now')"""
+        ),
+        {"edition_id": comic_payload["editionId"]},
+    )
+    db_session.commit()
+
+    moved_comic = client.post(f"/api/works/{comic_payload['workId']}/volumes/comic-extra-volume/move", json={"direction": "up"})
+    assert moved_comic.status_code == 200
+    comic_order = db_session.execute(text("SELECT id FROM LibraryVolume WHERE editionId = :edition_id ORDER BY sortOrder ASC"), {"edition_id": comic_payload["editionId"]}).scalars().all()
+    assert comic_order == ["comic-extra-volume", comic_payload["volumeId"]]
+
+    cross_work = client.post(f"/api/works/{first_result.work_id}/volumes/comic-extra-volume/move", json={"direction": "up"})
+    assert cross_work.status_code == 404
 
 
 def test_file_streams_are_limited_per_user(client, db_session, test_settings, tmp_path, monkeypatch):

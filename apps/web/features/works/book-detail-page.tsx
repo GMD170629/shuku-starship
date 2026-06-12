@@ -77,7 +77,7 @@ function readableEditionId(book: WorkView | null) {
 
 type ReadingUnitView = { id: string; unitType: string; title: string; href: string; mediaType?: string | null; sortOrder: number; size?: string | number | null };
 type DetailMetadata = { language?: string | null; publisher?: string | null; publishedAt?: string | null; isbn?: string | null; items?: Array<{ source: string; metadataJson: unknown }> };
-type ComicSectionView = { id: string; title: string; index: number; fileId: string; pageCount: number; coverUrl: string };
+type VolumeSectionView = { id: string; title: string; index: number; fileId: string; pageCount: number; coverUrl: string };
 
 export function BookDetailPage({ bookId }: { bookId: string }) {
   const router = useRouter();
@@ -86,7 +86,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   const [message, setMessage] = useState('');
   const [metadata, setMetadata] = useState<DetailMetadata | null>(null);
   const [readingUnits, setReadingUnits] = useState<ReadingUnitView[]>([]);
-  const [comicSections, setComicSections] = useState<ComicSectionView[]>([]);
+  const [volumeSections, setVolumeSections] = useState<VolumeSectionView[]>([]);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [busyAction, setBusyAction] = useState('');
@@ -115,14 +115,14 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
 
   const loadBook = useCallback(() => {
     fetch(`/api/works/${bookId}`)
-      .then((response) => response.json() as Promise<{ ok: boolean; data?: { book: WorkView; metadata?: DetailMetadata; readingUnits?: ReadingUnitView[]; comicSections?: ComicSectionView[] }; error?: { message: string } }>)
+      .then((response) => response.json() as Promise<{ ok: boolean; data?: { book: WorkView; metadata?: DetailMetadata; readingUnits?: ReadingUnitView[]; volumeSections?: VolumeSectionView[] }; error?: { message: string } }>)
       .then((payload) => {
         if (!payload.ok) throw new Error(payload.error?.message ?? '读取读物失败');
         const nextBook = payload.data?.book ?? null;
         setBook(nextBook);
         setMetadata(payload.data?.metadata ?? null);
         setReadingUnits(payload.data?.readingUnits ?? []);
-        setComicSections(payload.data?.comicSections ?? []);
+        setVolumeSections(payload.data?.volumeSections ?? []);
         if (nextBook) {
           setForm({
             title: nextBook.title,
@@ -342,6 +342,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   if (error && !book) return <div className="rounded-3xl border border-red-100 bg-red-50 p-8 text-sm text-red-700">{error}</div>;
   if (!book || !displayBook) return <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取读物详情...</div>;
   const readerEditionId = readableEditionId(book);
+  const hasVolumeSections = volumeSections.length > 0;
 
   return (
     <div className="space-y-6">
@@ -375,7 +376,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
               <Progress value={book.progress} className="mt-3" />
             </div>
             <div className="mt-5 flex flex-wrap gap-3">
-              <Button disabled={!readerEditionId} icon={BookOpen} onClick={() => readerEditionId && router.push(comicSections[0] ? `/reader/${readerEditionId}?volume=${encodeURIComponent(comicSections[0].id)}` : `/reader/${readerEditionId}`)}>{book.progress > 0 ? '继续阅读' : '开始阅读'}</Button>
+              <Button disabled={!readerEditionId} icon={BookOpen} onClick={() => readerEditionId && router.push(volumeSections[0] ? `/reader/${readerEditionId}?volume=${encodeURIComponent(volumeSections[0].id)}` : `/reader/${readerEditionId}`)}>{book.progress > 0 ? '继续阅读' : '开始阅读'}</Button>
               <Button disabled={!readerEditionId} variant="secondary" icon={Download} onClick={downloadPrimaryEdition}>下载</Button>
               <Button variant="secondary" icon={Edit3} onClick={() => setEditing((value) => !value)}>编辑信息</Button>
               <Button disabled={saving} variant="secondary" icon={Database} onClick={() => setMetadataLookupOpen(true)}>元数据识别</Button>
@@ -540,18 +541,18 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
       </div>
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
         <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm lg:col-span-8">
-            <h2 className="text-lg font-semibold">{book.type === 'comic' ? '卷册列表' : '章节列表'}</h2>
+            <h2 className="text-lg font-semibold">{hasVolumeSections ? '卷册列表' : '章节列表'}</h2>
             <div className="mt-3 divide-y divide-slate-100">
-              {book.type === 'comic' && comicSections.length > 0 ? comicSections.map((section) => (
-              <button key={section.id} disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}?volume=${encodeURIComponent(section.id)}`)} className="flex w-full items-center gap-3 py-3 text-left hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
-                <img src={section.coverUrl} alt="" className="h-20 w-14 rounded-lg object-cover" />
+              {hasVolumeSections ? volumeSections.map((volume) => (
+              <button key={volume.id} disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}?volume=${encodeURIComponent(volume.id)}`)} className="flex w-full items-center gap-3 py-3 text-left hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
+                <img src={volume.coverUrl} alt="" className="h-20 w-14 rounded-lg object-cover" />
                 <div className="min-w-0 flex-1">
-                  <div className="font-medium">{section.title}</div>
-                  <div className="mt-1 text-xs text-slate-500">漫画 · {section.pageCount} 页</div>
+                  <div className="font-medium">{volume.title}</div>
+                  <div className="mt-1 text-xs text-slate-500">{book.format} · {volume.pageCount} {book.type === 'comic' ? '页' : '章'}</div>
                 </div>
                 <div className="flex gap-1" onClick={(event) => event.stopPropagation()}>
-                  <Button loading={busyAction === `move:${section.id}:up`} disabled={saving && busyAction !== `move:${section.id}:up`} variant="ghost" className="min-h-8 px-2 py-1" onClick={() => moveVolume(section.id, 'up')}>上移</Button>
-                  <Button loading={busyAction === `move:${section.id}:down`} disabled={saving && busyAction !== `move:${section.id}:down`} variant="ghost" className="min-h-8 px-2 py-1" onClick={() => moveVolume(section.id, 'down')}>下移</Button>
+                  <Button loading={busyAction === `move:${volume.id}:up`} disabled={saving && busyAction !== `move:${volume.id}:up`} variant="ghost" className="min-h-8 px-2 py-1" onClick={() => moveVolume(volume.id, 'up')}>上移</Button>
+                  <Button loading={busyAction === `move:${volume.id}:down`} disabled={saving && busyAction !== `move:${volume.id}:down`} variant="ghost" className="min-h-8 px-2 py-1" onClick={() => moveVolume(volume.id, 'down')}>下移</Button>
                 </div>
                 <ChevronRight size={16} className="text-slate-400" />
               </button>
