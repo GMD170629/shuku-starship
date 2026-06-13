@@ -14,7 +14,7 @@ import {
   User,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type ReactNode } from 'react';
 import type { WorkView } from '../../types/work';
 import { Cover } from '../book/cover';
 import { cn } from '../ui/cn';
@@ -425,13 +425,27 @@ function StatusChip({ summary, systemStatus }: { summary: Summary | null; system
   const dotClass = currentImport ? 'bg-[#C76E08]' : 'bg-[#5D8D51]';
   return (
     <span
-      className="inline-flex items-center rounded-full border border-[#DCD8C9] bg-[#F6F0E6] font-medium text-[#302C27]"
-      style={{ height: sv(23), gap: sv(6), paddingLeft: sv(10), paddingRight: sv(10), fontSize: sv(10.5) }}
+      className="inline-flex shrink-0 items-center whitespace-nowrap rounded-full border border-[#DCD8C9] bg-[#F6F0E6] font-medium text-[#302C27] shadow-[0_1px_0_rgba(255,255,255,0.55)]"
+      style={{ minHeight: `max(44px, ${sv(32)})`, gap: sv(6), paddingLeft: sv(12), paddingRight: sv(12), fontSize: sv(10.5) }}
     >
       <Cloud size={sv(13)} strokeWidth={2} />
       {label}
       <span className={cn('rounded-full', dotClass)} style={{ height: sv(5), width: sv(5) }} />
     </span>
+  );
+}
+
+function HeaderIconButton({ label, onClick, children }: { label: string; onClick: () => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex shrink-0 items-center justify-center rounded-full border border-[#DCD8C9] bg-[#F6F0E6] text-[#211C17] shadow-[0_1px_0_rgba(255,255,255,0.55)] transition active:scale-[0.98]"
+      style={{ height: `max(44px, ${sv(32)})`, width: `max(44px, ${sv(32)})` }}
+      aria-label={label}
+    >
+      {children}
+    </button>
   );
 }
 
@@ -484,17 +498,11 @@ function HomeView({
       <div>
         <div className="flex items-start justify-between" style={{ gap: sv(16) }}>
           <AppHeader eyebrow="晚上好，读者" title="首页" />
-          <div className="flex items-center" style={{ gap: sv(14), paddingTop: sv(6) }}>
+          <div className="flex items-center" style={{ gap: sv(8), paddingTop: sv(2) }}>
             <StatusChip summary={summary} systemStatus={systemStatus} />
-            <button
-              type="button"
-              onClick={onGoMe}
-              className="flex items-center justify-center text-[#211C17]"
-              style={{ height: sv(28), width: sv(28) }}
-              aria-label="我的"
-            >
+            <HeaderIconButton label="我的" onClick={onGoMe}>
               <Bell size={sv(23)} strokeWidth={2} />
-            </button>
+            </HeaderIconButton>
           </div>
         </div>
         <div style={{ marginTop: sv(5) }}>

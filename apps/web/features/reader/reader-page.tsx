@@ -6,7 +6,7 @@ import type { WorkView } from '../../types/work';
 import { enqueuePreference, enqueueProgress, flushPreferenceQueue, flushProgressQueue } from '../../lib/pwa/progressQueue';
 import { ComicReader, type ComicImageFit, type ComicMode, type ComicPageMeta } from './comic-reader';
 import { EbookReader } from './epub-reader';
-import { ReaderShell, type EbookFlow, type EbookPageTurnAnimation, type ReaderVolumeNavigation, type ReaderControls, type ReaderFontFamily, type ReaderKind, type ReaderNavigationItem, type ReaderProgress, type ReaderSettings, type ReaderTheme } from './reader-shell';
+import { ReaderShell, readerThemeSurfaces, type EbookFlow, type EbookPageTurnAnimation, type ReaderVolumeNavigation, type ReaderControls, type ReaderFontFamily, type ReaderKind, type ReaderNavigationItem, type ReaderProgress, type ReaderSettings, type ReaderTheme } from './reader-shell';
 
 const readerOpeningStorageKey = 'shuku:reader:opening';
 
@@ -614,7 +614,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
       </div>
     );
   }
-  if (!book) return <ReaderOpeningOverlay context={openingContext} book={null} ready={false} />;
+  if (!book) return <ReaderOpeningOverlay context={openingContext} book={null} ready={false} theme={settings.theme} />;
   if (readerType === 'unknown') return <div className="flex min-h-[100dvh] items-center justify-center bg-slate-950 p-8 text-center text-slate-200">该读物没有可读内容，或文件格式暂不支持。</div>;
 
   return (
@@ -675,7 +675,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
           />
         )}
       </ReaderShell>
-      <ReaderOpeningOverlay context={openingContext} book={book} ready={readerReady} />
+      <ReaderOpeningOverlay context={openingContext} book={book} ready={readerReady} theme={settings.theme} />
     </>
   );
 }
@@ -684,10 +684,11 @@ function prefersReducedReaderMotion() {
   return typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
-function ReaderOpeningOverlay({ context, book, ready }: { context: ReaderOpeningContext | null; book: WorkView | null; ready: boolean }) {
+function ReaderOpeningOverlay({ context, book, ready, theme }: { context: ReaderOpeningContext | null; book: WorkView | null; ready: boolean; theme: ReaderTheme }) {
   const source = book
     ? { title: book.title, author: book.author, format: book.format, coverUrl: largeCoverUrl(book), gradient: book.gradient, rect: context?.rect ?? null }
     : context;
+  const themeSurface = readerThemeSurfaces[theme];
   const reducedMotion = prefersReducedReaderMotion();
   const [opened, setOpened] = useState(() => !source?.rect || reducedMotion);
   const [hidden, setHidden] = useState(false);
@@ -727,8 +728,8 @@ function ReaderOpeningOverlay({ context, book, ready }: { context: ReaderOpening
 
   return (
     <div
-      className="fixed inset-0 z-[80] overflow-hidden bg-slate-950 transition-opacity duration-200"
-      style={{ opacity: ready ? 0 : 1, pointerEvents: ready ? 'none' : 'auto' }}
+      className="fixed inset-0 z-[80] overflow-hidden transition-opacity duration-200"
+      style={{ backgroundColor: themeSurface.background, opacity: ready ? 0 : 1, pointerEvents: ready ? 'none' : 'auto' }}
       aria-hidden="true"
     >
       {source ? (

@@ -110,6 +110,15 @@ export const readerThemeSurfaces: Record<ReaderTheme, { background: string; text
   black: { background: '#000000', textClass: 'text-slate-100', statusBarStyle: 'black-translucent' }
 };
 
+function ensureMeta(name: string) {
+  const existing = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`);
+  if (existing) return { meta: existing, created: false };
+  const meta = document.createElement('meta');
+  meta.setAttribute('name', name);
+  document.head.appendChild(meta);
+  return { meta, created: true };
+}
+
 function clampPercent(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
@@ -139,6 +148,61 @@ function shouldIgnoreReaderInteraction(target: EventTarget | null) {
   return isEditableTarget(target) || Boolean(target.closest('[data-reader-control="true"]'));
 }
 
+function useReaderPwaSurface(theme: ReaderTheme) {
+  useEffect(() => {
+    const themeSurface = readerThemeSurfaces[theme];
+    const previousHtmlBackground = document.documentElement.style.backgroundColor;
+    const previousBodyBackground = document.body.style.backgroundColor;
+    const previousColorScheme = document.documentElement.style.colorScheme;
+    const foundThemeColorMetas = Array.from(document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]'));
+    const createdThemeColor = foundThemeColorMetas.length === 0 ? ensureMeta('theme-color') : null;
+    const themeColorMetas = createdThemeColor ? [createdThemeColor.meta] : foundThemeColorMetas;
+    const { meta: statusBarMeta, created: createdStatusBarMeta } = ensureMeta('apple-mobile-web-app-status-bar-style');
+    const previousThemeColors = themeColorMetas.map((meta) => meta.content);
+    const previousStatusBarStyle = statusBarMeta.content;
+
+    function applySurface() {
+      document.documentElement.style.backgroundColor = themeSurface.background;
+      document.body.style.backgroundColor = themeSurface.background;
+      document.documentElement.style.colorScheme = themeSurface.statusBarStyle === 'black-translucent' ? 'dark' : 'light';
+      const currentThemeColorMetas = Array.from(document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]'));
+      const targetThemeColorMetas = currentThemeColorMetas.length > 0 ? currentThemeColorMetas : [ensureMeta('theme-color').meta];
+      targetThemeColorMetas.forEach((meta) => {
+        if (meta.getAttribute('content') !== themeSurface.background) meta.setAttribute('content', themeSurface.background);
+      });
+      const currentStatusBarMeta = ensureMeta('apple-mobile-web-app-status-bar-style').meta;
+      if (currentStatusBarMeta.getAttribute('content') !== themeSurface.statusBarStyle) {
+        currentStatusBarMeta.setAttribute('content', themeSurface.statusBarStyle);
+      }
+    }
+
+    applySurface();
+    const frame = window.requestAnimationFrame(applySurface);
+    const settleTimer = window.setTimeout(applySurface, 250);
+    const headObserver = new MutationObserver(applySurface);
+    headObserver.observe(document.head, { attributes: true, childList: true, subtree: true, attributeFilter: ['content'] });
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(settleTimer);
+      headObserver.disconnect();
+      document.documentElement.style.backgroundColor = previousHtmlBackground;
+      document.body.style.backgroundColor = previousBodyBackground;
+      document.documentElement.style.colorScheme = previousColorScheme;
+      themeColorMetas.forEach((meta, index) => {
+        const previousThemeColor = previousThemeColors[index];
+        if (createdThemeColor?.meta === meta) {
+          meta.remove();
+          return;
+        }
+        meta.setAttribute('content', previousThemeColor);
+      });
+      if (createdStatusBarMeta) statusBarMeta.remove();
+      else statusBarMeta.setAttribute('content', previousStatusBarStyle);
+    };
+  }, [theme]);
+}
+
 export function ReaderShell({ editionId, title, readerType, progress, controls, settings, onBack, onSettingsChange, navigationItems, volumeNavigation, children }: ReaderShellProps) {
   const controlsVisibleRef = useRef(false);
   const controlsRef = useRef<ReaderControls | null>(null);
@@ -151,6 +215,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
   const [navLoading, setNavLoading] = useState(false);
   const dark = isDarkTheme(settings.theme);
   const themeSurface = readerThemeSurfaces[settings.theme];
+  useReaderPwaSurface(settings.theme);
 
   function setControlsVisibility(visible: boolean) {
     controlsVisibleRef.current = visible;
