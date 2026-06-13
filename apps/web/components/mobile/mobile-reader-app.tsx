@@ -58,6 +58,22 @@ function readSavedTab(): MobileTab {
   return saved === 'search' || saved === 'reading' ? 'shelf' : 'home';
 }
 
+async function readMobilePayload<TPayload extends { ok: boolean; error?: { message?: string } }>(response: Response, fallbackMessage: string): Promise<TPayload> {
+  const text = await response.text();
+  let payload: TPayload | null = null;
+  if (text) {
+    try {
+      payload = JSON.parse(text) as TPayload;
+    } catch {
+      throw new Error(response.ok ? '服务器返回了无法解析的响应，请稍后重试。' : `服务暂不可用（HTTP ${response.status}）`);
+    }
+  }
+  if (!response.ok || !payload?.ok) {
+    throw new Error(payload?.error?.message ?? fallbackMessage);
+  }
+  return payload;
+}
+
 function formatDate(value: string | null | undefined) {
   if (!value) return '暂无';
   return new Date(value).toLocaleString();
@@ -151,7 +167,7 @@ export function MobileReaderApp() {
     setLoading(true);
     setError('');
     Promise.all([
-      fetch('/api/works?pageSize=40&visibility=active&sort=recent_read').then((response) => response.json() as Promise<BooksPayload>),
+      fetch('/api/works?pageSize=40&visibility=active&sort=recent_read').then((response) => readMobilePayload<BooksPayload>(response, '读取书架失败')),
       fetch('/api/dashboard/continue-reading').then((response) => response.json()).catch(() => null),
       fetch('/api/dashboard/summary').then((response) => response.json()).catch(() => null),
       fetch('/api/auth/me').then((response) => response.json()).catch(() => null),
@@ -167,7 +183,7 @@ export function MobileReaderApp() {
         setSystemStatus(statusPayload?.ok ? statusPayload.data : null);
       })
       .catch((reason) => {
-        if (active) setError(reason instanceof Error ? reason.message : '读取书架失败');
+        if (active) setError(reason instanceof Error ? reason.message : '读取书架失败，请检查网络或服务器状态。');
       })
       .finally(() => {
         if (active) setLoading(false);
@@ -187,12 +203,11 @@ export function MobileReaderApp() {
     const timer = window.setTimeout(() => {
       setSearchLoading(true);
       fetch(`/api/works?pageSize=40&visibility=active&sort=recent_read&search=${encodeURIComponent(search)}`)
-        .then((response) => response.json() as Promise<BooksPayload>)
+        .then((response) => readMobilePayload<BooksPayload>(response, '搜索失败'))
         .then((payload) => {
-          if (!payload.ok) throw new Error(payload.error?.message ?? '搜索失败');
           setSearchBooks(payload.data?.books ?? []);
         })
-        .catch((reason) => setError(reason instanceof Error ? reason.message : '搜索失败'))
+        .catch((reason) => setError(reason instanceof Error ? reason.message : '搜索失败，请稍后重试。'))
         .finally(() => setSearchLoading(false));
     }, 250);
     return () => window.clearTimeout(timer);
@@ -261,7 +276,7 @@ export function MobileReaderApp() {
         } as MobileScaleStyle}
       >
         <section
-          className="flex-1 overflow-y-auto"
+          className="flex-1 overflow-y-auto overscroll-contain"
           style={{
             padding: `${sv(25)} ${sv(27.5)} calc(${sv(88)} + env(safe-area-inset-bottom))`
           }}
@@ -315,9 +330,11 @@ export function MobileReaderApp() {
         </section>
 
         <nav
+          role="tablist"
+          aria-label="移动端主导航"
           className="fixed inset-x-0 bottom-0 z-30 mx-auto grid max-w-[426.5px] grid-cols-3 border-t border-[#DED6CA] bg-[#FBF8F1]/95 backdrop-blur-xl"
           style={{
-            minHeight: sv(62),
+            minHeight: sv(68),
             paddingLeft: sv(32),
             paddingRight: sv(32),
             paddingTop: sv(6),
@@ -328,13 +345,15 @@ export function MobileReaderApp() {
             <button
               key={key}
               type="button"
+              role="tab"
+              aria-selected={tab === key}
               onClick={() => selectTab(key)}
               className={cn(
                 'flex flex-col items-center justify-center rounded-xl transition active:scale-[0.98]',
                 tab === key ? 'text-[#C06A09]' : 'text-[#5F5A55]'
               )}
               style={{
-                minHeight: sv(50),
+                minHeight: `max(44px, ${sv(54)})`,
                 gap: sv(3),
                 fontSize: sv(11.5)
               }}
@@ -387,7 +406,7 @@ function AppHeader({
         <button
           type="button"
           onClick={action.onClick}
-          className="flex min-h-10 shrink-0 items-center justify-center rounded-full border border-[#DED5C7] bg-[#FBF8F1] px-4 text-sm font-medium text-[#6F4420] transition active:scale-[0.98]"
+          className="flex min-h-11 shrink-0 items-center justify-center rounded-full border border-[#DED5C7] bg-[#FBF8F1] px-4 text-sm font-medium text-[#6F4420] transition active:scale-[0.98]"
         >
           {action.label}
         </button>
@@ -397,16 +416,21 @@ function AppHeader({
 }
 
 function StatusChip({ summary, systemStatus }: { summary: Summary | null; systemStatus: SystemStatus | null }) {
-  void summary;
-  void systemStatus;
+  const currentImport = systemStatus?.currentImportTask;
+  const label = currentImport
+    ? `导入 ${Math.round(currentImport.progress)}%`
+    : summary?.latestSyncAt
+      ? '进度已同步'
+      : 'NAS 已连接';
+  const dotClass = currentImport ? 'bg-[#C76E08]' : 'bg-[#5D8D51]';
   return (
     <span
       className="inline-flex items-center rounded-full border border-[#DCD8C9] bg-[#F6F0E6] font-medium text-[#302C27]"
       style={{ height: sv(23), gap: sv(6), paddingLeft: sv(10), paddingRight: sv(10), fontSize: sv(10.5) }}
     >
       <Cloud size={sv(13)} strokeWidth={2} />
-      NAS 已连接
-      <span className="rounded-full bg-[#5D8D51]" style={{ height: sv(5), width: sv(5) }} />
+      {label}
+      <span className={cn('rounded-full', dotClass)} style={{ height: sv(5), width: sv(5) }} />
     </span>
   );
 }
@@ -417,7 +441,7 @@ function SearchShortcut({ onClick }: { onClick: () => void }) {
       type="button"
       onClick={onClick}
       className="flex w-full items-center border border-[#D8CFBF] bg-[#F8F2E8] text-left text-[#4E4841] transition active:scale-[0.99]"
-      style={{ height: sv(32), gap: sv(11), borderRadius: sv(10), paddingLeft: sv(12), paddingRight: sv(12), fontSize: sv(12.5) }}
+      style={{ minHeight: `max(44px, ${sv(32)})`, gap: sv(11), borderRadius: sv(10), paddingLeft: sv(12), paddingRight: sv(12), fontSize: sv(12.5) }}
     >
       <Search size={sv(16)} strokeWidth={2.1} className="shrink-0 text-[#211C17]" />
       <span className="min-w-0 flex-1">在书架中搜索与筛选</span>
@@ -503,7 +527,7 @@ function HomeView({
 
 function RecentSectionHeader({ onAction }: { onAction: () => void }) {
   return (
-    <div className="flex items-center justify-between" style={{ height: sv(24), marginBottom: sv(12), gap: sv(12) }}>
+    <div className="flex items-center justify-between" style={{ minHeight: `max(44px, ${sv(24)})`, marginBottom: sv(12), gap: sv(12) }}>
       <h2
         className="font-medium tracking-normal text-[#211C17]"
         style={{ fontFamily: displayFont, fontSize: sv(17), lineHeight: sv(22) }}
@@ -514,7 +538,7 @@ function RecentSectionHeader({ onAction }: { onAction: () => void }) {
         type="button"
         onClick={onAction}
         className="inline-flex items-center font-medium leading-none text-[#7A4B22]"
-        style={{ gap: sv(6), fontSize: sv(11.5) }}
+        style={{ minHeight: 44, gap: sv(6), fontSize: sv(11.5) }}
       >
         查看全部 <ChevronRight size={sv(14)} strokeWidth={2.2} />
       </button>
@@ -524,7 +548,7 @@ function RecentSectionHeader({ onAction }: { onAction: () => void }) {
 
 function ShelfOverviewHeader({ onAction }: { onAction: () => void }) {
   return (
-    <div className="flex items-center justify-between" style={{ height: sv(24), marginBottom: sv(17), gap: sv(12) }}>
+    <div className="flex items-center justify-between" style={{ minHeight: `max(44px, ${sv(24)})`, marginBottom: sv(17), gap: sv(12) }}>
       <h2
         className="font-medium tracking-normal text-[#211C17]"
         style={{ fontFamily: displayFont, fontSize: sv(17), lineHeight: sv(22) }}
@@ -535,7 +559,7 @@ function ShelfOverviewHeader({ onAction }: { onAction: () => void }) {
         type="button"
         onClick={onAction}
         className="inline-flex items-center rounded-full border border-[#DCD4C6] bg-[#F8F2E8] font-medium leading-none text-[#7A4B22]"
-        style={{ height: sv(21), gap: sv(5), paddingLeft: sv(8), paddingRight: sv(8), fontSize: sv(9.5) }}
+        style={{ minHeight: `max(44px, ${sv(21)})`, gap: sv(5), paddingLeft: sv(10), paddingRight: sv(10), fontSize: sv(9.5) }}
       >
         <Filter size={sv(10)} strokeWidth={2} />
         搜索与筛选 <ChevronRight size={sv(11)} strokeWidth={2.2} />
@@ -603,7 +627,7 @@ function ContinueCard({ item, onOpenBook }: { item: NonNullable<ContinueItem>; o
               type="button"
               onClick={() => onOpenBook(item.book, entryRef.current)}
               className="inline-flex flex-1 items-center justify-center bg-[#C76E08] font-semibold text-white shadow-sm transition active:scale-[0.98]"
-              style={{ minHeight: sv(30), borderRadius: sv(4), paddingLeft: sv(20), paddingRight: sv(20), fontSize: sv(13) }}
+              style={{ minHeight: `max(44px, ${sv(30)})`, borderRadius: sv(4), paddingLeft: sv(20), paddingRight: sv(20), fontSize: sv(13) }}
             >
               继续阅读
             </button>
@@ -611,7 +635,7 @@ function ContinueCard({ item, onOpenBook }: { item: NonNullable<ContinueItem>; o
               type="button"
               onClick={(event) => event.stopPropagation()}
               className="flex shrink-0 items-center justify-center border border-[#DCD1BF] bg-[#FBF8F1] text-[#4D443C] transition active:scale-[0.98]"
-              style={{ height: sv(30), width: sv(30), borderRadius: sv(5) }}
+              style={{ height: `max(44px, ${sv(30)})`, width: `max(44px, ${sv(30)})`, borderRadius: sv(5) }}
               aria-label="更多"
             >
               <MoreHorizontal size={sv(18)} />
@@ -698,6 +722,7 @@ function ShelfView({
             value={searchText}
             onChange={(event) => onSearchTextChange(event.target.value)}
             placeholder="搜索书名、作者、标签"
+            aria-label="搜索书名、作者、标签"
             className="min-w-0 flex-1 bg-transparent text-[15px] text-[#211C17] outline-none placeholder:text-[#9A8E82]"
           />
         </div>
@@ -854,6 +879,7 @@ function MenuButton({
       type="button"
       onClick={onClick}
       className="flex min-h-16 w-full items-center justify-between gap-4 rounded-[20px] border border-[#DED5C7] bg-[#FBF8F1] px-4 text-left transition active:scale-[0.99]"
+      aria-label={value ? `${label}，${value}` : label}
     >
       <span className="flex min-w-0 items-center gap-3">
         <span className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl', danger ? 'bg-red-50 text-red-600' : 'bg-[#EFE4D6] text-[#7A4B22]')}>
@@ -889,7 +915,7 @@ function EmptyLibrary({ onUpload }: { onUpload: () => void }) {
       <h2 className="text-xl font-semibold">暂无读物</h2>
       <p className="mt-2 text-sm leading-6 text-[#70665C]">上传 EPUB/CBZ/ZIP 后，就可以在手机上开始阅读。</p>
       <div className="mt-5 flex flex-col gap-3">
-        <button type="button" onClick={onUpload} className="min-h-11 rounded-2xl bg-[#7A4B22] px-4 text-sm font-semibold text-white">上传读物</button>
+        <button type="button" onClick={onUpload} className="min-h-11 rounded-2xl bg-[#7A4B22] px-4 text-sm font-semibold text-white active:scale-[0.99]">上传读物</button>
       </div>
     </section>
   );
@@ -906,12 +932,15 @@ function SoftEmpty({ title, text }: { title: string; text: string }) {
 
 function Notice({ children, tone }: { children: string; tone: 'success' | 'error' }) {
   return (
-    <div className={cn('rounded-2xl border px-4 py-3 text-sm', tone === 'error' ? 'border-red-200 bg-red-50 text-red-700' : 'border-[#D9C4A6] bg-[#FFF8E8] text-[#7A4B22]')}>
+    <div
+      className={cn('rounded-2xl border px-4 py-3 text-sm', tone === 'error' ? 'border-red-200 bg-red-50 text-red-700' : 'border-[#D9C4A6] bg-[#FFF8E8] text-[#7A4B22]')}
+      role={tone === 'error' ? 'alert' : 'status'}
+    >
       {children}
     </div>
   );
 }
 
 function LoadingBlock({ label }: { label: string }) {
-  return <div className="rounded-[22px] border border-[#DED5C7] bg-[#FBF8F1] p-5 text-sm text-[#70665C]">{label}</div>;
+  return <div className="rounded-[22px] border border-[#DED5C7] bg-[#FBF8F1] p-5 text-sm text-[#70665C]" role="status" aria-live="polite">{label}</div>;
 }

@@ -12,3 +12,51 @@ body {
 * {
   box-sizing: border-box;
 }
+
+html.pwa-native {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+html.pwa-native body {
+  min-height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+html.pwa-native button,
+html.pwa-native a,
+html.pwa-native [role='button'],
+html.pwa-native input,
+html.pwa-native textarea,
+html.pwa-native select,
+html.pwa-native label {
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+
+html.pwa-native input,
+html.pwa-native textarea,
+html.pwa-native select,
+html.pwa-native [contenteditable='true'] {
+  font-size: 16px;
+  -webkit-touch-callout: default;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+html.pwa-native [data-allow-text-selection='true'],
+html.pwa-native [data-allow-text-selection='true'] * {
+  -webkit-touch-callout: default;
+  -webkit-user-select: text;
+  user-select: text;
+}

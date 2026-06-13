@@ -430,7 +430,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
       {panel ? (
         <aside
           className={cn(
-            'absolute inset-x-0 bottom-0 z-30 max-h-[82dvh] w-full overflow-hidden rounded-t-3xl border-t p-4 shadow-2xl backdrop-blur-xl md:inset-y-0 md:left-auto md:right-0 md:max-h-none md:max-w-sm md:rounded-none md:border-l md:border-t-0 md:p-5',
+            'absolute inset-x-0 bottom-0 z-30 max-h-[82dvh] w-full overflow-hidden overscroll-contain rounded-t-3xl border-t p-4 shadow-2xl backdrop-blur-xl md:inset-y-0 md:left-auto md:right-0 md:max-h-none md:max-w-sm md:rounded-none md:border-l md:border-t-0 md:p-5',
             dark ? 'border-white/10 bg-slate-950/95' : 'border-slate-200 bg-white/95'
           )}
           style={{ paddingTop: 'max(1rem, env(safe-area-inset-top))', paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}
@@ -461,7 +461,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
           ) : null}
 
           {panel === 'toc' && !volumeNavigation ? (
-            <div className="mt-5 max-h-[calc(82dvh-6rem)] overflow-auto pr-1 md:h-[calc(100%-4rem)] md:max-h-none">
+            <div className="mt-5 max-h-[calc(82dvh-6rem)] overflow-auto overscroll-contain pr-1 md:h-[calc(100%-4rem)] md:max-h-none">
               {navLoading ? <div className="py-6 text-sm opacity-60">正在读取...</div> : null}
               {!navLoading && navItems.length === 0 ? <div className="py-6 text-sm opacity-60">暂无可跳转条目</div> : null}
               <div className="space-y-1">
@@ -481,7 +481,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
           ) : null}
 
           {panel === 'settings' ? (
-            <div className="mt-5 max-h-[calc(82dvh-6rem)] space-y-5 overflow-auto pr-1 text-sm md:max-h-none">
+            <div className="mt-5 max-h-[calc(82dvh-6rem)] space-y-5 overflow-auto overscroll-contain pr-1 text-sm md:max-h-none">
               {readerType === 'epub' ? (
                 <>
                   <SegmentedSetting
@@ -591,7 +591,7 @@ function VolumeNavigationPanel({ navigation, readerType, progress, dark, onJumpP
   const isComic = readerType === 'comic';
 
   return (
-    <div className="mt-5 max-h-[calc(82dvh-6rem)] overflow-auto pr-1 md:h-[calc(100%-4rem)] md:max-h-none">
+    <div className="mt-5 max-h-[calc(82dvh-6rem)] overflow-auto overscroll-contain pr-1 md:h-[calc(100%-4rem)] md:max-h-none">
       {idleText ? <div className="mb-3 rounded-xl bg-white/10 px-3 py-2 text-xs opacity-70">{idleText}</div> : null}
       {showEditions ? (
         <VolumeNavigationGroup title="版本">

@@ -722,7 +722,7 @@ export function EbookReader({
   const tokens = themeTokens[theme];
 
   return (
-    <div className="h-full w-full" style={{ background: tokens.background }}>
+    <div className="h-full w-full" data-allow-text-selection="true" style={{ background: tokens.background }}>
       <div
         className="relative h-full min-h-0 w-full overflow-hidden"
         style={{ background: tokens.background }}

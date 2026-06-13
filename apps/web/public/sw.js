@@ -1,8 +1,13 @@
-const VERSION = 'shuku-pwa-v0.4.2';
+const VERSION = 'shuku-pwa-v0.4.3';
 const SHELL_CACHE = `${VERSION}-app-shell`;
 const STATIC_CACHE = `${VERSION}-static`;
 const PRIVATE_COVER_CACHE = `${VERSION}-private-cover`;
 const PRIVATE_API_CACHE = `${VERSION}-private-api`;
+const CACHE_LIMITS = {
+  [STATIC_CACHE]: 96,
+  [PRIVATE_COVER_CACHE]: 160,
+  [PRIVATE_API_CACHE]: 80
+};
 const SHELL_URLS = [
   '/offline',
   '/mobile',
@@ -65,12 +70,24 @@ function offlineApiResponse() {
   });
 }
 
+async function trimCache(cacheName) {
+  const limit = CACHE_LIMITS[cacheName];
+  if (!limit) return;
+  const cache = await caches.open(cacheName);
+  const keys = await cache.keys();
+  if (keys.length <= limit) return;
+  await Promise.all(keys.slice(0, keys.length - limit).map((request) => cache.delete(request)));
+}
+
 async function cacheFirst(request, cacheName) {
   const cache = await caches.open(cacheName);
   const cached = await cache.match(request);
   if (cached) return cached;
   const response = await fetch(request);
-  if (response.ok) cache.put(request, response.clone());
+  if (response.ok) {
+    await cache.put(request, response.clone());
+    await trimCache(cacheName);
+  }
   return response;
 }
 
@@ -85,28 +102,32 @@ async function networkFirstPage(request) {
 }
 
 async function networkFirstApi(request) {
+  const cache = await caches.open(PRIVATE_API_CACHE);
   try {
     const response = await fetch(request);
     if (response.ok) {
       const url = new URL(request.url);
       if (!isSensitiveApi(url.pathname) && !isLargeReaderPayload(url.pathname)) {
-        const cache = await caches.open(PRIVATE_API_CACHE);
-        cache.put(request, response.clone());
+        await cache.put(request, response.clone());
+        await trimCache(PRIVATE_API_CACHE);
       }
     }
     return response;
   } catch {
-    return offlineApiResponse();
+    return (await cache.match(request)) || offlineApiResponse();
   }
 }
 
 async function staleWhileRevalidate(request, cacheName) {
   const cache = await caches.open(cacheName);
   const cached = await cache.match(request);
-  const refresh = fetch(request).then((response) => {
-    if (response.ok) cache.put(request, response.clone());
+  const refresh = fetch(request).then(async (response) => {
+    if (response.ok) {
+      await cache.put(request, response.clone());
+      await trimCache(cacheName);
+    }
     return response;
-  });
+  }).catch(() => cached);
   return cached || refresh;
 }
 
