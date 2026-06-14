@@ -498,6 +498,7 @@ export function ComicReader({
   return (
     <div
       ref={scrollerRef}
+      data-pwa-scroll="true"
       className="h-full w-full overflow-auto overscroll-contain px-2 py-2 landscape:px-1 landscape:py-1 md:px-8 md:py-8"
       onScroll={mode === 'continuous' ? scheduleScrollProgress : undefined}
       dir={direction}

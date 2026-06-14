@@ -60,3 +60,10 @@ html.pwa-native [data-allow-text-selection='true'] * {
   -webkit-user-select: text;
   user-select: text;
 }
+
+html.pwa-native [data-pwa-scroll='true'] {
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}

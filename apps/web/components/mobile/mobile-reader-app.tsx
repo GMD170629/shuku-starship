@@ -265,18 +265,18 @@ export function MobileReaderApp() {
   }
 
   return (
-    <main className="min-h-screen min-h-[100dvh] bg-[#F7F1E7] text-[#211C17]">
+    <main className="h-screen h-[100dvh] overflow-hidden bg-[#F7F1E7] text-[#211C17]">
       <div
-        className="mx-auto flex min-h-screen min-h-[100dvh] max-w-[426.5px] flex-col"
+        className="mx-auto flex h-screen h-[100dvh] min-h-0 max-w-[426.5px] flex-col overflow-hidden"
         style={{
           '--mobile-scale': `min(1, calc(100vw / ${mobileDesignWidth}px))`,
-          minHeight: '100vh',
           paddingTop: 'env(safe-area-inset-top)',
           paddingBottom: 'env(safe-area-inset-bottom)'
         } as MobileScaleStyle}
       >
         <section
-          className="flex-1 overflow-y-auto overscroll-contain"
+          data-pwa-scroll="true"
+          className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
           style={{
             padding: `${sv(25)} ${sv(27.5)} calc(${sv(88)} + env(safe-area-inset-bottom))`
           }}
