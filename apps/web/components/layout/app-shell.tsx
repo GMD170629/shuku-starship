@@ -47,9 +47,9 @@ const mobileNavItems = [
 ];
 
 const shellSurfaces = {
-  app: { background: '#F6F7F9', statusBarStyle: 'default' },
-  mobile: { background: '#F7F1E7', statusBarStyle: 'default' },
-  login: { background: '#F8FAFC', statusBarStyle: 'default' },
+  app: { background: '#F6F7F9', statusBarStyle: 'black-translucent' },
+  mobile: { background: '#F7F1E7', statusBarStyle: 'black-translucent' },
+  login: { background: '#F8FAFC', statusBarStyle: 'black-translucent' },
   offline: { background: '#020617', statusBarStyle: 'black-translucent' }
 } satisfies Record<string, { background: string; statusBarStyle: 'default' | 'black-translucent' }>;
 
@@ -148,13 +148,33 @@ export function AppShell({ children }: { children: ReactNode }) {
     const previousThemeColors = themeColorMetas.map((meta) => meta.content);
     const previousStatusBarStyle = statusBarMeta.content;
 
-    document.documentElement.style.backgroundColor = shellSurface.background;
-    document.body.style.backgroundColor = shellSurface.background;
-    document.documentElement.style.colorScheme = shellSurface.statusBarStyle === 'black-translucent' ? 'dark' : 'light';
-    themeColorMetas.forEach((meta) => meta.setAttribute('content', shellSurface.background));
-    statusBarMeta.setAttribute('content', shellSurface.statusBarStyle);
+    function applySurface() {
+      document.documentElement.style.backgroundColor = shellSurface.background;
+      document.body.style.backgroundColor = shellSurface.background;
+      document.documentElement.style.colorScheme = shellSurface.statusBarStyle === 'black-translucent' ? 'dark' : 'light';
+      const currentThemeColorMetas = Array.from(document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]'));
+      const targetThemeColorMetas = currentThemeColorMetas.length > 0 ? currentThemeColorMetas : [ensureMeta('theme-color').meta];
+      targetThemeColorMetas.forEach((meta) => {
+        if (meta.getAttribute('content') !== shellSurface.background) meta.setAttribute('content', shellSurface.background);
+      });
+      const currentStatusBarMeta = ensureMeta('apple-mobile-web-app-status-bar-style').meta;
+      if (currentStatusBarMeta.getAttribute('content') !== shellSurface.statusBarStyle) {
+        currentStatusBarMeta.setAttribute('content', shellSurface.statusBarStyle);
+      }
+    }
+
+    applySurface();
+    const frame = window.requestAnimationFrame(applySurface);
+    const settleTimer = window.setTimeout(applySurface, 250);
+    const syncTimer = window.setInterval(applySurface, 500);
+    const headObserver = new MutationObserver(applySurface);
+    headObserver.observe(document.head, { attributes: true, childList: true, subtree: true, attributeFilter: ['content'] });
 
     return () => {
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(settleTimer);
+      window.clearInterval(syncTimer);
+      headObserver.disconnect();
       document.documentElement.style.backgroundColor = previousHtmlBackground;
       document.body.style.backgroundColor = previousBodyBackground;
       document.documentElement.style.colorScheme = previousColorScheme;
