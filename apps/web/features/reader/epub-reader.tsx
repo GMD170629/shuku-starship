@@ -23,6 +23,7 @@ type EpubReaderProps = {
   onActivity: () => void;
   onTap: () => void;
   onReady?: () => void;
+  onError?: (message: string) => void;
 };
 
 type EpubLocationStore = {
@@ -308,7 +309,8 @@ export function EbookReader({
   onProgress,
   onActivity,
   onTap,
-  onReady
+  onReady,
+  onError
 }: EpubReaderProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const bookRef = useRef<Book | null>(null);
@@ -323,6 +325,7 @@ export function EbookReader({
   const onProgressRef = useRef(onProgress);
   const onTapRef = useRef(onTap);
   const onReadyRef = useRef(onReady);
+  const onErrorRef = useRef(onError);
   const ebookPageTurnAnimationRef = useRef(ebookPageTurnAnimation);
   const themeRef = useRef(theme);
   const fontSizeRef = useRef(fontSize);
@@ -339,13 +342,14 @@ export function EbookReader({
     onProgressRef.current = onProgress;
     onTapRef.current = onTap;
     onReadyRef.current = onReady;
+    onErrorRef.current = onError;
     ebookPageTurnAnimationRef.current = ebookPageTurnAnimation;
     themeRef.current = theme;
     fontSizeRef.current = fontSize;
     lineHeightRef.current = lineHeight;
     fontFamilyRef.current = fontFamily;
     pageWidthRef.current = pageWidth;
-  }, [ebookPageTurnAnimation, fontFamily, fontSize, lineHeight, onActivity, onProgress, onReady, onTap, pageWidth, theme]);
+  }, [ebookPageTurnAnimation, fontFamily, fontSize, lineHeight, onActivity, onError, onProgress, onReady, onTap, pageWidth, theme]);
 
   useEffect(() => {
     if (initialCfi) currentCfiRef.current = initialCfi;
@@ -687,7 +691,11 @@ export function EbookReader({
         }
       })
       .catch((reason: unknown) => {
-        if (!canceled && !isAbortError(reason)) setError(reason instanceof Error ? reason.message : 'EPUB 加载失败');
+        if (!canceled && !isAbortError(reason)) {
+          const message = reason instanceof Error ? reason.message : 'EPUB 加载失败';
+          setError(message);
+          onErrorRef.current?.(message);
+        }
       })
       .finally(() => {
         initializingReader = false;

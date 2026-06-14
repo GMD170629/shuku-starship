@@ -495,6 +495,12 @@ export function ReaderPage({ editionId }: { editionId: string }) {
   }, [book, readerType]);
 
   useEffect(() => {
+    if (!book || readerType === 'unknown' || readerReady) return undefined;
+    const timer = window.setTimeout(() => setReaderReady(true), 6000);
+    return () => window.clearTimeout(timer);
+  }, [book, readerReady, readerType]);
+
+  useEffect(() => {
     if (!hydrated || !preferenceType) return;
     writeCache(settingsCacheKey(preferenceType), settings);
     scheduleSettingsSync();
@@ -651,6 +657,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
             onActivity={handleReaderActivity}
             onTap={readerEvents.toggleControls}
             onReady={() => setReaderReady(true)}
+            onError={handleReaderError}
           />
         ) : (
           <ComicReader
