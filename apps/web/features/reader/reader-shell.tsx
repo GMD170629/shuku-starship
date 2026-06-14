@@ -179,15 +179,12 @@ function useReaderPwaSurface(theme: ReaderTheme) {
     applySurface();
     const frame = window.requestAnimationFrame(applySurface);
     const settleTimer = window.setTimeout(applySurface, 250);
-    const syncTimer = window.setInterval(applySurface, 500);
-    const headObserver = new MutationObserver(applySurface);
-    headObserver.observe(document.head, { attributes: true, childList: true, subtree: true, attributeFilter: ['content'] });
+    const lateSettleTimer = window.setTimeout(applySurface, 1000);
 
     return () => {
       window.cancelAnimationFrame(frame);
       window.clearTimeout(settleTimer);
-      window.clearInterval(syncTimer);
-      headObserver.disconnect();
+      window.clearTimeout(lateSettleTimer);
       document.documentElement.style.backgroundColor = previousHtmlBackground;
       document.body.style.backgroundColor = previousBodyBackground;
       document.documentElement.style.colorScheme = previousColorScheme;

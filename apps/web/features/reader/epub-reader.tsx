@@ -454,7 +454,7 @@ export function EbookReader({
       }, { scrollTop: scrollTopFromView(view), cfi, percentage: chapterPercent, chapterPercent, pageIndex, totalPages: locationTotal || null });
     };
 
-    const setupDocumentEvents = (document: ReaderDocument, locations: EpubLocationStore, runNext: () => Promise<void>, runPrev: () => Promise<void>) => {
+    const setupDocumentEvents = (document: ReaderDocument, locations: EpubLocationStore, ensureLocationsReady: () => Promise<unknown>, runNext: () => Promise<void>, runPrev: () => Promise<void>) => {
       if (document.__shukuReaderEventsBound) return;
       document.__shukuReaderEventsBound = true;
       let touchStartX = 0;
@@ -481,6 +481,7 @@ export function EbookReader({
           onActivityRef.current();
           const targetPercent = event.key === 'Home' ? 0 : 1;
           void runNavigation('progress', async () => {
+            await ensureLocationsReady();
             const cfi = locations.cfiFromPercentage(targetPercent);
             if (cfi) await renditionRef.current?.display(cfi);
           });
@@ -587,7 +588,12 @@ export function EbookReader({
         const rawNext = () => (isRtlBook(book as EpubBookWithReadiness) ? rendition.prev() : rendition.next());
         const rawPrev = () => (isRtlBook(book as EpubBookWithReadiness) ? rendition.next() : rendition.prev());
         const locations = book.locations as unknown as EpubLocationStore;
-        const locationsReady = locations.generate(1200).catch(() => undefined);
+        let locationsGeneration: Promise<unknown> | null = null;
+        const ensureLocationsReady = () => {
+          if (locations.length() > 0) return Promise.resolve();
+          locationsGeneration ??= locations.generate(1200).catch(() => undefined);
+          return locationsGeneration;
+        };
 
         const runNext = async () => {
           if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, 1)) return;
@@ -605,12 +611,11 @@ export function EbookReader({
           const document = view.document as ReaderDocument | undefined;
           if (!document) return;
           sanitizeEpubDocument(document);
-          setupDocumentEvents(document, locations, runNext, runPrev);
+          setupDocumentEvents(document, locations, ensureLocationsReady, runNext, runPrev);
         });
 
         rendition.on('relocated', async (location: Location) => {
           lastRelocatedAt = performance.now();
-          await locationsReady;
           const cfi = location.start?.cfi ?? '';
           if (cfi) currentCfiRef.current = cfi;
           const locationTotal = locations.length();
@@ -640,7 +645,7 @@ export function EbookReader({
           },
           jumpToProgress: async (value) => {
             onActivityRef.current();
-            await locationsReady;
+            await ensureLocationsReady();
             const cfi = locations.cfiFromPercentage(Math.max(0, Math.min(1, value / 100)));
             if (cfi) {
               await runNavigation('progress', async () => {
@@ -671,9 +676,8 @@ export function EbookReader({
               currentCfiRef.current = '';
             }
           }
-          await locationsReady;
           const fallbackPercentage = initialPercentageRef.current;
-          const fallbackCfi = fallbackPercentage > 0 ? locations.cfiFromPercentage(normalizedPercentage(fallbackPercentage)) : '';
+          const fallbackCfi = fallbackPercentage > 0 && locations.length() > 0 ? locations.cfiFromPercentage(normalizedPercentage(fallbackPercentage)) : '';
           await rendition.display(fallbackCfi || undefined);
         });
 
