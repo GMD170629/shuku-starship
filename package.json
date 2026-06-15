@@ -5,7 +5,9 @@
   "packageManager": "pnpm@9.12.2",
   "scripts": {
     "dev": "turbo run dev --parallel",
+    "dev:ios": "WEB_HOST=0.0.0.0 scripts/dev-test.sh",
     "build": "turbo run build",
+    "pwa:ios": "pnpm --filter @shuku/web build && WEB_MODE=start WEB_HOST=0.0.0.0 scripts/dev-test.sh",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "db:migrate": "cd apps/api-python && uv run python -m app.db.bootstrap",

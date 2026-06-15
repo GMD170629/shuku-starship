@@ -79,6 +79,13 @@ type ReadingUnitView = { id: string; unitType: string; title: string; href: stri
 type DetailMetadata = { language?: string | null; publisher?: string | null; publishedAt?: string | null; isbn?: string | null; items?: Array<{ source: string; metadataJson: unknown }> };
 type VolumeSectionView = { id: string; title: string; index: number; fileId: string; pageCount: number; coverUrl: string };
 
+function readerUrlForBook(book: WorkView, volumeSections: VolumeSectionView[]) {
+  const editionId = readableEditionId(book);
+  if (!editionId) return null;
+  const volumeId = book.recentVolumeId ?? volumeSections[0]?.id ?? null;
+  return volumeId ? `/reader/${editionId}?volume=${encodeURIComponent(volumeId)}` : `/reader/${editionId}`;
+}
+
 export function BookDetailPage({ bookId }: { bookId: string }) {
   const router = useRouter();
   const [book, setBook] = useState<WorkView | null>(null);
@@ -343,6 +350,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   if (!book || !displayBook) return <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取读物详情...</div>;
   const readerEditionId = readableEditionId(book);
   const hasVolumeSections = volumeSections.length > 0;
+  const readerUrl = readerUrlForBook(book, volumeSections);
 
   return (
     <div className="space-y-6">
@@ -376,7 +384,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
               <Progress value={book.progress} className="mt-3" />
             </div>
             <div className="mt-5 flex flex-wrap gap-3">
-              <Button disabled={!readerEditionId} icon={BookOpen} onClick={() => readerEditionId && router.push(volumeSections[0] ? `/reader/${readerEditionId}?volume=${encodeURIComponent(volumeSections[0].id)}` : `/reader/${readerEditionId}`)}>{book.progress > 0 ? '继续阅读' : '开始阅读'}</Button>
+              <Button disabled={!readerEditionId || !readerUrl} icon={BookOpen} onClick={() => readerUrl && router.push(readerUrl)}>{book.progress > 0 ? '继续阅读' : '开始阅读'}</Button>
               <Button disabled={!readerEditionId} variant="secondary" icon={Download} onClick={downloadPrimaryEdition}>下载</Button>
               <Button variant="secondary" icon={Edit3} onClick={() => setEditing((value) => !value)}>编辑信息</Button>
               <Button disabled={saving} variant="secondary" icon={Database} onClick={() => setMetadataLookupOpen(true)}>元数据识别</Button>

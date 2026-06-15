@@ -27,6 +27,7 @@ type ComicReaderProps = {
   onProgress: (progress: ReaderProgress, extra?: Record<string, unknown>) => void;
   onActivity: () => void;
   onTap: () => void;
+  onNextVolume?: () => void;
   onError: (message: string) => void;
 };
 
@@ -105,6 +106,7 @@ export function ComicReader({
   onProgress,
   onActivity,
   onTap,
+  onNextVolume,
   onError
 }: ComicReaderProps) {
   const scrollerRef = useRef<HTMLDivElement>(null);
@@ -293,7 +295,13 @@ export function ComicReader({
     const directionStep = direction === 'rtl'
       ? (intent === 'next' ? -1 : 1)
       : (intent === 'next' ? 1 : -1);
+    const currentIndex = Math.max(0, orderedPages.indexOf(page));
+    const targetIndex = currentIndex + directionStep * pageStep;
     onActivity();
+    if (intent === 'next' && (targetIndex < 0 || targetIndex >= orderedPages.length)) {
+      onNextVolume?.();
+      return;
+    }
     moveOrdered(directionStep * pageStep);
   }
 
@@ -368,7 +376,7 @@ export function ComicReader({
       }
     });
     return () => onControls(null);
-  }, [direction, mode, onActivity, onControls, orderedPages, page]);
+  }, [direction, mode, onActivity, onControls, onNextVolume, orderedPages, page]);
 
   function reportScrollProgress() {
     const element = scrollerRef.current;

@@ -64,6 +64,13 @@ html.pwa-native [data-allow-text-selection='true'] * {
 html.pwa-native [data-pwa-scroll='true'] {
   overflow-y: auto;
   overscroll-behavior-y: contain;
-  touch-action: pan-y;
+  touch-action: pan-x pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+html.pwa-native [data-pwa-scroll-x='true'] {
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  touch-action: pan-x;
   -webkit-overflow-scrolling: touch;
 }

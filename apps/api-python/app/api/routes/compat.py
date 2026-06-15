@@ -280,6 +280,57 @@ def _format_bytes(value: Any) -> str:
     return f"{size:.0f} {units[index]}" if index == 0 else f"{size:.1f} {units[index]}"
 
 
+def _coerce_int(value: Any, fallback: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _raw_progress_percent(progress: dict[str, Any] | None) -> int:
+    return max(0, min(100, round(float(progress.get("percent", 0) if progress else 0))))
+
+
+def _comic_cumulative_progress_percent(edition: dict[str, Any] | None, progress: dict[str, Any] | None, volumes: list[dict[str, Any]]) -> int:
+    raw_percent = _raw_progress_percent(progress)
+    if not edition or edition.get("format") != "COMIC" or not progress or len(volumes) <= 1:
+        return raw_percent
+    volume_id = progress.get("volumeId")
+    if not volume_id:
+        return raw_percent
+    total_pages = sum(max(0, _coerce_int(volume.get("pageCount"))) for volume in volumes)
+    if total_pages <= 0:
+        return raw_percent
+    completed_pages = 0
+    current_volume = None
+    for volume in volumes:
+        if volume.get("id") == volume_id:
+            current_volume = volume
+            break
+        completed_pages += max(0, _coerce_int(volume.get("pageCount")))
+    if not current_volume:
+        return raw_percent
+    current_page_count = max(1, _coerce_int(current_volume.get("pageCount"), 1))
+    current_page = _coerce_int(progress.get("page"))
+    if current_page <= 0:
+        current_page = round(current_page_count * (raw_percent / 100))
+    current_page = max(0, min(current_page_count, current_page))
+    return max(0, min(100, round(((completed_pages + current_page) / total_pages) * 100)))
+
+
+def _display_progress_percent(edition: dict[str, Any] | None, progress: dict[str, Any] | None, volumes: list[dict[str, Any]]) -> int:
+    return _comic_cumulative_progress_percent(edition, progress, volumes)
+
+
+def _progress_chapter_label(progress: dict[str, Any] | None, volumes: list[dict[str, Any]]) -> str:
+    if not progress or not progress.get("page"):
+        return "未开始"
+    volume_id = progress.get("volumeId")
+    volume = next((item for item in volumes if item.get("id") == volume_id), None) if volume_id else None
+    prefix = f"{volume.get('title') or '未命名卷'} · " if volume and len(volumes) > 1 else ""
+    return f"{prefix}第 {progress.get('page')} 页"
+
+
 def _labels() -> dict[str, dict[str, str]]:
     return {
         "format": {"EPUB": "EPUB", "COMIC": "漫画"},
@@ -329,7 +380,9 @@ def _work_view(db: Session, work: dict[str, Any], user_id: str | None = None) ->
     display = primary or (editions[0] if editions else None)
     recent = sorted(progress_by_edition.values(), key=lambda item: _dt(item.get("updatedAt")) or "", reverse=True)
     progress = recent[0] if recent else (progress_by_edition.get(display["id"]) if display else None)
-    percent = max(0, min(100, round(float(progress.get("percent", 0) if progress else 0))))
+    progress_edition = next((item for item in editions if progress and item["id"] == progress.get("editionId")), None) or display
+    progress_volumes = volumes_by_edition.get(progress_edition["id"], []) if progress_edition else []
+    percent = _display_progress_percent(progress_edition, progress, progress_volumes)
     labels = _labels()
     total_size = sum(int(file.get("sizeBytes") or 0) for files in files_by_edition.values() for file in files)
 
@@ -360,6 +413,7 @@ def _work_view(db: Session, work: dict[str, Any], user_id: str | None = None) ->
         e_progress = progress_by_edition.get(edition["id"])
         edition_files = files_by_edition.get(edition["id"], [])
         edition_volumes = [volume_view(volume) for volume in volumes_by_edition.get(edition["id"], [])]
+        raw_edition_volumes = volumes_by_edition.get(edition["id"], [])
         edition_views.append(
             {
                 "id": edition["id"],
@@ -372,7 +426,7 @@ def _work_view(db: Session, work: dict[str, Any], user_id: str | None = None) ->
                 "size": _format_bytes(edition.get("sizeBytes")),
                 "pageCount": edition.get("pageCount"),
                 "chapterCount": edition.get("chapterCount"),
-                "progress": max(0, min(100, round(float(e_progress.get("percent", 0) if e_progress else 0)))),
+                "progress": _display_progress_percent(edition, e_progress, raw_edition_volumes),
                 "lastReadAt": _dt(e_progress.get("updatedAt")) if e_progress else None,
                 "coverUrl": f"/api/editions/{edition['id']}/cover?size=medium",
                 "files": [file_view(file) for file in edition_files],
@@ -418,7 +472,7 @@ def _work_view(db: Session, work: dict[str, Any], user_id: str | None = None) ->
         "added": (_dt(work.get("createdAt")) or "")[:10],
         "lastRead": (_dt(progress.get("updatedAt")) or "")[:10] if progress else "尚未阅读",
         "lastReadAt": _dt(progress.get("updatedAt")) if progress else None,
-        "chapter": f"第 {progress.get('page')} 页" if progress and progress.get("page") else "未开始",
+        "chapter": _progress_chapter_label(progress, progress_volumes if progress_edition and progress_edition.get("format") == "COMIC" else []),
         "chapterCount": display.get("chapterCount") if display else None,
         "pageCount": display.get("pageCount") if display else None,
         "desc": work.get("description") or (display.get("description") if display else None) or "暂无简介，可在详情页补充元数据。",
@@ -438,6 +492,7 @@ def _work_view(db: Session, work: dict[str, Any], user_id: str | None = None) ->
         "primaryEditionId": work.get("primaryEditionId"),
         "primaryEditionName": primary.get("versionName") if primary else None,
         "recentEditionId": progress.get("editionId") if progress else (display["id"] if display else None),
+        "recentVolumeId": progress.get("volumeId") if progress else None,
         "volumes": volumes,
         "editions": edition_views,
     }
@@ -640,7 +695,8 @@ def dashboard_continue_reading(request: Request, db: Session = Depends(get_db), 
     work = _get_work(db, progress["workId"])
     if not work or work.get("hidden"):
         return ok({"item": None})
-    return ok({"item": {"book": _work_view(db, work, user.id), "progress": progress.get("percent") or 0, "lastReadAt": _dt(progress.get("updatedAt")), "chapter": f"第 {progress.get('page')} 页" if progress.get("page") else None, "position": progress.get("position")}})
+    book = _work_view(db, work, user.id)
+    return ok({"item": {"book": book, "progress": book.get("progress") or 0, "lastReadAt": _dt(progress.get("updatedAt")), "chapter": book.get("chapter") if book.get("chapter") != "未开始" else None, "position": progress.get("position")}})
 
 
 @router.get("/dashboard/system-status")
@@ -1106,6 +1162,8 @@ def reader_bootstrap(edition_id: str, request: Request, db: Session = Depends(ge
         requested_volume_id = request.query_params.get("volume")
         volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
         volume = next((item for item in volumes if item["id"] == requested_volume_id), None) if requested_volume_id else None
+        if not volume and progress and progress.get("volumeId"):
+            volume = next((item for item in volumes if item["id"] == progress.get("volumeId")), None)
         volume = volume or (volumes[0] if volumes else None)
         page_units = [unit for unit in units if not volume or unit.get("volumeId") == volume["id"]]
         if volume and not page_units:

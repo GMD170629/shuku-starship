@@ -5,6 +5,24 @@ import { useRouter } from 'next/navigation';
 import { FormEvent, useState } from 'react';
 import { Button } from '../../components/ui/button';
 
+type LoginPayload = { ok: boolean; error?: { message?: string } };
+
+async function readLoginPayload(response: Response): Promise<LoginPayload> {
+  const contentType = response.headers.get('content-type') ?? '';
+  if (contentType.includes('application/json')) {
+    return (await response.json()) as LoginPayload;
+  }
+  const text = await response.text().catch(() => '');
+  return {
+    ok: false,
+    error: {
+      message: response.status >= 500
+        ? '登录服务暂时不可用，请确认 Python API 已启动。'
+        : text.trim() || `登录失败（HTTP ${response.status}）`
+    }
+  };
+}
+
 export function LoginPage() {
   const router = useRouter();
   const [login, setLogin] = useState('admin@example.com');
@@ -16,21 +34,26 @@ export function LoginPage() {
     event.preventDefault();
     setLoading(true);
     setError('');
-    const response = await fetch('/api/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: login, username: login, password })
-    });
-    const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
-    setLoading(false);
-    if (!payload.ok) {
-      setError(payload.error?.message ?? '登录失败');
-      return;
+    try {
+      const response = await fetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: login.trim(), username: login.trim(), password })
+      });
+      const payload = await readLoginPayload(response);
+      if (!response.ok || !payload.ok) {
+        setError(payload.error?.message ?? '登录失败');
+        return;
+      }
+      const next = new URLSearchParams(window.location.search).get('next');
+      const safeNext = next?.startsWith('/') && !next.startsWith('//') ? next : '/library';
+      router.replace(safeNext);
+      router.refresh();
+    } catch {
+      setError('无法连接登录服务，请确认 Web 和 Python API 都已启动。');
+    } finally {
+      setLoading(false);
     }
-    const next = new URLSearchParams(window.location.search).get('next');
-    const safeNext = next?.startsWith('/') && !next.startsWith('//') ? next : '/library';
-    router.replace(safeNext);
-    router.refresh();
   }
 
   return (

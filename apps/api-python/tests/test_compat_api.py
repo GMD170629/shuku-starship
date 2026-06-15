@@ -2729,6 +2729,89 @@ def test_reader_bootstrap_matches_node_shapes_for_epub_and_comic(client, db_sess
     assert [page["pageIndex"] for page in alt_data["pages"]] == [1, 2, 3]
 
 
+def test_multi_volume_comic_progress_is_cumulative_and_bootstrap_resumes_recent_volume(client, db_session, test_settings, tmp_path):
+    create_worker_tables(db_session)
+    db_session.execute(
+        text(
+            """
+            CREATE TABLE LibraryReadingProgress (
+                id TEXT PRIMARY KEY, userId TEXT, workId TEXT, editionId TEXT, volumeId TEXT,
+                readerType TEXT, position TEXT, page INTEGER, percent REAL, extra TEXT,
+                createdAt TEXT, updatedAt TEXT
+            )
+            """
+        )
+    )
+    db_session.commit()
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    _login(client, db_session)
+    comic = tmp_path / "comic.zip"
+    write_comic_fixture(comic)
+    with comic.open("rb") as handle:
+        imported = client.post("/api/works/import", files={"file": ("comic.zip", handle, "application/zip")})
+    payload = imported.json()["data"]["results"][0]
+    edition_id = payload["editionId"]
+    work_id = payload["workId"]
+    first_volume_id = payload["volumeId"]
+    second_volume_id = "comic-volume-2"
+    db_session.execute(
+        text(
+            """
+            INSERT INTO LibraryVolume (
+                id, editionId, title, volumeIndex, sortOrder, pageCount, chapterCount, coverPath, createdAt, updatedAt
+            ) VALUES (:id, :edition_id, '第 2 卷', 2, 2000, 3, NULL, NULL, 'now', 'now')
+            """
+        ),
+        {"id": second_volume_id, "edition_id": edition_id},
+    )
+    db_session.execute(
+        text(
+            """
+            INSERT INTO LibraryReadingUnit (
+                id, editionId, volumeId, fileId, unitType, title, href, mediaType, sortOrder,
+                width, height, size, metadataJson, createdAt, updatedAt
+            ) VALUES
+                ('comic-v2-page-1', :edition_id, :volume_id, NULL, 'page', '001.jpg', '001.jpg', 'image/jpeg', 0, NULL, NULL, NULL, '{}', 'now', 'now'),
+                ('comic-v2-page-2', :edition_id, :volume_id, NULL, 'page', '002.jpg', '002.jpg', 'image/jpeg', 1, NULL, NULL, NULL, '{}', 'now', 'now'),
+                ('comic-v2-page-3', :edition_id, :volume_id, NULL, 'page', '003.jpg', '003.jpg', 'image/jpeg', 2, NULL, NULL, NULL, '{}', 'now', 'now')
+            """
+        ),
+        {"edition_id": edition_id, "volume_id": second_volume_id},
+    )
+    db_session.execute(text("UPDATE LibraryEdition SET pageCount = 5 WHERE id = :edition_id"), {"edition_id": edition_id})
+    db_session.commit()
+
+    first_progress = client.post(
+        f"/api/editions/{edition_id}/progress",
+        json={"readerType": "comic", "volumeId": first_volume_id, "page": 2, "position": "2", "percent": 100, "extra": {"volumeId": first_volume_id, "pageIndex": 2}},
+    )
+    assert first_progress.status_code == 200
+    first_detail = client.get(f"/api/works/{work_id}").json()["data"]["book"]
+    assert first_detail["progress"] == 40
+    assert first_detail["recentVolumeId"] == first_volume_id
+    assert first_detail["chapter"] == "第 1 卷 · 第 2 页"
+
+    second_progress = client.post(
+        f"/api/editions/{edition_id}/progress",
+        json={"readerType": "comic", "volumeId": second_volume_id, "page": 1, "position": "1", "percent": 0, "extra": {"volumeId": second_volume_id, "pageIndex": 1}},
+    )
+    assert second_progress.status_code == 200
+    second_detail = client.get(f"/api/works/{work_id}").json()["data"]["book"]
+    assert second_detail["progress"] == 60
+    assert second_detail["recentVolumeId"] == second_volume_id
+    assert second_detail["chapter"] == "第 2 卷 · 第 1 页"
+
+    continue_item = client.get("/api/dashboard/continue-reading").json()["data"]["item"]
+    assert continue_item["progress"] == 60
+    assert continue_item["book"]["recentVolumeId"] == second_volume_id
+    assert continue_item["chapter"] == "第 2 卷 · 第 1 页"
+
+    resumed = client.get(f"/api/reader/{edition_id}/bootstrap").json()["data"]
+    assert resumed["volumeSection"]["id"] == second_volume_id
+    explicit = client.get(f"/api/reader/{edition_id}/bootstrap?volume={first_volume_id}").json()["data"]
+    assert explicit["volumeSection"]["id"] == first_volume_id
+
+
 def test_volume_move_reorders_epub_and_comic_volumes_and_rejects_cross_work(client, db_session, test_settings, tmp_path):
     create_worker_tables(db_session)
     test_settings.resolved_storage_root.mkdir(parents=True)

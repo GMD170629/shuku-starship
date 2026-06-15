@@ -23,6 +23,25 @@ const SHELL_URLS = [
 ];
 const PRIVATE_CACHES = [PRIVATE_COVER_CACHE, PRIVATE_API_CACHE];
 
+function debugLog(level, message, details) {
+  self.clients.matchAll({ includeUncontrolled: true, type: 'window' })
+    .then((clients) => {
+      clients.forEach((client) => {
+        client.postMessage({
+          type: 'PWA_DEBUG_LOG',
+          payload: {
+            level,
+            source: 'service-worker',
+            message,
+            details,
+            time: new Date().toISOString()
+          }
+        });
+      });
+    })
+    .catch(() => undefined);
+}
+
 function isSameOrigin(url) {
   return url.origin === self.location.origin;
 }
@@ -136,18 +155,32 @@ async function clearPrivateCaches() {
 }
 
 self.addEventListener('install', (event) => {
+  debugLog('info', 'install', VERSION);
   event.waitUntil(
     caches.open(SHELL_CACHE)
       .then((cache) => cache.addAll(SHELL_URLS))
-      .then(() => self.skipWaiting())
+      .then(() => {
+        debugLog('info', 'shell cached', SHELL_URLS.length);
+        return self.skipWaiting();
+      })
+      .catch((error) => {
+        debugLog('error', 'install failed', error?.message || String(error));
+        throw error;
+      })
   );
 });
 
 self.addEventListener('activate', (event) => {
+  debugLog('info', 'activate', VERSION);
   event.waitUntil(
     caches.keys()
       .then((keys) => Promise.all(keys.filter((key) => !key.startsWith(VERSION)).map((key) => caches.delete(key))))
       .then(() => self.clients.claim())
+      .then(() => debugLog('info', 'clients claimed', VERSION))
+      .catch((error) => {
+        debugLog('error', 'activate failed', error?.message || String(error));
+        throw error;
+      })
   );
 });
 
@@ -174,9 +207,11 @@ self.addEventListener('fetch', (event) => {
 
 self.addEventListener('message', (event) => {
   if (event.data?.type === 'SKIP_WAITING') {
+    debugLog('info', 'skip waiting requested');
     self.skipWaiting();
   }
   if (event.data?.type === 'CLEAR_PRIVATE_CACHES') {
-    event.waitUntil(clearPrivateCaches());
+    debugLog('info', 'clear private caches requested');
+    event.waitUntil(clearPrivateCaches().then(() => debugLog('info', 'private caches cleared')));
   }
 });

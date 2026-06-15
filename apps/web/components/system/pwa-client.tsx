@@ -1,6 +1,6 @@
 'use client';
 
-import { Download, RefreshCw, Share, Wifi, WifiOff, X } from 'lucide-react';
+import { Bug, Clipboard, Download, RefreshCw, Share, Trash2, Wifi, WifiOff, X } from 'lucide-react';
 import { usePathname } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { clearPrivatePwaData, flushOfflineQueues } from '../../lib/pwa/progressQueue';
@@ -13,6 +13,17 @@ type BeforeInstallPromptEvent = Event & {
 
 const INSTALL_DISMISSED_KEY = 'shuku:pwa:install-dismissed';
 const INSTALL_ACCEPTED_KEY = 'shuku:pwa:install-accepted';
+const PWA_DEBUG_ENABLED_KEY = 'shuku:pwa:debug-enabled';
+
+type DebugLevel = 'log' | 'info' | 'warn' | 'error';
+type DebugLog = {
+  id: number;
+  level: DebugLevel;
+  time: string;
+  source: string;
+  message: string;
+};
+type ConsoleMethod = 'log' | 'info' | 'warn' | 'error';
 
 function isStandaloneDisplay() {
   if (typeof window === 'undefined') return false;
@@ -214,6 +225,7 @@ export function PwaClient() {
         />
       ) : null}
       {updateWorker ? <UpdateAvailableToast onRefresh={activateUpdate} /> : null}
+      <PwaDebugPanel nativeLikeSurface={nativeLikeSurface} />
     </>
   );
 }
@@ -276,6 +288,205 @@ function UpdateAvailableToast({ onRefresh }: { onRefresh: () => void }) {
         <RefreshCw size={17} />
         立即刷新
       </button>
+    </div>
+  );
+}
+
+function shouldEnablePwaDebug() {
+  if (typeof window === 'undefined') return false;
+  const params = new URLSearchParams(window.location.search);
+  const requested = params.get('debug') ?? params.get('pwaDebug');
+  if (requested === '1' || requested === 'true') {
+    localStorage.setItem(PWA_DEBUG_ENABLED_KEY, '1');
+    return true;
+  }
+  if (requested === '0' || requested === 'false') {
+    localStorage.removeItem(PWA_DEBUG_ENABLED_KEY);
+    return false;
+  }
+  return localStorage.getItem(PWA_DEBUG_ENABLED_KEY) === '1';
+}
+
+function stringifyDebugValue(value: unknown) {
+  if (value instanceof Error) return value.stack || value.message;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'undefined') return 'undefined';
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function getStandaloneLabel() {
+  if (typeof window === 'undefined') return 'unknown';
+  if (isStandaloneDisplay()) return 'standalone';
+  if (window.matchMedia('(display-mode: browser)').matches) return 'browser';
+  return 'unknown';
+}
+
+function PwaDebugPanel({ nativeLikeSurface }: { nativeLikeSurface: boolean }) {
+  const [enabled, setEnabled] = useState(false);
+  const [collapsed, setCollapsed] = useState(true);
+  const [copied, setCopied] = useState(false);
+  const [logs, setLogs] = useState<DebugLog[]>([]);
+  const nextIdRef = useRef(1);
+
+  function appendLog(level: DebugLevel, source: string, parts: unknown[]) {
+    const entry: DebugLog = {
+      id: nextIdRef.current,
+      level,
+      source,
+      time: new Date().toLocaleTimeString('zh-CN', { hour12: false }),
+      message: parts.map(stringifyDebugValue).join(' ')
+    };
+    nextIdRef.current += 1;
+    setLogs((current) => [...current.slice(-119), entry]);
+  }
+
+  useEffect(() => {
+    setEnabled(shouldEnablePwaDebug());
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) return undefined;
+
+    const methods: ConsoleMethod[] = ['log', 'info', 'warn', 'error'];
+    const originals = new Map<ConsoleMethod, typeof console.log>();
+    methods.forEach((method) => {
+      const original = console[method];
+      originals.set(method, original);
+      console[method] = (...args: unknown[]) => {
+        original.apply(console, args);
+        appendLog(method, 'console', args);
+      };
+    });
+
+    function recordOnlineState() {
+      appendLog(navigator.onLine ? 'info' : 'warn', 'network', [navigator.onLine ? 'online' : 'offline']);
+    }
+
+    function recordVisibility() {
+      appendLog('info', 'page', [`visibility=${document.visibilityState}`]);
+    }
+
+    function recordError(event: ErrorEvent) {
+      appendLog('error', 'window', [event.message, event.filename ? `${event.filename}:${event.lineno}:${event.colno}` : '']);
+    }
+
+    function recordUnhandledRejection(event: PromiseRejectionEvent) {
+      appendLog('error', 'promise', [event.reason]);
+    }
+
+    function recordServiceWorkerMessage(event: MessageEvent) {
+      if (event.data?.type !== 'PWA_DEBUG_LOG') return;
+      const payload = event.data.payload as { level?: DebugLevel; source?: string; message?: string; details?: unknown };
+      appendLog(payload.level ?? 'info', payload.source ?? 'service-worker', [payload.message, payload.details].filter(Boolean));
+    }
+
+    function recordControllerChange() {
+      appendLog('info', 'service-worker', ['controllerchange']);
+    }
+
+    appendLog('info', 'pwa', [
+      `mode=${getStandaloneLabel()}`,
+      `online=${navigator.onLine}`,
+      `secure=${window.isSecureContext}`,
+      `sw=${'serviceWorker' in navigator ? 'supported' : 'unsupported'}`
+    ]);
+
+    navigator.serviceWorker?.getRegistration().then((registration) => {
+      appendLog('info', 'service-worker', [
+        registration
+          ? `scope=${registration.scope} active=${registration.active?.state ?? 'none'} waiting=${registration.waiting?.state ?? 'none'}`
+          : 'not registered'
+      ]);
+    }).catch((error) => appendLog('warn', 'service-worker', ['registration lookup failed', error]));
+
+    window.addEventListener('online', recordOnlineState);
+    window.addEventListener('offline', recordOnlineState);
+    document.addEventListener('visibilitychange', recordVisibility);
+    window.addEventListener('error', recordError);
+    window.addEventListener('unhandledrejection', recordUnhandledRejection);
+    navigator.serviceWorker?.addEventListener('message', recordServiceWorkerMessage);
+    navigator.serviceWorker?.addEventListener('controllerchange', recordControllerChange);
+
+    return () => {
+      methods.forEach((method) => {
+        const original = originals.get(method);
+        if (original) console[method] = original;
+      });
+      window.removeEventListener('online', recordOnlineState);
+      window.removeEventListener('offline', recordOnlineState);
+      document.removeEventListener('visibilitychange', recordVisibility);
+      window.removeEventListener('error', recordError);
+      window.removeEventListener('unhandledrejection', recordUnhandledRejection);
+      navigator.serviceWorker?.removeEventListener('message', recordServiceWorkerMessage);
+      navigator.serviceWorker?.removeEventListener('controllerchange', recordControllerChange);
+    };
+  }, [enabled]);
+
+  function disableDebug() {
+    localStorage.removeItem(PWA_DEBUG_ENABLED_KEY);
+    setEnabled(false);
+  }
+
+  async function copyLogs() {
+    const text = logs.map((log) => `[${log.time}] ${log.source}/${log.level}: ${log.message}`).join('\n');
+    await navigator.clipboard?.writeText(text).catch(() => undefined);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1400);
+  }
+
+  if (!enabled) return null;
+
+  return (
+    <div className={cn('fixed inset-x-2 z-[120] mx-auto max-w-xl text-slate-50', nativeLikeSurface ? 'bottom-24' : 'bottom-3')}>
+      {collapsed ? (
+        <button
+          type="button"
+          onClick={() => setCollapsed(false)}
+          className="ml-auto flex min-h-11 items-center gap-2 rounded-full border border-slate-700 bg-slate-950/95 px-4 text-xs font-medium shadow-2xl shadow-slate-950/25 backdrop-blur"
+          aria-label="打开 PWA 调试面板"
+        >
+          <Bug size={16} />
+          PWA Debug
+        </button>
+      ) : (
+        <div className="overflow-hidden rounded-2xl border border-slate-700 bg-slate-950/95 shadow-2xl shadow-slate-950/30 backdrop-blur">
+          <div className="flex min-h-12 items-center justify-between gap-3 border-b border-slate-800 px-3">
+            <div className="flex items-center gap-2 text-xs font-semibold">
+              <Bug size={15} />
+              PWA Debug
+            </div>
+            <div className="flex items-center gap-1">
+              <button type="button" onClick={() => { void copyLogs(); }} className="flex h-9 w-9 items-center justify-center rounded-full text-slate-300 transition hover:bg-slate-800" aria-label="复制日志">
+                <Clipboard size={15} />
+              </button>
+              <button type="button" onClick={() => setLogs([])} className="flex h-9 w-9 items-center justify-center rounded-full text-slate-300 transition hover:bg-slate-800" aria-label="清空日志">
+                <Trash2 size={15} />
+              </button>
+              <button type="button" onClick={() => setCollapsed(true)} className="flex h-9 w-9 items-center justify-center rounded-full text-slate-300 transition hover:bg-slate-800" aria-label="收起调试面板">
+                <X size={15} />
+              </button>
+            </div>
+          </div>
+          {copied ? <div className="border-b border-emerald-900/60 bg-emerald-950 px-3 py-2 text-xs text-emerald-100">日志已复制</div> : null}
+          <div className="max-h-72 overflow-y-auto px-3 py-2 font-mono text-[11px] leading-5" data-pwa-scroll="true">
+            {logs.length ? logs.map((log) => (
+              <div key={log.id} className={cn('break-words border-b border-slate-900 py-1 last:border-0', log.level === 'error' ? 'text-rose-200' : log.level === 'warn' ? 'text-amber-200' : 'text-slate-200')}>
+                <span className="text-slate-500">{log.time}</span>
+                <span className="ml-2 text-slate-400">{log.source}/{log.level}</span>
+                <span className="ml-2">{log.message}</span>
+              </div>
+            )) : <div className="py-5 text-center text-slate-500">暂无日志</div>}
+          </div>
+          <div className="flex items-center justify-between gap-2 border-t border-slate-800 px-3 py-2 text-[11px] text-slate-400">
+            <span>URL 加 ?debug=0 可关闭持久开关</span>
+            <button type="button" onClick={disableDebug} className="rounded-full px-3 py-1.5 text-slate-300 transition hover:bg-slate-800">关闭</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

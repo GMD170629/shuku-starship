@@ -107,6 +107,14 @@ function readableEditionId(book: WorkView) {
   return book.recentEditionId ?? book.editionId ?? book.primaryEditionId ?? book.editions.find((edition) => !edition.hidden)?.id ?? null;
 }
 
+function readerUrlForBook(book: WorkView, tab: MobileTab) {
+  const editionId = readableEditionId(book);
+  if (!editionId) return null;
+  const params = new URLSearchParams({ from: 'mobile', tab });
+  if (book.recentVolumeId) params.set('volume', book.recentVolumeId);
+  return `/reader/${editionId}?${params.toString()}`;
+}
+
 function storeReaderOpeningContext(book: WorkView, sourceElement?: HTMLElement | null) {
   const editionId = readableEditionId(book);
   if (!editionId) return;
@@ -229,10 +237,10 @@ export function MobileReaderApp() {
   }, [books, readingBooks]);
 
   function openReader(book: WorkView, sourceElement?: HTMLElement | null) {
-    const editionId = readableEditionId(book);
-    if (!editionId) return;
+    const url = readerUrlForBook(book, tab);
+    if (!url) return;
     storeReaderOpeningContext(book, sourceElement);
-    router.push(`/reader/${editionId}?from=mobile&tab=${tab}`);
+    router.push(url);
   }
 
   async function uploadBook(event: ChangeEvent<HTMLInputElement>) {
@@ -659,8 +667,9 @@ function RecentCoverRail({ books, onOpenBook }: { books: WorkView[]; onOpenBook:
   const displayBooks = repeatBooks(books, 5);
   return (
     <div
-      className="flex overflow-hidden"
-      style={{ gap: sv(10.5), paddingBottom: sv(2) }}
+      data-pwa-scroll-x="true"
+      className="-mx-1 flex overflow-x-auto overflow-y-hidden px-1"
+      style={{ gap: sv(10.5), paddingBottom: sv(8), scrollbarWidth: 'none' }}
     >
       {displayBooks.map((book, index) => (
         <button

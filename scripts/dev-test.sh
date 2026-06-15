@@ -32,6 +32,8 @@ fi
 TEST_PYTHON_DATABASE_URL="${TEST_PYTHON_DATABASE_URL:-}"
 PYTHON_API_PORT="8000"
 WEB_PORT="${WEB_PORT:-3000}"
+WEB_HOST="${WEB_HOST:-0.0.0.0}"
+WEB_MODE="${WEB_MODE:-dev}"
 MONITOR_ROOT="${MONITOR_ROOT:-$ROOT_DIR/books}"
 STORAGE_ROOT="${STORAGE_ROOT:-$ROOT_DIR/storage}"
 DOWNLOAD_INBOX_PATH="${DOWNLOAD_INBOX_PATH:-$STORAGE_ROOT/downloads/inbox}"
@@ -141,12 +143,19 @@ fi
 
 echo "Starting test service:"
 echo "  Web:          http://localhost:$WEB_PORT"
+echo "  Web mode:     $WEB_MODE"
 echo "  Health check: http://localhost:$WEB_PORT/api/health"
 echo "  Python API:   http://127.0.0.1:$PYTHON_API_PORT"
 echo "  Database:     $TEST_DATABASE_URL"
 echo "  Python DB:    $TEST_PYTHON_DATABASE_URL"
 echo "  Monitor root: $MONITOR_ROOT"
 echo "  Storage root: $STORAGE_ROOT"
+if command -v ipconfig >/dev/null 2>&1; then
+  LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || true)"
+  if [ -n "$LAN_IP" ]; then
+    echo "  iOS LAN URL:   http://$LAN_IP:$WEB_PORT/?debug=1"
+  fi
+fi
 
 (
   cd apps/api-python
@@ -180,6 +189,10 @@ done
     uv run --extra dev python -m app.worker.main
 ) &
 
-pnpm --filter @shuku/web exec next dev -p "$WEB_PORT" &
+if [ "$WEB_MODE" = "start" ]; then
+  pnpm --filter @shuku/web exec next start -H "$WEB_HOST" -p "$WEB_PORT" &
+else
+  pnpm --filter @shuku/web exec next dev -H "$WEB_HOST" -p "$WEB_PORT" &
+fi
 
 wait

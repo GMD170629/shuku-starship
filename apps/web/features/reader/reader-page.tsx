@@ -576,6 +576,26 @@ export function ReaderPage({ editionId }: { editionId: string }) {
       .finally(() => setVolumeNavigationLoading(false));
   }
 
+  function handleNextComicVolume() {
+    if (volumeNavigationLoading || !currentVolumeSection) return;
+    const currentIndex = volumeSections.findIndex((volume) => volume.id === currentVolumeSection.id);
+    const nextVolume = currentIndex >= 0 ? volumeSections[currentIndex + 1] : null;
+    if (!nextVolume) return;
+    sendProgress(true);
+    setVolumeNavigationLoading(true);
+    setReaderReady(false);
+    replaceReaderVolumeUrl(nextVolume.id);
+    loadBootstrap(editionId, nextVolume.id)
+      .then(() => {
+        const nextProgress = defaultComicProgress(nextVolume, nextVolume.pageCount);
+        setProgress(nextProgress.progress);
+        setProgressExtra(nextProgress.extra);
+        setReaderReady(true);
+      })
+      .catch((reason) => setError(reason instanceof Error ? reason.message : '读取下一卷失败'))
+      .finally(() => setVolumeNavigationLoading(false));
+  }
+
   function handleSelectComicPage(pageIndex: number) {
     void controls?.jumpToIndex?.(pageIndex);
   }
@@ -678,6 +698,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
             onProgress={handleProgress}
             onActivity={handleReaderActivity}
             onTap={readerEvents.toggleControls}
+            onNextVolume={handleNextComicVolume}
             onError={handleReaderError}
           />
         )}

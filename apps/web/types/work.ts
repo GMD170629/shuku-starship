@@ -64,6 +64,7 @@ export type WorkView = {
   primaryEditionId: string | null;
   primaryEditionName: string | null;
   recentEditionId: string | null;
+  recentVolumeId: string | null;
   volumes: Array<{
     id: string;
     editionId: string;
