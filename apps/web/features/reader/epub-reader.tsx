@@ -56,6 +56,7 @@ type ReaderDocument = Document & {
 type NavigationIntent = 'initial' | 'next' | 'prev' | 'display' | 'progress' | 'index' | 'scroll';
 
 type RenditionWithReporting = Rendition & {
+  currentLocation?: () => Location | Location[] | null;
   reportLocation?: () => unknown;
 };
 
@@ -291,6 +292,17 @@ function reportRenditionLocation(rendition: Rendition | null) {
   }
 }
 
+function currentRenditionLocation(rendition: Rendition | null) {
+  const getter = (rendition as RenditionWithReporting | null)?.currentLocation;
+  if (typeof getter !== 'function') return null;
+  try {
+    const location = getter.call(rendition);
+    return Array.isArray(location) ? location[0] ?? null : location;
+  } catch {
+    return null;
+  }
+}
+
 export function EbookReader({
   editionId,
   volumeId,
@@ -368,6 +380,7 @@ export function EbookReader({
     let localRendition: Rendition | null = null;
     let lastRenderedAt = 0;
     let lastRelocatedAt = 0;
+    let emitCurrentLocation: (() => void) | null = null;
     const abortController = new AbortController();
 
     setLoading(true);
@@ -425,7 +438,12 @@ export function EbookReader({
           if (shouldAnimate) await runKindlePageTurn(container, direction, action);
           else await waitForNavigationAction(action);
           reportRenditionLocation(localRendition);
+          emitCurrentLocation?.();
           if (cover) await finishVisibleCommit(startedAt);
+          emitCurrentLocation?.();
+          window.setTimeout(() => {
+            if (!canceled && !readerDestroyed && navigationTokenRef.current === token) emitCurrentLocation?.();
+          }, 80);
         } finally {
           resetPageTurnAnimation(container);
           if (cover && navigationTokenRef.current === token && !canceled) {
@@ -445,13 +463,14 @@ export function EbookReader({
       const chapterPercent = clampPercent((scrollTopFromView(view) / max) * 100);
       const locationTotal = locations.length();
       const pageIndex = cfi && locationTotal > 0 ? Math.max(1, locations.locationFromCfi(cfi) + 1) : 1;
+      const percent = locationTotal > 1 ? clampPercent(((pageIndex - 1) / (locationTotal - 1)) * 100) : chapterPercent;
       onProgressRef.current({
         page: pageIndex,
         total: locationTotal || null,
-        percent: chapterPercent,
+        percent,
         position: cfi,
-        label: `${chapterPercent}%`
-      }, { scrollTop: scrollTopFromView(view), cfi, percentage: chapterPercent, chapterPercent, pageIndex, totalPages: locationTotal || null });
+        label: locationTotal ? `第 ${pageIndex} / ${locationTotal} 页` : `${chapterPercent}%`
+      }, { scrollTop: scrollTopFromView(view), cfi, percentage: percent, chapterPercent, pageIndex, totalPages: locationTotal || null });
     };
 
     const setupDocumentEvents = (document: ReaderDocument, locations: EpubLocationStore, ensureLocationsReady: () => Promise<unknown>, runNext: () => Promise<void>, runPrev: () => Promise<void>) => {
@@ -594,13 +613,72 @@ export function EbookReader({
           locationsGeneration ??= locations.generate(1200).catch(() => undefined);
           return locationsGeneration;
         };
+        const emitLocationProgress = (location: Location) => {
+          lastRelocatedAt = performance.now();
+          const cfi = location.start?.cfi ?? '';
+          if (cfi) currentCfiRef.current = cfi;
+          const sectionIndex = Math.max(0, Math.round(location.start?.index ?? 0));
+          const displayed = location.start?.displayed;
+          const displayedPage = typeof displayed?.page === 'number' && Number.isFinite(displayed.page)
+            ? Math.max(1, Math.round(displayed.page))
+            : null;
+          const displayedTotal = typeof displayed?.total === 'number' && Number.isFinite(displayed.total) && displayed.total > 0
+            ? Math.max(1, Math.round(displayed.total))
+            : null;
+          const locationTotal = locations.length();
+          const locationIndex = cfi && locationTotal > 0 ? locations.locationFromCfi(cfi) : Math.max(0, (location.start?.index ?? 0));
+          const fixedPage = locationTotal > 0 ? Math.max(1, Math.min(locationTotal, locationIndex + 1)) : Math.max(1, locationIndex + 1);
+          const fixedTotal = locationTotal || null;
+          const percent = fixedTotal && fixedTotal > 1
+            ? clampPercent(((fixedPage - 1) / (fixedTotal - 1)) * 100)
+            : clampPercent((location.start?.percentage ?? 0) * 100);
+          const scrollTop = ebookFlow === 'scrolled' ? scrollTopFromView(currentViewRef.current) : 0;
+          onProgressRef.current({
+            page: fixedPage,
+            total: fixedTotal,
+            percent,
+            position: cfi,
+            label: fixedTotal ? `第 ${fixedPage} / ${fixedTotal} 页` : `第 ${fixedPage} 页`
+          }, {
+            percentage: percent,
+            pageIndex: fixedPage,
+            totalPages: fixedTotal,
+            sectionIndex,
+            sectionPage: displayedPage,
+            sectionTotalPages: displayedTotal,
+            locationIndex,
+            locationTotal: locationTotal || null,
+            chapterIndex: location.start?.index ?? 0,
+            scrollTop,
+            cfi
+          });
+        };
+        emitCurrentLocation = () => {
+          const location = currentRenditionLocation(localRendition);
+          if (location) emitLocationProgress(location);
+          else reportRenditionLocation(localRendition);
+        };
 
         const runNext = async () => {
-          if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, 1)) return;
+          if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, 1)) {
+            const view = currentViewRef.current;
+            if (view) {
+              window.requestAnimationFrame(() => updateScrolledProgress(view, locations));
+              window.setTimeout(() => updateScrolledProgress(view, locations), 80);
+            }
+            return;
+          }
           await runNavigation('next', rawNext, { direction: 1 });
         };
         const runPrev = async () => {
-          if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, -1)) return;
+          if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, -1)) {
+            const view = currentViewRef.current;
+            if (view) {
+              window.requestAnimationFrame(() => updateScrolledProgress(view, locations));
+              window.setTimeout(() => updateScrolledProgress(view, locations), 80);
+            }
+            return;
+          }
           await runNavigation('prev', rawPrev, { direction: -1 });
         };
 
@@ -614,25 +692,7 @@ export function EbookReader({
           setupDocumentEvents(document, locations, ensureLocationsReady, runNext, runPrev);
         });
 
-        rendition.on('relocated', async (location: Location) => {
-          lastRelocatedAt = performance.now();
-          const cfi = location.start?.cfi ?? '';
-          if (cfi) currentCfiRef.current = cfi;
-          const locationTotal = locations.length();
-          const globalPage = cfi && locationTotal > 0 ? Math.max(1, locations.locationFromCfi(cfi) + 1) : Math.max(1, (location.start?.index ?? 0) + 1);
-          const percent = locationTotal > 1
-            ? clampPercent(((globalPage - 1) / (locationTotal - 1)) * 100)
-            : clampPercent((location.start?.percentage ?? 0) * 100);
-          const displayed = location.start?.displayed;
-          const scrollTop = ebookFlow === 'scrolled' ? scrollTopFromView(currentViewRef.current) : 0;
-          onProgressRef.current({
-            page: globalPage,
-            total: locationTotal || (displayed?.total ?? null),
-            percent,
-            position: cfi,
-            label: locationTotal ? `第 ${globalPage} / ${locationTotal} 页` : displayed?.total ? `第 ${displayed.page} / ${displayed.total} 屏` : `第 ${globalPage} 章`
-          }, { percentage: percent, pageIndex: globalPage, totalPages: locationTotal || (displayed?.total ?? null), chapterIndex: location.start?.index ?? 0, scrollTop, cfi });
-        });
+        rendition.on('relocated', emitLocationProgress);
 
         onControls({
           next: async () => {
@@ -730,6 +790,27 @@ export function EbookReader({
     const container = containerRef.current;
     rendition.resize(container?.clientWidth ?? window.innerWidth, container?.clientHeight ?? window.innerHeight);
   }, [fontFamily, fontSize, lineHeight, pageWidth, theme]);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container || typeof ResizeObserver === 'undefined') return undefined;
+    let frame: number | null = null;
+    const observer = new ResizeObserver(() => {
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        frame = null;
+        const rendition = renditionRef.current;
+        if (!rendition) return;
+        rendition.resize(container.clientWidth || window.innerWidth, container.clientHeight || window.innerHeight);
+        reportRenditionLocation(rendition);
+      });
+    });
+    observer.observe(container);
+    return () => {
+      observer.disconnect();
+      if (frame !== null) window.cancelAnimationFrame(frame);
+    };
+  }, []);
 
   const tokens = themeTokens[theme];
 

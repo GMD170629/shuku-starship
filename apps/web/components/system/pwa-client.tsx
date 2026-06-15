@@ -14,6 +14,7 @@ type BeforeInstallPromptEvent = Event & {
 const INSTALL_DISMISSED_KEY = 'shuku:pwa:install-dismissed';
 const INSTALL_ACCEPTED_KEY = 'shuku:pwa:install-accepted';
 const PWA_DEBUG_ENABLED_KEY = 'shuku:pwa:debug-enabled';
+const PWA_BOTTOM_CORNER_GUARD_PX = 10;
 
 type DebugLevel = 'log' | 'info' | 'warn' | 'error';
 type DebugLog = {
@@ -142,9 +143,38 @@ export function PwaClient() {
     let lastTouchEnd = 0;
     const root = document.documentElement;
     const previousTouchAction = document.body.style.touchAction;
+    const previousRootExtraHeight = root.style.getPropertyValue('--pwa-screen-extra-height');
+    const previousRootScreenHeight = root.style.getPropertyValue('--pwa-screen-height');
+    const previousBodyMinHeight = document.body.style.minHeight;
+    let measuredScreenHeight = 0;
+    let stableViewportHeight = 0;
 
     root.classList.add('pwa-native');
     document.body.style.touchAction = 'manipulation';
+
+    function updateViewportCompensation() {
+      const viewportHeight = Math.round(window.innerHeight);
+      const screenHeight = Math.max(viewportHeight, Math.round((window.screen?.height || viewportHeight) - PWA_BOTTOM_CORNER_GUARD_PX));
+      if (screenHeight !== measuredScreenHeight) {
+        measuredScreenHeight = screenHeight;
+        stableViewportHeight = viewportHeight;
+      } else if (stableViewportHeight === 0 || viewportHeight < stableViewportHeight) {
+        stableViewportHeight = viewportHeight;
+      }
+
+      const extraHeight = Math.max(0, measuredScreenHeight - stableViewportHeight);
+      const nextExtraHeight = `${extraHeight}px`;
+      const nextScreenHeight = `${measuredScreenHeight}px`;
+      if (root.style.getPropertyValue('--pwa-screen-extra-height') !== nextExtraHeight) {
+        root.style.setProperty('--pwa-screen-extra-height', nextExtraHeight);
+      }
+      if (root.style.getPropertyValue('--pwa-screen-height') !== nextScreenHeight) {
+        root.style.setProperty('--pwa-screen-height', nextScreenHeight);
+      }
+      if (document.body.style.minHeight !== nextScreenHeight) {
+        document.body.style.minHeight = nextScreenHeight;
+      }
+    }
 
     function preventMultiTouch(event: TouchEvent) {
       if (event.touches.length > 1) event.preventDefault();
@@ -176,10 +206,22 @@ export function PwaClient() {
     document.addEventListener('gesturestart', preventGesture, { passive: false });
     document.addEventListener('gesturechange', preventGesture, { passive: false });
     document.addEventListener('gestureend', preventGesture, { passive: false });
+    updateViewportCompensation();
+    const frame = window.requestAnimationFrame(updateViewportCompensation);
+    const settleTimer = window.setTimeout(updateViewportCompensation, 250);
+    window.addEventListener('resize', updateViewportCompensation);
 
     return () => {
       root.classList.remove('pwa-native');
       document.body.style.touchAction = previousTouchAction;
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(settleTimer);
+      window.removeEventListener('resize', updateViewportCompensation);
+      if (previousRootExtraHeight) root.style.setProperty('--pwa-screen-extra-height', previousRootExtraHeight);
+      else root.style.removeProperty('--pwa-screen-extra-height');
+      if (previousRootScreenHeight) root.style.setProperty('--pwa-screen-height', previousRootScreenHeight);
+      else root.style.removeProperty('--pwa-screen-height');
+      document.body.style.minHeight = previousBodyMinHeight;
       document.removeEventListener('touchmove', preventMultiTouch);
       document.removeEventListener('touchend', preventDoubleTapZoom);
       document.removeEventListener('dblclick', preventDoubleClickZoom);

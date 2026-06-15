@@ -136,6 +136,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           : shellSurfaces.app;
 
   useEffect(() => {
+    if (isReader) return undefined;
     if (!shellSurface) return undefined;
 
     const previousHtmlBackground = document.documentElement.style.backgroundColor;
@@ -189,7 +190,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       if (createdStatusBarMeta) statusBarMeta.remove();
       else statusBarMeta.setAttribute('content', previousStatusBarStyle);
     };
-  }, [shellSurface]);
+  }, [isReader, shellSurface]);
 
   useEffect(() => {
     if (pathname !== '/') return;

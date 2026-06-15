@@ -110,6 +110,9 @@ export const readerThemeSurfaces: Record<ReaderTheme, { background: string; text
   black: { background: '#000000', textClass: 'text-slate-100', statusBarStyle: 'black-translucent' }
 };
 
+const readerBottomAreaHeight = 'calc(6rem + env(safe-area-inset-bottom))';
+const readerBottomAreaOffset = 'calc(10px - env(safe-area-inset-bottom))';
+
 function ensureMeta(name: string) {
   const existing = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`);
   if (existing) return { meta: existing, created: false };
@@ -121,6 +124,10 @@ function ensureMeta(name: string) {
 
 function clampPercent(value: number) {
   return Math.max(0, Math.min(100, Math.round(value)));
+}
+
+function progressPageLabel(progress: ReaderProgress) {
+  return progress.total ? `第 ${progress.page} 页 / 共 ${progress.total} 页` : `第 ${progress.page} 页`;
 }
 
 function isDarkTheme(theme: ReaderTheme) {
@@ -180,11 +187,16 @@ function useReaderPwaSurface(theme: ReaderTheme) {
     const frame = window.requestAnimationFrame(applySurface);
     const settleTimer = window.setTimeout(applySurface, 250);
     const lateSettleTimer = window.setTimeout(applySurface, 1000);
+    const syncTimer = window.setInterval(applySurface, 500);
+    const headObserver = new MutationObserver(applySurface);
+    headObserver.observe(document.head, { attributes: true, childList: true, subtree: true, attributeFilter: ['content'] });
 
     return () => {
       window.cancelAnimationFrame(frame);
       window.clearTimeout(settleTimer);
       window.clearTimeout(lateSettleTimer);
+      window.clearInterval(syncTimer);
+      headObserver.disconnect();
       document.documentElement.style.backgroundColor = previousHtmlBackground;
       document.body.style.backgroundColor = previousBodyBackground;
       document.documentElement.style.colorScheme = previousColorScheme;
@@ -375,14 +387,19 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
 
   return (
     <div
-      className={cn('fixed inset-0 z-50 flex h-[100svh] min-h-[100dvh] flex-col overflow-hidden transition-colors', themeSurface.textClass)}
+      className={cn('fixed inset-x-0 top-0 z-50 h-[var(--pwa-screen-height,100svh)] overflow-hidden transition-colors', themeSurface.textClass)}
       style={{
-        backgroundColor: themeSurface.background,
-        paddingTop: 'env(safe-area-inset-top)',
-        paddingBottom: 'env(safe-area-inset-bottom)',
-        paddingLeft: 'env(safe-area-inset-left)',
-        paddingRight: 'env(safe-area-inset-right)'
+        backgroundColor: themeSurface.background
       }}
+    >
+      <div
+        className="relative flex h-[100svh] min-h-[100dvh] flex-col overflow-hidden"
+        style={{
+          backgroundColor: themeSurface.background,
+          paddingTop: 'env(safe-area-inset-top)',
+          paddingLeft: 'env(safe-area-inset-left)',
+          paddingRight: 'env(safe-area-inset-right)'
+        }}
       onClick={(event) => {
         if (Date.now() < suppressClickUntilRef.current || shouldIgnoreReaderInteraction(event.target)) return;
         handleReaderTap(event.clientX, event.clientY);
@@ -413,22 +430,20 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
       }}
       tabIndex={-1}
     >
-      <div
-        className="pointer-events-none absolute inset-x-0 top-0 z-40 transition-colors duration-200"
-        style={{ height: 'env(safe-area-inset-top)', backgroundColor: themeSurface.background }}
-        aria-hidden="true"
-      />
-      <main className="min-h-0 flex-1 w-full">
+      <main className="min-h-0 flex-1 w-full" style={{ paddingBottom: 'calc(6rem + 10px)' }}>
         {typeof children === 'function' ? children({ enterImmersive, toggleControls, shouldIgnoreInteraction: shouldIgnoreReaderInteraction }) : children}
       </main>
 
       <div
         className={cn(
           'absolute inset-x-0 top-0 z-20 border-b px-3 py-2 backdrop-blur-xl transition duration-200 md:px-5',
-          dark ? 'border-white/10 bg-slate-950/80' : 'border-slate-200 bg-white/80',
-          controlsVisible ? 'translate-y-0 opacity-100' : '-translate-y-full opacity-0'
+          dark ? 'border-white/10 bg-slate-950/80' : 'border-slate-200 bg-white/80'
         )}
-        style={{ paddingTop: 'max(0.5rem, env(safe-area-inset-top))' }}
+        style={{
+          paddingTop: 'max(0.5rem, env(safe-area-inset-top))',
+          transform: controlsVisible ? 'translateY(0)' : 'translateY(-100%)',
+          opacity: controlsVisible ? 1 : 0
+        }}
         data-reader-control="true"
         onClick={stopControlEvent}
       >
@@ -454,15 +469,44 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
             </button>
           </div>
         </div>
+	      </div>
+
+      <div
+        className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-3 py-3 transition duration-200 md:px-5 md:py-4"
+        style={{
+          bottom: readerBottomAreaOffset,
+          height: readerBottomAreaHeight,
+          paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))',
+          paddingLeft: 'max(0.75rem, env(safe-area-inset-left))',
+          paddingRight: 'max(0.75rem, env(safe-area-inset-right))',
+          transform: controlsVisible ? 'translateY(100%)' : 'translateY(0)',
+          opacity: controlsVisible ? 0 : 1
+        }}
+        aria-hidden={controlsVisible}
+      >
+        <div className="mx-auto flex h-full max-w-5xl flex-col gap-3">
+          <div className="flex items-center justify-between gap-3 text-[11px] opacity-60 md:text-xs">
+            <span className="truncate">{progressPageLabel(progress)}</span>
+            <span className="shrink-0">{clampPercent(progress.percent)}%</span>
+          </div>
+          <div className="min-h-0 flex-1" aria-hidden="true" />
+        </div>
       </div>
 
       <div
         className={cn(
           'absolute inset-x-0 bottom-0 z-20 border-t px-3 py-3 backdrop-blur-xl transition duration-200 md:px-5 md:py-4',
-          dark ? 'border-white/10 bg-slate-950/80' : 'border-slate-200 bg-white/80',
-          controlsVisible ? 'translate-y-0 opacity-100' : 'translate-y-full opacity-0'
+          dark ? 'border-white/10 bg-slate-950/80' : 'border-slate-200 bg-white/80'
         )}
-        style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}
+        style={{
+          bottom: readerBottomAreaOffset,
+          height: readerBottomAreaHeight,
+          paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))',
+          paddingLeft: 'max(0.75rem, env(safe-area-inset-left))',
+          paddingRight: 'max(0.75rem, env(safe-area-inset-right))',
+          transform: controlsVisible ? 'translateY(0)' : 'translateY(100%)',
+          opacity: controlsVisible ? 1 : 0
+        }}
         data-reader-control="true"
         onClick={stopControlEvent}
       >
@@ -484,9 +528,9 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
               <span className="hidden sm:inline">下一页</span>
             </Button>
           </div>
-          <div className="flex items-center justify-between gap-3 text-xs opacity-70 md:text-sm">
-            <span className="truncate">{progress.label}</span>
-            <span className="shrink-0">{clampPercent(progress.percent)}%</span>
+          <div className="flex items-center justify-between gap-3 text-xs opacity-70 md:text-sm" aria-hidden="true">
+            <span className="truncate">&nbsp;</span>
+            <span className="shrink-0">&nbsp;</span>
           </div>
         </div>
       </div>
@@ -497,7 +541,13 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
             'absolute inset-x-0 bottom-0 z-30 max-h-[82dvh] w-full overflow-hidden overscroll-contain rounded-t-3xl border-t p-4 shadow-2xl backdrop-blur-xl md:inset-y-0 md:left-auto md:right-0 md:max-h-none md:max-w-sm md:rounded-none md:border-l md:border-t-0 md:p-5',
             dark ? 'border-white/10 bg-slate-950/95' : 'border-slate-200 bg-white/95'
           )}
-          style={{ paddingTop: 'max(1rem, env(safe-area-inset-top))', paddingBottom: 'max(1rem, env(safe-area-inset-bottom))' }}
+          style={{
+            bottom: 'calc(-1 * env(safe-area-inset-bottom))',
+            paddingTop: 'max(1rem, env(safe-area-inset-top))',
+            paddingBottom: 'max(1rem, env(safe-area-inset-bottom))',
+            paddingLeft: 'max(1rem, env(safe-area-inset-left))',
+            paddingRight: 'max(1rem, env(safe-area-inset-right))'
+          }}
           data-reader-control="true"
           onClick={stopControlEvent}
         >
@@ -625,6 +675,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
           ) : null}
         </aside>
       ) : null}
+      </div>
     </div>
   );
 }
