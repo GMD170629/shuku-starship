@@ -146,7 +146,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   const toast = useToast();
 
   const loadBook = useCallback(() => {
-    fetch(`/api/works/${bookId}`)
+    return fetch(`/api/works/${bookId}`)
       .then((response) => response.json() as Promise<{ ok: boolean; data?: { book: WorkView; metadata?: DetailMetadata; readingUnits?: ReadingUnitView[]; volumeSections?: VolumeSectionView[] }; error?: { message: string } }>)
       .then((payload) => {
         if (!payload.ok) throw new Error(payload.error?.message ?? '读取读物失败');
@@ -241,7 +241,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
       const payload = (await response.json()) as { ok: boolean; data?: { book?: WorkView }; error?: { message: string } };
       if (!payload.ok) throw new Error(payload.error?.message ?? '操作失败');
       if (payload.data?.book) setBook(payload.data.book);
-      if (options.refreshBook) loadBook();
+      if (options.refreshBook) await loadBook();
       if (options.refreshCover) setCoverBust(Date.now());
       setMessage(successMessage);
       toast.success(successMessage);
@@ -434,7 +434,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
               <Button variant="secondary" icon={Edit3} onClick={() => setEditing((value) => !value)}>{editing ? '收起编辑' : '编辑信息'}</Button>
               <Button disabled={saving} variant="secondary" icon={Database} onClick={() => setMetadataLookupOpen(true)}>元数据识别</Button>
               <Button disabled={!readerEditionId} variant="ghost" icon={Download} onClick={downloadPrimaryEdition}>下载</Button>
-              <Button loading={busyAction === 'regenerateCover'} disabled={saving && busyAction !== 'regenerateCover'} variant="ghost" icon={RefreshCw} onClick={() => postAction(`/api/works/${book.id}/cover/regenerate`, '封面已重新生成', { refreshCover: true, busyKey: 'regenerateCover' })}>重生成封面</Button>
+              <Button loading={busyAction === 'regenerateCover'} disabled={saving && busyAction !== 'regenerateCover'} variant="ghost" icon={RefreshCw} onClick={() => postAction(`/api/works/${book.id}/cover/regenerate`, '封面已重新生成', { refreshCover: true, refreshBook: true, busyKey: 'regenerateCover' })}>重生成封面</Button>
               {book.ignored ? (
                 <Button loading={busyAction === 'ignored'} disabled={saving && busyAction !== 'ignored'} variant="secondary" icon={EyeOff} onClick={() => setIgnored(false)}>恢复显示</Button>
               ) : (
@@ -563,11 +563,11 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
               <p className="mt-1 text-sm text-slate-500">{navigationSummary}</p>
             </div>
           </div>
-          <div className="mt-4 overflow-x-auto pb-2">
+          <div className="mt-4">
             {hasVolumeSections ? (
-              <div className="flex gap-3">
+              <div className="flex flex-wrap gap-3">
                 {volumeSections.map((volume, index) => (
-                  <div key={volume.id} className="group relative w-36 shrink-0 rounded-2xl border border-slate-100 bg-white p-2 shadow-sm transition hover:border-blue-100 hover:shadow-md">
+                  <div key={volume.id} className="group relative w-36 rounded-2xl border border-slate-100 bg-white p-2 shadow-sm transition hover:border-blue-100 hover:shadow-md">
                     <button disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}?volume=${encodeURIComponent(volume.id)}`)} className="block w-full text-left disabled:cursor-not-allowed disabled:opacity-50">
                       <span className="absolute left-3 top-3 rounded-full bg-white/90 px-2 py-0.5 text-xs tabular-nums text-slate-500 shadow-sm">{String(index + 1).padStart(2, '0')}</span>
                       <img src={volume.coverUrl} alt={`${volume.title} 封面`} className="aspect-[2/3] w-full rounded-xl object-cover bg-slate-100" />
@@ -585,9 +585,9 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
                 ))}
               </div>
             ) : readingUnits.length > 0 ? (
-              <div className="flex gap-3">
+              <div className="flex flex-wrap gap-3">
                 {visibleReadingUnits.map((unit, index) => (
-                  <button key={unit.id} disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}`)} className="min-h-24 w-56 shrink-0 rounded-2xl border border-slate-100 bg-white p-4 text-left shadow-sm transition hover:border-blue-100 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50">
+                  <button key={unit.id} disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}`)} className="min-h-24 w-full rounded-2xl border border-slate-100 bg-white p-4 text-left shadow-sm transition hover:border-blue-100 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 sm:w-56">
                     <span className="text-xs tabular-nums text-slate-400">{String(index + 1).padStart(3, '0')}</span>
                     <span className="mt-2 line-clamp-3 text-sm font-medium leading-5 text-slate-950">{unit.title}</span>
                   </button>

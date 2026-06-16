@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import mimetypes
@@ -13,7 +14,7 @@ from email.utils import format_datetime, parsedate_to_datetime
 from pathlib import Path
 from time import monotonic, time_ns
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from urllib.request import Request as UrlRequest
 from urllib.request import urlopen
 
@@ -265,6 +266,17 @@ def _dt(value: Any) -> str | None:
     return str(value)
 
 
+def _cover_url(kind: str, row_id: str, row: dict[str, Any] | None = None, **params: Any) -> str:
+    query = {key: value for key, value in params.items() if value is not None}
+    version_source = ""
+    if row:
+        version_source = "|".join([str(row.get("coverPath") or ""), _dt(row.get("updatedAt")) or ""])
+    if version_source.strip("|"):
+        query["v"] = hashlib.sha1(version_source.encode("utf-8")).hexdigest()[:12]
+    suffix = f"?{urlencode(query)}" if query else ""
+    return f"/api/{kind}/{row_id}/cover{suffix}"
+
+
 def _format_bytes(value: Any) -> str:
     try:
         size = float(value or 0)
@@ -491,7 +503,7 @@ def _work_view(db: Session, work: dict[str, Any], user_id: str | None = None) ->
             "sortOrder": volume.get("sortOrder") or 0,
             "pageCount": volume.get("pageCount"),
             "chapterCount": volume.get("chapterCount"),
-            "coverUrl": f"/api/volumes/{volume['id']}/cover?workId={work['id']}",
+            "coverUrl": _cover_url("volumes", volume["id"], volume, workId=work["id"]),
         }
 
     def file_view(file: dict[str, Any]) -> dict[str, Any]:
@@ -524,7 +536,7 @@ def _work_view(db: Session, work: dict[str, Any], user_id: str | None = None) ->
                 "chapterCount": edition.get("chapterCount"),
                 "progress": _display_progress_percent(edition, e_progress, raw_edition_volumes),
                 "lastReadAt": _dt(e_progress.get("updatedAt")) if e_progress else None,
-                "coverUrl": f"/api/editions/{edition['id']}/cover?size=medium",
+                "coverUrl": _cover_url("editions", edition["id"], edition, size="medium"),
                 "files": [file_view(file) for file in edition_files],
                 "volumes": edition_volumes,
             }
@@ -576,7 +588,7 @@ def _work_view(db: Session, work: dict[str, Any], user_id: str | None = None) ->
         "fileHash": first_file.get("fullHash") if first_file else "",
         "gradient": "from-slate-950 via-blue-800 to-cyan-500",
         "coverStatus": work.get("coverStatus") or "PENDING",
-        "coverUrl": f"/api/works/{work['id']}/cover?size=medium",
+        "coverUrl": _cover_url("works", work["id"], work, size="medium"),
         "totalUnits": (display.get("pageCount") if display and display.get("format") == "COMIC" else display.get("chapterCount")) if display else 0,
         "readingProgress": percent,
         "importStatus": display.get("importStatus") if display else "PENDING",
@@ -1552,7 +1564,7 @@ def _volume_section_view(volume: dict[str, Any], fmt: str, count_override: int |
         "index": volume.get("volumeIndex") or volume.get("sortOrder") or 0,
         "fileId": volume.get("fileId") or volume["id"],
         "pageCount": count_override if count_override is not None else (volume.get(count_key) or 0),
-        "coverUrl": f"/api/volumes/{volume['id']}/cover?editionId={volume.get('editionId')}",
+        "coverUrl": _cover_url("volumes", volume["id"], volume, editionId=volume.get("editionId")),
     }
 
 
@@ -2029,7 +2041,7 @@ async def upload_cover(work_id: str, request: Request, cover: UploadFile = File(
     with target.open("wb") as handle:
         shutil.copyfileobj(cover.file, handle)
     relative = str(target.relative_to(settings.resolved_storage_root))
-    _update(db, "LibraryWork", work_id, {"coverPath": relative, "coverStatus": "READY"})
+    _update(db, "LibraryWork", work_id, {"coverPath": relative, "coverStatus": "READY", "updatedAt": _now()})
     return ok({"bookId": work_id, "coverUrl": f"/api/works/{work_id}/cover?size=medium&v={int(_now().timestamp())}"})
 
 

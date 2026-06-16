@@ -981,12 +981,20 @@ def test_regenerate_cover_uses_primary_edition_first_volume(client, db_session):
         )
     )
     db_session.commit()
+    before_detail = client.get("/api/works/work-cover")
+    assert before_detail.status_code == 200
+    before_cover_url = before_detail.json()["data"]["book"]["coverUrl"]
 
     response = client.post("/api/works/work-cover/cover/regenerate")
 
     assert response.status_code == 200
     assert response.json()["ok"] is True
     assert db_session.execute(text("SELECT coverPath FROM LibraryWork WHERE id = 'work-cover'")).scalar() == "books/work-cover/edition-main/volume-1/cover.jpg"
+    after_detail = client.get("/api/works/work-cover")
+    assert after_detail.status_code == 200
+    after_cover_url = after_detail.json()["data"]["book"]["coverUrl"]
+    assert after_cover_url.startswith("/api/works/work-cover/cover?size=medium&v=")
+    assert after_cover_url != before_cover_url
 
 
 def test_organize_jobs_return_frontend_contract(client, db_session):
@@ -2744,7 +2752,16 @@ def test_reader_bootstrap_matches_node_shapes_for_epub_and_comic(client, db_sess
     comic_detail_data = comic_detail.json()["data"]
     assert comic_detail_data["book"]["editionId"] == comic_payload["editionId"]
     assert comic_detail_data["readingUnits"] == []
-    assert comic_detail_data["volumeSections"] == [{"id": comic_payload["volumeId"], "title": "第 1 卷", "index": 1, "fileId": comic_payload["volumeId"], "pageCount": 2, "coverUrl": f"/api/volumes/{comic_payload['volumeId']}/cover?editionId={comic_payload['editionId']}"}]
+    assert len(comic_detail_data["volumeSections"]) == 1
+    volume_section = comic_detail_data["volumeSections"][0]
+    assert {key: volume_section[key] for key in ["id", "title", "index", "fileId", "pageCount"]} == {
+        "id": comic_payload["volumeId"],
+        "title": "第 1 卷",
+        "index": 1,
+        "fileId": comic_payload["volumeId"],
+        "pageCount": 2,
+    }
+    assert volume_section["coverUrl"].startswith(f"/api/volumes/{comic_payload['volumeId']}/cover?editionId={comic_payload['editionId']}&v=")
 
     db_session.execute(
         text(
