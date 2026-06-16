@@ -1,6 +1,6 @@
 'use client';
 
-import { BookOpen, ChevronDown, ChevronLeft, ChevronRight, Database, Download, Edit3, EyeOff, RefreshCw, Save, Trash2, UploadCloud, X } from 'lucide-react';
+import { AlertCircle, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Database, Download, Edit3, EyeOff, FileText, RefreshCw, Save, Trash2, UploadCloud, X } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Cover } from '../../components/book/cover';
@@ -84,6 +84,33 @@ function readerUrlForBook(book: WorkView, volumeSections: VolumeSectionView[]) {
   if (!editionId) return null;
   const volumeId = book.recentVolumeId ?? volumeSections[0]?.id ?? null;
   return volumeId ? `/reader/${editionId}?volume=${encodeURIComponent(volumeId)}` : `/reader/${editionId}`;
+}
+
+function compactEditionLabel(book: WorkView) {
+  const primaryEdition = book.editions.find((edition) => edition.id === book.primaryEditionId) ?? book.editions.find((edition) => !edition.hidden) ?? book.editions[0];
+  if (!primaryEdition) return `${book.format} · ${book.size}`;
+  const unitLabel = primaryEdition.formatValue === 'COMIC' ? `${primaryEdition.volumes.length || book.volumeCount} 卷` : `${primaryEdition.chapterCount ?? book.chapterCount ?? book.totalUnits ?? 0} 章`;
+  return `${primaryEdition.format} · ${primaryEdition.size} · ${unitLabel} · ${primaryEdition.primary ? '主版本' : '可读版本'}`;
+}
+
+function metadataMissingLabels(book: WorkView, metadata: DetailMetadata | null) {
+  const missing: string[] = [];
+  if (!book.author || book.author === '未知作者') missing.push('作者');
+  if (!book.seriesName) missing.push('系列');
+  if (book.type === 'ebook') {
+    if (!metadata?.isbn) missing.push('ISBN');
+    if (!metadata?.publisher) missing.push('出版社');
+    if (!metadata?.language) missing.push('语言');
+  }
+  if (!book.publishedYear) missing.push('出版年');
+  if (!book.tags.length) missing.push('标签');
+  return missing;
+}
+
+function qualityLabel(score: number) {
+  if (score >= 80) return { label: '完整', tone: 'green' as const };
+  if (score >= 50) return { label: '可用', tone: 'amber' as const };
+  return { label: '待整理', tone: 'red' as const };
 }
 
 export function BookDetailPage({ bookId }: { bookId: string }) {
@@ -351,95 +378,96 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   const readerEditionId = readableEditionId(book);
   const hasVolumeSections = volumeSections.length > 0;
   const readerUrl = readerUrlForBook(book, volumeSections);
+  const missingMetadata = metadataMissingLabels(book, metadata);
+  const quality = qualityLabel(book.metadataQuality);
+  const primaryEdition = book.editions.find((edition) => edition.id === book.primaryEditionId) ?? book.editions.find((edition) => !edition.hidden) ?? book.editions[0] ?? null;
+  const visibleReadingUnits = readingUnits.slice(0, 120);
+  const chapterHealth = hasVolumeSections ? `${volumeSections.length} 个卷册` : readingUnits.length > 0 ? `${readingUnits.length} 个章节` : '未解析章节';
 
   return (
-    <div className="space-y-6">
-      <button onClick={() => router.push('/library')} className="flex items-center gap-2 text-sm text-slate-500 hover:text-slate-900">
+    <div className="space-y-5">
+      <button onClick={() => router.push('/library')} className="flex items-center gap-2 text-sm text-slate-500 transition hover:text-slate-900">
         <ChevronLeft size={16} /> 返回书库
       </button>
       {error ? <div className="rounded-3xl border border-red-100 bg-red-50 p-4 text-sm text-red-700">{error}</div> : null}
-      <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-[190px_minmax(0,1fr)_320px]">
-          <Cover book={displayBook} className="aspect-[2/3] w-full max-w-[190px]" size="large" />
+      <div className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-[132px_minmax(0,1fr)_320px]">
+          <Cover book={displayBook} className="aspect-[2/3] w-28 shrink-0 sm:w-32 xl:w-full" size="large" />
           <div className="min-w-0">
-            <div className="flex flex-wrap gap-2">
-              {book.tags.map((tag) => (
-                <Badge key={tag} tone="blue">{tag}</Badge>
-              ))}
-              {book.tags.length === 0 ? <Badge>未标记</Badge> : null}
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={quality.tone}>{quality.label}</Badge>
+              <Badge tone={book.lastReadAt ? 'green' : 'slate'}>{book.lastReadAt ? '有进度' : '未阅读'}</Badge>
               {book.ignored ? <Badge tone="amber">已忽略</Badge> : null}
               {book.trackingStatusValue === 'TRACKING' ? <Badge tone="green">追更中</Badge> : null}
-              {book.trackingStatusValue !== 'TRACKING' && book.trackingStatusValue !== 'NOT_TRACKING' ? <Badge tone="amber">{book.trackingStatus}</Badge> : null}
               {book.publicationStatusValue !== 'UNKNOWN' ? <Badge tone={book.publicationStatusValue === 'ONGOING' ? 'green' : 'slate'}>{book.publicationStatus}</Badge> : null}
-              {localLatestLabel(book) !== '未记录' ? <Badge tone="slate">{localLatestLabel(book)}</Badge> : null}
             </div>
-            <h1 className="mt-3 text-2xl font-semibold tracking-tight">《{book.title}》</h1>
-            <p className="mt-2 text-slate-500">{book.author} · {book.type === 'comic' ? '漫画' : '电子书'} · {book.format}</p>
-            <p className="mt-4 line-clamp-3 max-w-3xl text-sm leading-7 text-slate-600">{book.desc}</p>
-            <div className="mt-5 rounded-2xl bg-slate-50 p-4">
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-500">阅读进度</span>
-                <span className="font-medium">{book.progress}% · {book.chapter}</span>
+            <h1 className="mt-2 line-clamp-2 text-2xl font-semibold tracking-tight text-slate-950">《{book.title}》</h1>
+            <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-slate-500">
+              <span>{book.author}</span>
+              {book.seriesName ? <span>{book.seriesName}{book.seriesIndex !== null ? ` · ${book.seriesIndex}` : ''}</span> : null}
+              <span>{compactEditionLabel(book)}</span>
+            </div>
+            <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
+              <div className="rounded-2xl bg-slate-50 px-4 py-3">
+                <div className="text-xs font-medium text-slate-500">阅读进度</div>
+                <div className="mt-1 truncate text-sm font-semibold text-slate-950">{book.progress}% · {book.chapter}</div>
+                <Progress value={book.progress} className="mt-2" />
               </div>
-              <Progress value={book.progress} className="mt-3" />
+              <div className="grid grid-cols-2 overflow-hidden rounded-2xl border border-slate-100 bg-white text-sm">
+                <div className="border-r border-slate-100 px-3 py-2">
+                  <div className="text-xs text-slate-400">{book.type === 'comic' ? '页数' : '章节'}</div>
+                  <div className="mt-1 font-semibold text-slate-950">{book.totalUnits || '未知'}</div>
+                </div>
+                <div className="px-3 py-2">
+                  <div className="text-xs text-slate-400">大小</div>
+                  <div className="mt-1 font-semibold text-slate-950">{book.size}</div>
+                </div>
+              </div>
             </div>
-            <div className="mt-5 flex flex-wrap gap-3">
+            <div className="mt-4 flex flex-wrap gap-2">
               <Button disabled={!readerEditionId || !readerUrl} icon={BookOpen} onClick={() => readerUrl && router.push(readerUrl)}>{book.progress > 0 ? '继续阅读' : '开始阅读'}</Button>
-              <Button disabled={!readerEditionId} variant="secondary" icon={Download} onClick={downloadPrimaryEdition}>下载</Button>
-              <Button variant="secondary" icon={Edit3} onClick={() => setEditing((value) => !value)}>编辑信息</Button>
+              <Button variant="secondary" icon={Edit3} onClick={() => setEditing((value) => !value)}>{editing ? '收起编辑' : '编辑信息'}</Button>
               <Button disabled={saving} variant="secondary" icon={Database} onClick={() => setMetadataLookupOpen(true)}>元数据识别</Button>
-              <Button loading={busyAction === 'regenerateCover'} disabled={saving && busyAction !== 'regenerateCover'} variant="secondary" icon={RefreshCw} onClick={() => postAction(`/api/works/${book.id}/cover/regenerate`, '封面已重新生成', { refreshCover: true, busyKey: 'regenerateCover' })}>重新生成封面</Button>
+              <Button disabled={!readerEditionId} variant="ghost" icon={Download} onClick={downloadPrimaryEdition}>下载</Button>
+              <Button loading={busyAction === 'regenerateCover'} disabled={saving && busyAction !== 'regenerateCover'} variant="ghost" icon={RefreshCw} onClick={() => postAction(`/api/works/${book.id}/cover/regenerate`, '封面已重新生成', { refreshCover: true, busyKey: 'regenerateCover' })}>重生成封面</Button>
               {book.ignored ? (
                 <Button loading={busyAction === 'ignored'} disabled={saving && busyAction !== 'ignored'} variant="secondary" icon={EyeOff} onClick={() => setIgnored(false)}>恢复显示</Button>
               ) : (
                 <Button loading={busyAction === 'ignored' || busyAction === 'delete'} loadingText={busyAction === 'delete' ? '删除中' : '处理中'} disabled={saving && !['ignored', 'delete'].includes(busyAction)} variant="danger" icon={Trash2} onClick={() => setDangerActionOpen(true)}>忽略/删除</Button>
               )}
             </div>
-            {message ? <div className="mt-4 text-sm text-emerald-600">{message}</div> : null}
+            {message ? <div className="mt-3 text-sm text-emerald-600">{message}</div> : null}
           </div>
           <aside className="rounded-2xl bg-slate-50 p-4">
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div className="rounded-2xl bg-white p-3">
-                <div className="text-xs text-slate-400">{book.type === 'comic' ? '页数' : '章节数'}</div>
-                <div className="mt-1 font-medium text-slate-900">{book.totalUnits || '未知'}</div>
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="font-semibold text-slate-950">管理诊断</h2>
+              <Badge tone={missingMetadata.length ? 'amber' : 'green'}>{missingMetadata.length ? `缺 ${missingMetadata.length} 项` : '已整理'}</Badge>
+            </div>
+            <div className="mt-3 grid gap-2 text-sm">
+              <div className="flex items-center justify-between rounded-xl bg-white px-3 py-2">
+                <span className="text-slate-500">章节结构</span>
+                <span className="font-medium text-slate-950">{chapterHealth}</span>
               </div>
-              <div className="rounded-2xl bg-white p-3">
-                <div className="text-xs text-slate-400">文件大小</div>
-                <div className="mt-1 font-medium text-slate-900">{book.size}</div>
+              <div className="flex items-center justify-between rounded-xl bg-white px-3 py-2">
+                <span className="text-slate-500">版本</span>
+                <span className="font-medium text-slate-950">{book.versionCount} 版 · {book.volumeCount} 卷</span>
               </div>
-              <div className="rounded-2xl bg-white p-3">
-                <div className="text-xs text-slate-400">最后阅读</div>
-                <div className="mt-1 line-clamp-1 font-medium text-slate-900">{book.lastRead}</div>
+              <div className="flex items-center justify-between rounded-xl bg-white px-3 py-2">
+                <span className="text-slate-500">最后阅读</span>
+                <span className="max-w-[150px] truncate font-medium text-slate-950">{book.lastRead}</span>
               </div>
-              <div className="rounded-2xl bg-white p-3">
-                <div className="text-xs text-slate-400">同步状态</div>
-                <div className={cn('mt-1 line-clamp-1 font-medium', book.lastReadAt ? 'text-emerald-600' : 'text-slate-900')}>{book.lastReadAt ? '有进度' : '暂无进度'}</div>
-              </div>
-              <div className="rounded-2xl bg-white p-3">
-                <div className="text-xs text-slate-400">追更状态</div>
-                <div className={cn('mt-1 line-clamp-1 font-medium', book.trackingStatusValue === 'TRACKING' ? 'text-emerald-600' : 'text-slate-900')}>{book.trackingStatus}</div>
-              </div>
-              <div className="rounded-2xl bg-white p-3">
-                <div className="text-xs text-slate-400">本地最新</div>
-                <div className="mt-1 line-clamp-1 font-medium text-slate-900">{localLatestLabel(book)}</div>
-              </div>
-              <div className="rounded-2xl bg-white p-3">
-                <div className="text-xs text-slate-400">最新时间</div>
-                <div className="mt-1 line-clamp-1 font-medium text-slate-900">{formatDateTime(book.localLatestAt)}</div>
+              <div className="flex items-center justify-between rounded-xl bg-white px-3 py-2">
+                <span className="text-slate-500">本地最新</span>
+                <span className="max-w-[150px] truncate font-medium text-slate-950">{localLatestLabel(book)}</span>
               </div>
             </div>
-            <details className="group mt-3 rounded-2xl bg-white">
-              <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-3 text-sm font-medium text-slate-700">
-                文件信息
-                <ChevronDown size={16} className="text-slate-400 transition group-open:rotate-180" />
-              </summary>
-              <div className="border-t border-slate-100 px-3 pb-3">
-                <Info label="源路径" value={book.path} />
-                <Info label="文件哈希" value={book.fileHash} />
-                <Info label="资源数量" value={`${book.files.length} 个文件`} />
-                <Info label="添加时间" value={book.added} />
+            <div className="mt-3 rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              <div className="flex items-center gap-2 font-medium">
+                <AlertCircle size={15} />
+                {missingMetadata.length ? '建议补全元数据' : '元数据没有明显缺口'}
               </div>
-            </details>
+              <div className="mt-1 line-clamp-2 text-xs leading-5 opacity-80">{missingMetadata.length ? missingMetadata.join('、') : '可以继续检查章节顺序和版本。'}</div>
+            </div>
           </aside>
         </div>
       </div>
@@ -522,83 +550,120 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
           </div>
         </div>
       ) : null}
-      <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
-        <div className="flex items-center justify-between gap-3">
-          <h2 className="text-lg font-semibold">版本列表</h2>
-          <span className="text-sm text-slate-500">{book.versionCount} 个版本 · {book.volumeCount} 个卷册</span>
-        </div>
-        <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
-          {book.editions.map((edition) => (
-            <div key={edition.id} className={cn('rounded-2xl border p-4', edition.id === book.primaryEditionId ? 'border-blue-200 bg-blue-50/60' : 'border-slate-200 bg-white')}>
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="font-medium text-slate-900">{edition.versionName}</div>
-                  <div className="mt-1 text-xs text-slate-500">{edition.format} · {edition.size} · {edition.formatValue === 'COMIC' ? `${edition.volumes.length} 卷` : `${edition.chapterCount ?? 0} 章`}</div>
-                </div>
-                {edition.primary ? <Badge tone="blue">主版本</Badge> : null}
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Button variant="secondary" onClick={() => router.push(`/reader/${edition.id}${edition.volumes[0] ? `?volume=${encodeURIComponent(edition.volumes[0].id)}` : ''}`)}>阅读</Button>
-                {!edition.primary ? <Button loading={busyAction === `primary:${edition.id}`} disabled={saving && busyAction !== `primary:${edition.id}`} variant="secondary" onClick={() => postAction(`/api/works/${book.id}/editions/${edition.id}/primary`, '已设为主版本', { refreshBook: true, busyKey: `primary:${edition.id}` })}>设为主版本</Button> : null}
-                {book.editions.length > 1 ? <Button loading={busyAction === `split:${edition.id}`} disabled={saving && busyAction !== `split:${edition.id}`} variant="secondary" onClick={() => postAction(`/api/works/${book.id}/editions/${edition.id}/split`, '版本已拆出为新作品', { refreshBook: true, busyKey: `split:${edition.id}` })}>拆出作品</Button> : null}
-              </div>
+      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
+        <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-950">{hasVolumeSections ? '卷册与章节' : '章节列表'}</h2>
+              <p className="mt-1 text-sm text-slate-500">{chapterHealth} · 点击进入阅读器校对内容</p>
             </div>
-          ))}
-          {book.editions.length === 0 ? <div className="text-sm text-slate-500">暂无可用版本。</div> : null}
-        </div>
-      </div>
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-        <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm lg:col-span-8">
-            <h2 className="text-lg font-semibold">{hasVolumeSections ? '卷册列表' : '章节列表'}</h2>
-            <div className="mt-3 divide-y divide-slate-100">
-              {hasVolumeSections ? volumeSections.map((volume) => (
-              <button key={volume.id} disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}?volume=${encodeURIComponent(volume.id)}`)} className="flex w-full items-center gap-3 py-3 text-left hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
-                <img src={volume.coverUrl} alt="" className="h-20 w-14 rounded-lg object-cover" />
-                <div className="min-w-0 flex-1">
-                  <div className="font-medium">{volume.title}</div>
-                  <div className="mt-1 text-xs text-slate-500">{book.format} · {volume.pageCount} {book.type === 'comic' ? '页' : '章'}</div>
-                </div>
-                <div className="flex gap-1" onClick={(event) => event.stopPropagation()}>
-                  <Button loading={busyAction === `move:${volume.id}:up`} disabled={saving && busyAction !== `move:${volume.id}:up`} variant="ghost" className="min-h-8 px-2 py-1" onClick={() => moveVolume(volume.id, 'up')}>上移</Button>
-                  <Button loading={busyAction === `move:${volume.id}:down`} disabled={saving && busyAction !== `move:${volume.id}:down`} variant="ghost" className="min-h-8 px-2 py-1" onClick={() => moveVolume(volume.id, 'down')}>下移</Button>
-                </div>
-                <ChevronRight size={16} className="text-slate-400" />
-              </button>
-            )) : readingUnits.length > 0 ? readingUnits.slice(0, 80).map((unit) => (
-              <button key={unit.id} disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}`)} className="flex w-full items-center justify-between py-3 text-left hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
-                <div>
-                  <div className="font-medium">{unit.title}</div>
-                  <div className="mt-1 text-xs text-slate-500">{unit.unitType === 'page' ? '漫画页' : '章节'} · {unit.mediaType ?? unit.href}</div>
-                </div>
-                <ChevronRight size={16} className="text-slate-400" />
-              </button>
-            )) : (
-              <button disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}`)} className="flex w-full items-center justify-between py-4 text-left hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
-                <div className="text-sm text-slate-500">开始阅读</div>
+            <div className="flex items-center gap-2 text-sm text-slate-500">
+              <FileText size={16} />
+              <span>{primaryEdition ? compactEditionLabel(book) : '暂无版本'}</span>
+            </div>
+          </div>
+          <div className="mt-4 overflow-hidden rounded-2xl border border-slate-100">
+            {hasVolumeSections ? (
+              <div className="divide-y divide-slate-100">
+                {volumeSections.map((volume, index) => (
+                  <button key={volume.id} disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}?volume=${encodeURIComponent(volume.id)}`)} className="grid w-full grid-cols-[42px_48px_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2.5 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
+                    <span className="text-right text-xs tabular-nums text-slate-400">{String(index + 1).padStart(2, '0')}</span>
+                    <img src={volume.coverUrl} alt={`${volume.title} 封面`} className="h-16 w-11 rounded-md object-cover" />
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium text-slate-950">{volume.title}</span>
+                      <span className="mt-1 block text-xs text-slate-500">{book.format} · {volume.pageCount} {book.type === 'comic' ? '页' : '章'}</span>
+                    </span>
+                    <span className="flex items-center gap-1" onClick={(event) => event.stopPropagation()}>
+                      <Button loading={busyAction === `move:${volume.id}:up`} disabled={saving && busyAction !== `move:${volume.id}:up`} variant="ghost" className="min-h-8 px-2 py-1" onClick={() => moveVolume(volume.id, 'up')}>上移</Button>
+                      <Button loading={busyAction === `move:${volume.id}:down`} disabled={saving && busyAction !== `move:${volume.id}:down`} variant="ghost" className="min-h-8 px-2 py-1" onClick={() => moveVolume(volume.id, 'down')}>下移</Button>
+                      <ChevronRight size={16} className="text-slate-400" />
+                    </span>
+                  </button>
+                ))}
+              </div>
+            ) : readingUnits.length > 0 ? (
+              <div className="divide-y divide-slate-100">
+                {visibleReadingUnits.map((unit, index) => (
+                  <button key={unit.id} disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}`)} className="grid w-full grid-cols-[52px_minmax(0,1fr)_120px_24px] items-center gap-3 px-4 py-2.5 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
+                    <span className="text-xs tabular-nums text-slate-400">{String(index + 1).padStart(3, '0')}</span>
+                    <span className="min-w-0">
+                      <span className="block truncate font-medium text-slate-950">{unit.title}</span>
+                      <span className="mt-0.5 block truncate text-xs text-slate-400">{unit.href}</span>
+                    </span>
+                    <span className="hidden rounded-lg bg-slate-50 px-2 py-1 text-center text-xs text-slate-500 sm:block">{unit.unitType === 'page' ? '漫画页' : unit.mediaType ?? '章节'}</span>
+                    <ChevronRight size={16} className="text-slate-400" />
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <button disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}`)} className="flex w-full items-center justify-between px-4 py-4 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
+                <div className="text-sm text-slate-500">未拿到章节明细，可以进入阅读器检查内容。</div>
                 <ChevronRight size={16} className="text-slate-400" />
               </button>
             )}
-            {readingUnits.length > 80 ? <div className="py-4 text-sm text-slate-500">还有 {readingUnits.length - 80} 项未展开，进入阅读器可继续阅读。</div> : null}
           </div>
-        </div>
-        <div className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm lg:col-span-4">
-          <h2 className="text-lg font-semibold">{book.type === 'comic' ? '漫画信息' : '出版信息'}</h2>
-          <div className="mt-4 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">{book.status} · {book.progress}%</div>
-          {book.type === 'ebook' ? (
-            <>
-              <Info label="ISBN" value={metadata?.isbn ?? '未知'} />
-              <Info label="出版社" value={metadata?.publisher ?? '未知'} />
-              <Info label="语言" value={metadata?.language ?? '未知'} />
-            </>
-          ) : (
-            <>
-              <Info label="系列" value={String((metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.Series ?? (metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.series ?? '未知')} />
-              <Info label="卷数" value={String((metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.Volume ?? (metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.volume ?? '未知')} />
-              <Info label="页数" value={`${book.totalUnits || '未知'}`} />
-              <Info label="标签" value={book.tags.join(', ') || '无'} />
-            </>
-          )}
-        </div>
+          {readingUnits.length > visibleReadingUnits.length ? <div className="px-1 py-4 text-sm text-slate-500">还有 {readingUnits.length - visibleReadingUnits.length} 项未展开，进入阅读器可继续阅读。</div> : null}
+        </section>
+
+        <aside className="space-y-4">
+          <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-lg font-semibold text-slate-950">版本与文件</h2>
+              <span className="text-sm text-slate-500">{book.versionCount} 版 · {book.volumeCount} 卷</span>
+            </div>
+            <div className="mt-3 space-y-2">
+              {book.editions.map((edition) => (
+                <div key={edition.id} className={cn('rounded-2xl border p-3', edition.id === book.primaryEditionId ? 'border-blue-200 bg-blue-50/70' : 'border-slate-100 bg-slate-50/70')}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate font-medium text-slate-950">{edition.versionName}</div>
+                      <div className="mt-1 text-xs text-slate-500">{edition.format} · {edition.size} · {edition.formatValue === 'COMIC' ? `${edition.volumes.length} 卷` : `${edition.chapterCount ?? 0} 章`}</div>
+                    </div>
+                    {edition.primary ? <Badge tone="blue">主版本</Badge> : null}
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button variant="secondary" className="min-h-8 px-3 py-1.5" onClick={() => router.push(`/reader/${edition.id}${edition.volumes[0] ? `?volume=${encodeURIComponent(edition.volumes[0].id)}` : ''}`)}>阅读</Button>
+                    {!edition.primary ? <Button loading={busyAction === `primary:${edition.id}`} disabled={saving && busyAction !== `primary:${edition.id}`} variant="ghost" className="min-h-8 px-3 py-1.5" onClick={() => postAction(`/api/works/${book.id}/editions/${edition.id}/primary`, '已设为主版本', { refreshBook: true, busyKey: `primary:${edition.id}` })}>设为主版本</Button> : null}
+                    {book.editions.length > 1 ? <Button loading={busyAction === `split:${edition.id}`} disabled={saving && busyAction !== `split:${edition.id}`} variant="ghost" className="min-h-8 px-3 py-1.5" onClick={() => postAction(`/api/works/${book.id}/editions/${edition.id}/split`, '版本已拆出为新作品', { refreshBook: true, busyKey: `split:${edition.id}` })}>拆出</Button> : null}
+                  </div>
+                </div>
+              ))}
+              {book.editions.length === 0 ? <div className="text-sm text-slate-500">暂无可用版本。</div> : null}
+            </div>
+          </section>
+
+          <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
+            <h2 className="text-lg font-semibold text-slate-950">{book.type === 'comic' ? '漫画信息' : '元数据详情'}</h2>
+            <div className="mt-4 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">{book.status} · {book.progress}% · {book.trackingStatus}</div>
+            {book.type === 'ebook' ? (
+              <>
+                <Info label="ISBN" value={metadata?.isbn ?? '未知'} />
+                <Info label="出版社" value={metadata?.publisher ?? '未知'} />
+                <Info label="语言" value={metadata?.language ?? '未知'} />
+              </>
+            ) : (
+              <>
+                <Info label="系列" value={String((metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.Series ?? (metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.series ?? '未知')} />
+                <Info label="卷数" value={String((metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.Volume ?? (metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.volume ?? '未知')} />
+                <Info label="页数" value={`${book.totalUnits || '未知'}`} />
+                <Info label="标签" value={book.tags.join(', ') || '无'} />
+              </>
+            )}
+            <details className="group mt-4 rounded-2xl bg-slate-50">
+              <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-3 text-sm font-medium text-slate-700">
+                文件信息
+                <ChevronDown size={16} className="text-slate-400 transition group-open:rotate-180" />
+              </summary>
+              <div className="border-t border-slate-100 px-3 pb-3">
+                <Info label="源路径" value={book.path} />
+                <Info label="文件哈希" value={book.fileHash} />
+                <Info label="资源数量" value={`${book.files.length} 个文件`} />
+                <Info label="添加时间" value={book.added} />
+                <Info label="最新时间" value={formatDateTime(book.localLatestAt)} />
+              </div>
+            </details>
+          </section>
+        </aside>
       </div>
       <MetadataLookupModal
         book={book}

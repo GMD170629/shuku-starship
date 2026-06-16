@@ -303,6 +303,11 @@ function currentRenditionLocation(rendition: Rendition | null) {
   }
 }
 
+function hrefFromLocation(location: Location) {
+  const start = location.start as { href?: unknown } | undefined;
+  return typeof start?.href === 'string' ? start.href : '';
+}
+
 export function EbookReader({
   editionId,
   volumeId,
@@ -618,6 +623,7 @@ export function EbookReader({
           const cfi = location.start?.cfi ?? '';
           if (cfi) currentCfiRef.current = cfi;
           const sectionIndex = Math.max(0, Math.round(location.start?.index ?? 0));
+          const currentHref = hrefFromLocation(location);
           const displayed = location.start?.displayed;
           const displayedPage = typeof displayed?.page === 'number' && Number.isFinite(displayed.page)
             ? Math.max(1, Math.round(displayed.page))
@@ -644,6 +650,7 @@ export function EbookReader({
             pageIndex: fixedPage,
             totalPages: fixedTotal,
             sectionIndex,
+            currentHref,
             sectionPage: displayedPage,
             sectionTotalPages: displayedTotal,
             locationIndex,

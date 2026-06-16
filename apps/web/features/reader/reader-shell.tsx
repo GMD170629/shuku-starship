@@ -54,6 +54,7 @@ type ReaderShellProps = {
   title: string;
   readerType: ReaderKind;
   progress: ReaderProgress;
+  progressExtra?: Record<string, unknown>;
   controls: ReaderControls | null;
   settings: ReaderSettings;
   onBack: () => void;
@@ -67,6 +68,7 @@ export type ReaderNavigationItem = {
   index: number;
   title: string;
   href?: string;
+  sectionIndex?: number;
 };
 
 export type ReaderVolumeNavigation = {
@@ -85,7 +87,7 @@ export type ReaderVolumeNavigation = {
   loading: boolean;
   onSelectEdition: (editionId: string) => void;
   onSelectVolume: (volumeId: string) => void;
-  onSelectPage: (pageIndex: number) => void;
+  onSelectItem: (item: ReaderNavigationItem) => void;
 };
 
 type ReadingUnitsPayload = {
@@ -128,6 +130,38 @@ function clampPercent(value: number) {
 
 function progressPageLabel(progress: ReaderProgress) {
   return progress.total ? `第 ${progress.page} 页 / 共 ${progress.total} 页` : `第 ${progress.page} 页`;
+}
+
+function normalizeReaderHref(value: unknown) {
+  if (typeof value !== 'string') return '';
+  try {
+    return decodeURIComponent(value).split('#')[0].replace(/^\.?\//, '').replace(/\\/g, '/').toLowerCase();
+  } catch {
+    return value.split('#')[0].replace(/^\.?\//, '').replace(/\\/g, '/').toLowerCase();
+  }
+}
+
+function numberFromExtra(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function isActiveNavigationItem(readerType: ReaderKind, item: ReaderNavigationItem, progress: ReaderProgress, progressExtra: Record<string, unknown>) {
+  if (readerType === 'comic') return item.index === progress.page;
+  const currentHref = normalizeReaderHref(progressExtra.currentHref);
+  if (item.href && currentHref && normalizeReaderHref(item.href) === currentHref) return true;
+  const sectionIndex = numberFromExtra(progressExtra.sectionIndex ?? progressExtra.chapterIndex);
+  if (sectionIndex !== null) return item.sectionIndex === sectionIndex || item.index === sectionIndex + 1;
+  return false;
+}
+
+function navigationItemKey(item: ReaderNavigationItem) {
+  return `${item.index}:${item.href ?? ''}:${item.title}`;
+}
+
+function activeNavigationItem(readerType: ReaderKind, items: ReaderNavigationItem[], progress: ReaderProgress, progressExtra: Record<string, unknown>, selectedKey: string | null) {
+  const selectedItem = selectedKey ? items.find((item) => navigationItemKey(item) === selectedKey) : null;
+  if (selectedItem && isActiveNavigationItem(readerType, selectedItem, progress, progressExtra)) return selectedItem;
+  return items.find((item) => isActiveNavigationItem(readerType, item, progress, progressExtra)) ?? null;
 }
 
 function isDarkTheme(theme: ReaderTheme) {
@@ -214,7 +248,7 @@ function useReaderPwaSurface(theme: ReaderTheme) {
   }, [theme]);
 }
 
-export function ReaderShell({ editionId, title, readerType, progress, controls, settings, onBack, onSettingsChange, navigationItems, volumeNavigation, children }: ReaderShellProps) {
+export function ReaderShell({ editionId, title, readerType, progress, progressExtra = {}, controls, settings, onBack, onSettingsChange, navigationItems, volumeNavigation, children }: ReaderShellProps) {
   const controlsVisibleRef = useRef(false);
   const controlsRef = useRef<ReaderControls | null>(null);
   const panelRef = useRef<'toc' | 'settings' | null>(null);
@@ -224,8 +258,12 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
   const [panel, setPanel] = useState<'toc' | 'settings' | null>(null);
   const [navItems, setNavItems] = useState<ReaderNavigationItem[]>(navigationItems ?? []);
   const [navLoading, setNavLoading] = useState(false);
+  const [selectedNavigationKey, setSelectedNavigationKey] = useState<string | null>(null);
   const dark = isDarkTheme(settings.theme);
   const themeSurface = readerThemeSurfaces[settings.theme];
+  const currentNavigationItem = activeNavigationItem(readerType, navItems, progress, progressExtra, selectedNavigationKey);
+  const currentNavigationTitle = currentNavigationItem?.title ?? null;
+  const progressDetail = currentNavigationTitle ? `${currentNavigationTitle} · ${progress.label}` : progress.label;
   useReaderPwaSurface(settings.theme);
 
   function setControlsVisibility(visible: boolean) {
@@ -336,6 +374,14 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
   }, [editionId, navigationItems, readerType, settings.reversePages]);
 
   useEffect(() => {
+    if (!selectedNavigationKey) return;
+    const selectedItem = navItems.find((item) => navigationItemKey(item) === selectedNavigationKey);
+    if (!selectedItem || !isActiveNavigationItem(readerType, selectedItem, progress, progressExtra)) {
+      setSelectedNavigationKey(null);
+    }
+  }, [navItems, progress, progressExtra, readerType, selectedNavigationKey]);
+
+  useEffect(() => {
     if (navigationItems || panel !== 'toc' || navItems.length > 0) return;
     let active = true;
     setNavLoading(true);
@@ -351,7 +397,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
           setNavItems(orderedPages.map((page) => ({ index: page.pageIndex, title: page.title || `第 ${page.pageIndex} 页` })));
         } else {
           const data = payload.data as ReadingUnitsPayload['data'];
-          setNavItems((data?.readingUnits ?? []).map((unit) => ({ index: unit.sortOrder, title: unit.title || `第 ${unit.sortOrder} 章`, href: unit.href })));
+          setNavItems((data?.readingUnits ?? []).map((unit) => ({ index: unit.sortOrder, sectionIndex: Math.max(0, unit.sortOrder - 1), title: unit.title || `第 ${unit.sortOrder} 章`, href: unit.href })));
         }
       })
       .finally(() => {
@@ -367,6 +413,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
   }
 
   async function jumpToItem(item: ReaderNavigationItem) {
+    setSelectedNavigationKey(navigationItemKey(item));
     if (item.href && controls?.jumpToHref) {
       await controls.jumpToHref(item.href);
       return;
@@ -457,7 +504,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
             </div>
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold md:text-base">{title}</div>
-              <div className="truncate text-xs opacity-60">{readerType === 'comic' ? '漫画阅读' : 'EPUB 阅读'} · {progress.label}</div>
+              <div className="truncate text-xs opacity-60">{readerType === 'comic' ? '漫画阅读' : 'EPUB 阅读'} · {progressDetail}</div>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
@@ -538,7 +585,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
       {panel ? (
         <aside
           className={cn(
-            'absolute inset-x-0 bottom-0 z-30 max-h-[82dvh] w-full overflow-hidden overscroll-contain rounded-t-3xl border-t p-4 shadow-2xl backdrop-blur-xl md:inset-y-0 md:left-auto md:right-0 md:max-h-none md:max-w-sm md:rounded-none md:border-l md:border-t-0 md:p-5',
+            'absolute inset-x-0 bottom-0 z-30 flex max-h-[82dvh] w-full flex-col overflow-hidden overscroll-contain rounded-t-3xl border-t p-4 shadow-2xl backdrop-blur-xl md:inset-y-0 md:left-auto md:right-0 md:max-h-none md:max-w-sm md:rounded-none md:border-l md:border-t-0 md:p-5',
             dark ? 'border-white/10 bg-slate-950/95' : 'border-slate-200 bg-white/95'
           )}
           style={{
@@ -554,7 +601,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
           <div className="flex items-center justify-between gap-3">
             <div>
               <div className="text-sm font-semibold">{panel === 'toc' ? '目录' : '阅读设置'}</div>
-              <div className="mt-0.5 text-xs opacity-60">{progress.label}</div>
+              <div className="mt-0.5 text-xs opacity-60">{progressDetail}</div>
             </div>
             <button type="button" onClick={() => { setPanel(null); keepControlsOpen(); }} className="flex h-11 w-11 items-center justify-center rounded-full transition active:scale-[0.98] hover:bg-white/10" aria-label="关闭面板">
               <X size={18} />
@@ -566,16 +613,19 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
               navigation={volumeNavigation}
               readerType={readerType}
               progress={progress}
+              progressExtra={progressExtra}
+              activeItemKey={currentNavigationItem ? navigationItemKey(currentNavigationItem) : null}
               dark={dark}
-              onJumpPage={(pageIndex) => {
-                volumeNavigation.onSelectPage(pageIndex);
+              onJumpItem={(item) => {
+                setSelectedNavigationKey(navigationItemKey(item));
+                volumeNavigation.onSelectItem(item);
                 keepControlsOpen();
               }}
             />
           ) : null}
 
           {panel === 'toc' && !volumeNavigation ? (
-            <div data-pwa-scroll="true" className="mt-5 max-h-[calc(82dvh-6rem)] overflow-auto overscroll-contain pr-1 md:h-[calc(100%-4rem)] md:max-h-none">
+            <div data-pwa-scroll="true" className="mt-5 min-h-0 flex-1 overflow-auto overscroll-contain pr-1">
               {navLoading ? <div className="py-6 text-sm opacity-60">正在读取...</div> : null}
               {!navLoading && navItems.length === 0 ? <div className="py-6 text-sm opacity-60">暂无可跳转条目</div> : null}
               <div className="space-y-1">
@@ -584,7 +634,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
                     key={`${item.index}-${item.title}`}
                     type="button"
                     onClick={() => { void jumpToItem(item); }}
-                    className={cn('flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition active:scale-[0.99]', item.index === progress.page ? 'bg-blue-500 text-white' : 'hover:bg-white/10')}
+                    className={cn('flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition active:scale-[0.99]', currentNavigationItem && navigationItemKey(item) === navigationItemKey(currentNavigationItem) ? 'bg-blue-500 text-white' : 'hover:bg-white/10')}
                   >
                     <span className="w-9 shrink-0 tabular-nums opacity-60">{item.index}</span>
                     <span className="line-clamp-2">{item.title}</span>
@@ -595,7 +645,7 @@ export function ReaderShell({ editionId, title, readerType, progress, controls, 
           ) : null}
 
           {panel === 'settings' ? (
-            <div data-pwa-scroll="true" className="mt-5 max-h-[calc(82dvh-6rem)] space-y-5 overflow-auto overscroll-contain pr-1 text-sm md:max-h-none">
+            <div data-pwa-scroll="true" className="mt-5 min-h-0 flex-1 space-y-5 overflow-auto overscroll-contain pr-1 text-sm">
               {readerType === 'epub' ? (
                 <>
                   <SegmentedSetting
@@ -697,7 +747,7 @@ function SettingStepper({ label, value, onMinus, onPlus }: { label: string; valu
   );
 }
 
-function VolumeNavigationPanel({ navigation, readerType, progress, dark, onJumpPage }: { navigation: ReaderVolumeNavigation; readerType: ReaderKind; progress: ReaderProgress; dark: boolean; onJumpPage: (pageIndex: number) => void }) {
+function VolumeNavigationPanel({ navigation, readerType, progress, progressExtra, activeItemKey, dark, onJumpItem }: { navigation: ReaderVolumeNavigation; readerType: ReaderKind; progress: ReaderProgress; progressExtra: Record<string, unknown>; activeItemKey: string | null; dark: boolean; onJumpItem: (item: ReaderNavigationItem) => void }) {
   const currentEdition = navigation.editions.find((edition) => edition.id === navigation.currentEditionId);
   const currentVolume = navigation.volumeSections.find((volume) => volume.id === navigation.currentVolumeId);
   const showEditions = navigation.editions.length > 1;
@@ -706,7 +756,7 @@ function VolumeNavigationPanel({ navigation, readerType, progress, dark, onJumpP
   const isComic = readerType === 'comic';
 
   return (
-    <div data-pwa-scroll="true" className="mt-5 max-h-[calc(82dvh-6rem)] overflow-auto overscroll-contain pr-1 md:h-[calc(100%-4rem)] md:max-h-none">
+    <div data-pwa-scroll="true" className="mt-5 min-h-0 flex-1 overflow-auto overscroll-contain pr-1">
       {idleText ? <div className="mb-3 rounded-xl bg-white/10 px-3 py-2 text-xs opacity-70">{idleText}</div> : null}
       {showEditions ? (
         <VolumeNavigationGroup title="版本">
@@ -767,19 +817,24 @@ function VolumeNavigationPanel({ navigation, readerType, progress, dark, onJumpP
 
       <VolumeNavigationGroup title={isComic ? '当前卷页码' : '当前卷章节'}>
         {navigation.pages.length === 0 ? <div className="py-6 text-sm opacity-60">{isComic ? '暂无可跳转页码' : '暂无可跳转章节'}</div> : null}
-        <div className="grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-3">
+        <div className={isComic ? 'grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-3' : 'space-y-1'}>
           {navigation.pages.map((item) => (
             <button
               key={`${item.index}-${item.title}`}
               type="button"
               disabled={navigation.loading}
-              onClick={() => onJumpPage(item.index)}
+              onClick={() => onJumpItem(item)}
               className={cn(
-                'min-h-11 rounded-xl px-2 text-sm tabular-nums transition active:scale-[0.98] disabled:cursor-wait disabled:opacity-60',
-                item.index === progress.page ? 'bg-blue-500 text-white' : dark ? 'bg-white/10 hover:bg-white/15' : 'bg-slate-100 hover:bg-slate-200'
+                isComic ? 'min-h-11 rounded-xl px-2 text-sm tabular-nums transition active:scale-[0.98] disabled:cursor-wait disabled:opacity-60' : 'flex min-h-11 w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition active:scale-[0.99] disabled:cursor-wait disabled:opacity-60',
+                (activeItemKey ? navigationItemKey(item) === activeItemKey : isActiveNavigationItem(readerType, item, progress, progressExtra)) ? 'bg-blue-500 text-white' : dark ? 'bg-white/10 hover:bg-white/15' : 'bg-slate-100 hover:bg-slate-200'
               )}
             >
-              {item.index}
+              {isComic ? item.index : (
+                <>
+                  <span className="w-9 shrink-0 tabular-nums opacity-60">{item.index}</span>
+                  <span className="line-clamp-2">{item.title}</span>
+                </>
+              )}
             </button>
           ))}
         </div>

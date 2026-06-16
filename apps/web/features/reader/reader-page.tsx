@@ -59,6 +59,7 @@ type BootstrapPayload = {
 };
 
 type VolumeSection = { id: string; title: string; pageCount: number };
+type ReadingUnit = { title: string; sortOrder: number; href?: string };
 
 const defaultProgress: ReaderProgress = {
   page: 1,
@@ -223,8 +224,8 @@ function progressFromPayload(savedProgress: ProgressPayload | null | undefined) 
       position: typeof extra.cfi === 'string' ? extra.cfi : savedProgress.position ?? '',
       label: savedProgress.readerType === 'comic' && (savedProgress.page || extra.pageIndex)
         ? `${typeof extra.volumeTitle === 'string' ? `${extra.volumeTitle} · ` : ''}第 ${savedProgress.page ?? extra.pageIndex} 页`
-        : savedProgress.readerType === 'epub' && savedProgress.page
-          ? `第 ${savedProgress.page} 章`
+        : (savedProgress.readerType === 'epub' || savedProgress.readerType === 'ebook') && savedProgress.page
+          ? (typeof extra.totalPages === 'number' ? `第 ${savedProgress.page} / ${extra.totalPages} 页` : `第 ${savedProgress.page} 页`)
         : '正在定位'
     } satisfies ReaderProgress,
     extra
@@ -248,6 +249,15 @@ function mergeChangedExtra(current: Record<string, unknown>, next: Record<string
     }
   }
   return changed ? { ...current, ...next } : current;
+}
+
+function navigationItemsFromReadingUnits(units: ReadingUnit[] | undefined) {
+  return (units ?? []).map((unit) => ({
+    index: unit.sortOrder,
+    sectionIndex: Math.max(0, unit.sortOrder - 1),
+    title: unit.title || `第 ${unit.sortOrder} 章`,
+    href: unit.href
+  }));
 }
 
 export function ReaderPage({ editionId }: { editionId: string }) {
@@ -362,7 +372,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
       }
       setComicPages([]);
       setComicPageCount(null);
-      setNavigationItems((data.readingUnits ?? []).map((unit) => ({ index: unit.sortOrder, title: unit.title || `第 ${unit.sortOrder} 章`, href: unit.href })));
+      setNavigationItems(navigationItemsFromReadingUnits(data.readingUnits));
     }
     setHydrated(true);
   }
@@ -596,13 +606,17 @@ export function ReaderPage({ editionId }: { editionId: string }) {
       .finally(() => setVolumeNavigationLoading(false));
   }
 
-  function handleSelectComicPage(pageIndex: number) {
-    void controls?.jumpToIndex?.(pageIndex);
+  function handleSelectNavigationItem(item: ReaderNavigationItem) {
+    if (item.href && controls?.jumpToHref) {
+      void controls.jumpToHref(item.href);
+      return;
+    }
+    void controls?.jumpToIndex?.(item.index);
   }
 
   const volumeNavigation = useMemo<ReaderVolumeNavigation | undefined>(() => {
     if (!book || (readerType !== 'comic' && !(readerType === 'epub' && volumeSections.length > 1))) return undefined;
-    const pages = settings.reversePages ? [...navigationItems].reverse() : navigationItems;
+    const pages = readerType === 'comic' && settings.reversePages ? [...navigationItems].reverse() : navigationItems;
     return {
       editions: book.editions.map((edition) => ({
         id: edition.id,
@@ -619,7 +633,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
       loading: volumeNavigationLoading,
       onSelectEdition: handleSelectComicEdition,
       onSelectVolume: handleSelectVolume,
-      onSelectPage: handleSelectComicPage
+      onSelectItem: handleSelectNavigationItem
     };
   }, [book, volumeNavigationLoading, currentVolumeSection?.id, volumeSections, controls, editionId, navigationItems, readerType, settings.reversePages]);
 
@@ -650,6 +664,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
         title={book.title}
         readerType={readerType}
         progress={progress}
+        progressExtra={progressExtra}
         controls={controls}
         settings={settings}
         navigationItems={navigationItems}

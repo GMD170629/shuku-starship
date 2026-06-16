@@ -1127,6 +1127,40 @@ def test_monitor_folder_and_system_settings_mutations(client, db_session, test_s
     assert settings.json()["data"]["settings"]["readerTheme"] == "dark"
 
 
+def test_management_overview_events_and_folders(client, db_session, test_settings):
+    test_settings.resolved_monitor_root.mkdir(parents=True)
+    (test_settings.resolved_monitor_root / "incoming.epub").write_text("demo", encoding="utf-8")
+    _login(client, db_session)
+
+    created = client.post(
+        "/api/monitor-folders",
+        json={"name": "Inbox", "rootPath": str(test_settings.resolved_monitor_root), "enabled": True},
+    )
+    assert created.status_code == 201
+
+    db_session.execute(
+        text(
+            "INSERT INTO SystemEvent (id, level, source, actorType, action, targetType, targetId, message, metadata, createdAt) "
+            "VALUES ('event-1', 'warning', 'import', 'system', 'failed', 'importTask', 'task-1', '导入失败', '{\"reason\":\"bad file\"}', CURRENT_TIMESTAMP)"
+        )
+    )
+    db_session.commit()
+
+    overview = client.get("/api/management/overview")
+    assert overview.status_code == 200
+    assert overview.json()["data"]["cards"]["eventLogMaxBytes"] == 5 * 1024 * 1024
+
+    events = client.get("/api/management/events?level=warning&source=import")
+    assert events.status_code == 200
+    assert events.json()["data"]["events"][0]["message"] == "导入失败"
+    assert events.json()["data"]["events"][0]["metadata"]["reason"] == "bad file"
+
+    folders = client.get("/api/management/folders")
+    assert folders.status_code == 200
+    assert folders.json()["data"]["disk"]["sources"][0]["name"] == "Inbox"
+    assert folders.json()["data"]["disk"]["sources"][0]["readable"] is True
+
+
 def test_monitor_folder_move_requires_writable_root(client, db_session, test_settings, monkeypatch):
     test_settings.resolved_monitor_root.mkdir(parents=True)
     _login(client, db_session)

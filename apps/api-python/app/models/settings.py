@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Enum, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Enum, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -46,3 +46,19 @@ class SystemSetting(Base):
     value: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column("createdAt", DateTime, nullable=False, default=db_timestamp, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column("updatedAt", DateTime, nullable=False, default=db_timestamp, onupdate=db_timestamp, server_default=func.now())
+
+
+class SystemEvent(Base):
+    __tablename__ = "SystemEvent"
+
+    id: Mapped[str] = mapped_column(String(191), primary_key=True, default=cuid)
+    level: Mapped[str] = mapped_column(String(191), nullable=False, default="info")
+    source: Mapped[str] = mapped_column(String(191), nullable=False)
+    actor_type: Mapped[str] = mapped_column("actorType", String(191), nullable=False, default="system")
+    actor_id: Mapped[str | None] = mapped_column("actorId", String(191), nullable=True)
+    action: Mapped[str] = mapped_column(String(191), nullable=False)
+    target_type: Mapped[str | None] = mapped_column("targetType", String(191), nullable=True)
+    target_id: Mapped[str | None] = mapped_column("targetId", String(191), nullable=True)
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[dict | None] = mapped_column("metadata", JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column("createdAt", DateTime, nullable=False, default=db_timestamp, server_default=func.now())

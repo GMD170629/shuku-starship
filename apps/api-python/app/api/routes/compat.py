@@ -146,7 +146,7 @@ def _parse_json(value: Any, fallback: Any) -> Any:
 
 
 def _json_text(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False)
+    return json.dumps(value, ensure_ascii=False, default=str)
 
 
 def _nullable_float(value: Any, field_label: str) -> float | None:
@@ -278,6 +278,102 @@ def _format_bytes(value: Any) -> str:
         size /= 1024
         index += 1
     return f"{size:.0f} {units[index]}" if index == 0 else f"{size:.1f} {units[index]}"
+
+
+def _system_event_size_bytes(db: Session) -> int:
+    if not _has_table(db, "SystemEvent"):
+        return 0
+    return int(
+        _scalar(
+            db,
+            """
+            SELECT COALESCE(SUM(
+                LENGTH(COALESCE(`id`, '')) +
+                LENGTH(COALESCE(`level`, '')) +
+                LENGTH(COALESCE(`source`, '')) +
+                LENGTH(COALESCE(`actorType`, '')) +
+                LENGTH(COALESCE(`actorId`, '')) +
+                LENGTH(COALESCE(`action`, '')) +
+                LENGTH(COALESCE(`targetType`, '')) +
+                LENGTH(COALESCE(`targetId`, '')) +
+                LENGTH(COALESCE(`message`, '')) +
+                LENGTH(COALESCE(`metadata`, ''))
+            ), 0) FROM `SystemEvent`
+            """,
+            default=0,
+        )
+        or 0
+    )
+
+
+def _prune_system_events(db: Session, max_bytes: int = 5 * 1024 * 1024) -> dict[str, Any]:
+    if not _has_table(db, "SystemEvent"):
+        return {"deleted": 0, "sizeBytes": 0, "maxBytes": max_bytes}
+    deleted = 0
+    for level in ("info", "warning", "warn", "error"):
+        while _system_event_size_bytes(db) > max_bytes:
+            if level == "error":
+                rows = _rows(
+                    db,
+                    "SELECT `id` FROM `SystemEvent` WHERE `level` = :level AND `action` NOT IN ('deleted', 'restored', 'settings.updated', 'backup.restored') ORDER BY `createdAt` ASC LIMIT 100",
+                    {"level": level},
+                )
+            else:
+                rows = _rows(db, "SELECT `id` FROM `SystemEvent` WHERE `level` = :level ORDER BY `createdAt` ASC LIMIT 100", {"level": level})
+            ids = [row.get("id") for row in rows if row.get("id")]
+            if not ids:
+                break
+            params = {f"id_{index}": item for index, item in enumerate(ids)}
+            placeholders = ", ".join(f":id_{index}" for index in range(len(ids)))
+            result = db.execute(text(f"DELETE FROM `SystemEvent` WHERE `id` IN ({placeholders})"), params)
+            db.commit()
+            deleted += result.rowcount or 0
+    size_bytes = _system_event_size_bytes(db)
+    if deleted and _has_table(db, "SystemSetting"):
+        now = _now()
+        existing = _row(db, "SELECT `key` FROM `SystemSetting` WHERE `key` = :key", {"key": "events.lastPrunedAt"})
+        if existing:
+            db.execute(text("UPDATE `SystemSetting` SET `value` = :value, `updatedAt` = :now WHERE `key` = :key"), {"key": "events.lastPrunedAt", "value": now.isoformat(), "now": now})
+        else:
+            db.execute(text("INSERT INTO `SystemSetting` (`key`, `value`, `createdAt`, `updatedAt`) VALUES (:key, :value, :now, :now)"), {"key": "events.lastPrunedAt", "value": now.isoformat(), "now": now})
+        db.commit()
+    return {"deleted": deleted, "sizeBytes": size_bytes, "maxBytes": max_bytes}
+
+
+def _record_system_event(
+    db: Session,
+    *,
+    level: str = "info",
+    source: str,
+    action: str,
+    message: str,
+    actor_type: str = "system",
+    actor_id: str | None = None,
+    target_type: str | None = None,
+    target_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    if not _has_table(db, "SystemEvent"):
+        return
+    safe_level = "warning" if level == "warn" else level
+    _insert(
+        db,
+        "SystemEvent",
+        {
+            "id": f"py_{time_ns()}",
+            "level": safe_level if safe_level in {"info", "warning", "error"} else "info",
+            "source": source,
+            "actorType": actor_type,
+            "actorId": actor_id,
+            "action": action,
+            "targetType": target_type,
+            "targetId": target_id,
+            "message": message,
+            "metadata": _json_text(metadata or {}),
+            "createdAt": _now(),
+        },
+    )
+    _prune_system_events(db)
 
 
 def _coerce_int(value: Any, fallback: int = 0) -> int:
@@ -619,6 +715,60 @@ def _delete_work_and_storage(db: Session, work_id: str, settings: Settings) -> d
     return {"deleted": deleted, "id": work_id, **cleanup}
 
 
+def _path_tree(paths: list[str], root_label: str) -> dict[str, Any]:
+    root = {"name": root_label, "path": root_label, "type": "folder", "children": [], "fileCount": 0, "sizeBytes": 0}
+    children_by_path: dict[str, dict[str, Any]] = {root_label: root}
+    for raw_path in sorted({path for path in paths if path}):
+        parts = [part for part in Path(raw_path).parts if part not in {"/", ""}]
+        current = root
+        current_path = root_label
+        for index, part in enumerate(parts):
+            current_path = f"{current_path}/{part}"
+            node = children_by_path.get(current_path)
+            if not node:
+                node = {"name": part, "path": current_path, "type": "file" if index == len(parts) - 1 else "folder", "children": [], "fileCount": 0, "sizeBytes": 0}
+                children_by_path[current_path] = node
+                current["children"].append(node)
+            current = node
+            current["fileCount"] = int(current.get("fileCount") or 0) + (1 if index == len(parts) - 1 else 0)
+    return root
+
+
+def _source_folder_preview(root_path: str) -> dict[str, Any]:
+    path = Path(root_path)
+    readable = path.exists() and path.is_dir() and os.access(path, os.R_OK)
+    writable = path.exists() and path.is_dir() and os.access(path, os.W_OK)
+    children: list[dict[str, Any]] = []
+    if readable:
+        try:
+            for child in sorted(path.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))[:80]:
+                try:
+                    stat = child.stat()
+                    children.append({"name": child.name, "path": str(child), "type": "folder" if child.is_dir() else "file", "sizeBytes": 0 if child.is_dir() else stat.st_size, "mtimeMs": int(stat.st_mtime * 1000)})
+                except OSError:
+                    children.append({"name": child.name, "path": str(child), "type": "unknown", "sizeBytes": 0, "error": "无法读取"})
+        except OSError:
+            readable = False
+    return {"readable": readable, "writable": writable, "children": children}
+
+
+def _serialize_system_event(event: dict[str, Any]) -> dict[str, Any]:
+    metadata = _parse_json(event.get("metadata"), {})
+    return {
+        "id": event.get("id"),
+        "level": event.get("level") or "info",
+        "source": event.get("source") or "system",
+        "actorType": event.get("actorType") or "system",
+        "actorId": event.get("actorId"),
+        "action": event.get("action") or "",
+        "targetType": event.get("targetType"),
+        "targetId": event.get("targetId"),
+        "message": event.get("message") or "",
+        "metadata": metadata if isinstance(metadata, dict) else {},
+        "createdAt": _dt(event.get("createdAt")),
+    }
+
+
 def _normalize_monitor_root_path(value: Any) -> str:
     root_path = str(value or "").strip()
     if not root_path:
@@ -719,6 +869,150 @@ def dashboard_system_status(request: Request, db: Session = Depends(get_db), set
             "errorFileCount": _table_count(db, "ImportTask", "`status` = 'FAILED'"),
             "monitorRootReadable": checks.get("monitorRootReadable", {"status": "unknown", "message": "待检测"}),
             "storageWritable": checks.get("storageWritable", {"status": "unknown", "message": "待检测"}),
+        }
+    )
+
+
+@router.get("/management/overview")
+def management_overview(request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+    _user, auth_error = _auth(db, request, settings)
+    if auth_error:
+        return auth_error
+    health = run_system_health_checks(db, settings)
+    event_storage = _prune_system_events(db)
+    failed_imports = _table_count(db, "ImportTask", "`status` = 'FAILED'")
+    failed_downloads = _table_count(db, "DownloadTask", "`status` = 'failed'")
+    pending_organize = _table_count(db, "LibraryWork", "`hidden` = 0 AND `organizeStatus` IN ('PENDING', 'REVIEWING')")
+    managed_files = _rows(db, "SELECT `path` FROM `LibraryFile`") if _has_table(db, "LibraryFile") else []
+    file_paths = {str(item.get("path") or "") for item in managed_files if item.get("path")}
+    orphan_count = 0
+    library_root = settings.resolved_storage_root / "library"
+    if library_root.exists():
+        try:
+            for path in library_root.rglob("*"):
+                if path.is_file() and str(path) not in file_paths:
+                    orphan_count += 1
+                    if orphan_count > 1000:
+                        break
+        except OSError:
+            orphan_count = 0
+    checks = {item["name"]: item for item in health["checks"]}
+    recent_events = _rows(db, "SELECT * FROM `SystemEvent` ORDER BY `createdAt` DESC LIMIT 8") if _has_table(db, "SystemEvent") else []
+    storage = _scalar(db, "SELECT COALESCE(SUM(`sizeBytes`), 0) FROM `LibraryFile`", default=0) if _has_table(db, "LibraryFile") else 0
+    return ok(
+        {
+            "cards": {
+                "failedImports": failed_imports,
+                "failedDownloads": failed_downloads,
+                "orphanFiles": orphan_count,
+                "pendingOrganize": pending_organize,
+                "managedStorageBytes": int(storage or 0),
+                "eventLogSizeBytes": event_storage["sizeBytes"],
+                "eventLogMaxBytes": event_storage["maxBytes"],
+            },
+            "checks": {
+                "database": checks.get("database", {"status": "unknown", "message": "待检测"}),
+                "monitorRootReadable": checks.get("monitorRootReadable", {"status": "unknown", "message": "待检测"}),
+                "storageWritable": checks.get("storageWritable", {"status": "unknown", "message": "待检测"}),
+            },
+            "recentEvents": [_serialize_system_event(event) for event in recent_events],
+        }
+    )
+
+
+@router.get("/management/events")
+def list_system_events(request: Request, page: int = 1, pageSize: int = 50, level: str | None = None, source: str | None = None, targetType: str | None = None, search: str | None = None, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+    _user, auth_error = _auth(db, request, settings)
+    if auth_error:
+        return auth_error
+    page = max(1, page)
+    page_size = min(100, max(1, pageSize))
+    if not _has_table(db, "SystemEvent"):
+        return ok({"events": [], "page": page, "pageSize": page_size, "total": 0, "totalPages": 1, "storage": {"sizeBytes": 0, "maxBytes": 5 * 1024 * 1024}})
+    storage = _prune_system_events(db)
+    where: list[str] = []
+    params: dict[str, Any] = {"limit": page_size, "offset": (page - 1) * page_size}
+    if level:
+        where.append("`level` = :level")
+        params["level"] = "warning" if level == "warn" else level
+    if source:
+        where.append("`source` = :source")
+        params["source"] = source
+    if targetType:
+        where.append("`targetType` = :target_type")
+        params["target_type"] = targetType
+    if search:
+        where.append("(`message` LIKE :term OR `action` LIKE :term OR `targetId` LIKE :term)")
+        params["term"] = f"%{search.strip()}%"
+    where_sql = " AND ".join(where) if where else "1 = 1"
+    total = _table_count(db, "SystemEvent", where_sql, params)
+    events = _rows(db, f"SELECT * FROM `SystemEvent` WHERE {where_sql} ORDER BY `createdAt` DESC LIMIT :limit OFFSET :offset", params)
+    sources = _rows(db, "SELECT `source`, COUNT(*) AS `count` FROM `SystemEvent` GROUP BY `source` ORDER BY `source` ASC")
+    levels = _rows(db, "SELECT `level`, COUNT(*) AS `count` FROM `SystemEvent` GROUP BY `level` ORDER BY `level` ASC")
+    return ok({"events": [_serialize_system_event(event) for event in events], "page": page, "pageSize": page_size, "total": total, "totalPages": max(1, (total + page_size - 1) // page_size), "storage": storage, "facets": {"sources": sources, "levels": levels}})
+
+
+@router.delete("/management/events")
+def clear_system_events(request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+    user, auth_error = _auth(db, request, settings)
+    if auth_error:
+        return auth_error
+    if not _has_table(db, "SystemEvent"):
+        return ok({"deleted": 0})
+    result = db.execute(text("DELETE FROM `SystemEvent` WHERE `level` IN ('info', 'warning')"))
+    db.commit()
+    deleted = result.rowcount or 0
+    _record_system_event(db, level="info", source="system", action="events.cleared", actor_type="admin", actor_id=user.id, target_type="events", message=f"清理结构化日志 {deleted} 条", metadata={"deleted": deleted})
+    return ok({"deleted": deleted, "storage": _prune_system_events(db)})
+
+
+@router.get("/management/folders")
+def management_folders(request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+    _user, auth_error = _auth(db, request, settings)
+    if auth_error:
+        return auth_error
+    monitor_folders = _rows(db, "SELECT * FROM `MonitorFolder` ORDER BY `createdAt` DESC") if _has_table(db, "MonitorFolder") else []
+    source_nodes = [{**folder, **_source_folder_preview(str(folder.get("rootPath") or ""))} for folder in monitor_folders]
+    works = _rows(db, "SELECT `id`, `title`, `author`, `seriesName`, `workType`, `monitorFolderId`, `organizeStatus`, `hidden`, `updatedAt` FROM `LibraryWork` WHERE `hidden` = 0 ORDER BY `updatedAt` DESC LIMIT 300") if _has_table(db, "LibraryWork") else []
+    editions = _rows(db, "SELECT `workId`, COALESCE(SUM(`sizeBytes`), 0) AS `sizeBytes`, COUNT(*) AS `editionCount` FROM `LibraryEdition` WHERE `hidden` = 0 GROUP BY `workId`") if _has_table(db, "LibraryEdition") else []
+    size_by_work = {row.get("workId"): row for row in editions}
+    work_items = [{**work, "sizeBytes": int((size_by_work.get(work.get("id")) or {}).get("sizeBytes") or 0), "editionCount": int((size_by_work.get(work.get("id")) or {}).get("editionCount") or 0)} for work in works]
+
+    def grouped(key: str, fallback: str) -> list[dict[str, Any]]:
+        buckets: dict[str, list[dict[str, Any]]] = {}
+        for work in work_items:
+            value = str(work.get(key) or fallback).strip() or fallback
+            buckets.setdefault(value, []).append(work)
+        return [{"name": name, "count": len(items), "sizeBytes": sum(int(item.get("sizeBytes") or 0) for item in items), "items": items[:20]} for name, items in sorted(buckets.items(), key=lambda item: item[0])]
+
+    source_names = {folder.get("id"): folder.get("name") for folder in monitor_folders}
+    by_source: dict[str, list[dict[str, Any]]] = {}
+    for work in work_items:
+        name = source_names.get(work.get("monitorFolderId")) or "手动导入"
+        by_source.setdefault(str(name), []).append(work)
+    file_rows = _rows(db, "SELECT `path`, `sizeBytes` FROM `LibraryFile` ORDER BY `path` ASC LIMIT 2000") if _has_table(db, "LibraryFile") else []
+    managed_paths = []
+    storage_root = settings.resolved_storage_root
+    for file in file_rows:
+        path_value = str(file.get("path") or "")
+        try:
+            resolved = Path(path_value).resolve()
+            managed_paths.append(str(resolved.relative_to(storage_root.resolve())))
+        except Exception:
+            managed_paths.append(path_value)
+    return ok(
+        {
+            "logical": {
+                "series": grouped("seriesName", "未分系列"),
+                "authors": grouped("author", "未知作者"),
+                "formats": grouped("workType", "未知格式"),
+                "sources": [{"name": name, "count": len(items), "sizeBytes": sum(int(item.get("sizeBytes") or 0) for item in items), "items": items[:20]} for name, items in sorted(by_source.items(), key=lambda item: item[0])],
+            },
+            "disk": {
+                "sources": source_nodes,
+                "managed": {"rootPath": str(storage_root / "library"), "tree": _path_tree(managed_paths, "library")},
+            },
+            "works": work_items,
         }
     )
 
@@ -835,15 +1129,30 @@ async def update_work(work_id: str, request: Request, db: Session = Depends(get_
 
 @router.delete("/works/{work_id}")
 def delete_work(work_id: str, request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    return ok(_delete_work_and_storage(db, work_id, settings))
+    work = _get_work(db, work_id)
+    result = _delete_work_and_storage(db, work_id, settings)
+    if result.get("deleted"):
+        _record_system_event(
+            db,
+            level="error",
+            source="library",
+            actor_type="admin",
+            actor_id=user.id,
+            action="deleted",
+            target_type="work",
+            target_id=work_id,
+            message=f"彻底删除托管作品：{(work or {}).get('title') or work_id}",
+            metadata={"workTitle": (work or {}).get("title"), "deletedFiles": result.get("deletedFiles"), "failedFileDeletes": result.get("failedFileDeletes")},
+        )
+    return ok(result)
 
 
 @router.post("/works/bulk")
 async def bulk_works(request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
     payload = await request.json()
@@ -863,6 +1172,8 @@ async def bulk_works(request: Request, db: Session = Depends(get_db), settings: 
                 updated += 1
                 deleted_files += int(result.get("deletedFiles") or 0)
                 failed_file_deletes.extend(result.get("failedFileDeletes") or [])
+        if updated:
+            _record_system_event(db, level="error", source="library", actor_type="admin", actor_id=user.id, action="bulk.deleted", target_type="work", message=f"批量彻底删除托管作品 {updated} 个", metadata={"ids": ids, "deletedFiles": deleted_files, "failedFileDeletes": failed_file_deletes})
         return ok({"updated": updated, "deleted": updated, "deletedFiles": deleted_files, "failedFileDeletes": failed_file_deletes, "ids": ids})
     if _has_table(db, "LibraryWork") and ids and action in {"hide", "ignore", "restore", "unignore", "mark_organized"}:
         hidden = action in {"hide", "ignore"}
@@ -871,12 +1182,14 @@ async def bulk_works(request: Request, db: Session = Depends(get_db), settings: 
             values = {"hidden": hidden} if action != "mark_organized" else {"organized": organized}
             if _update(db, "LibraryWork", str(work_id), values):
                 updated += 1
+        if updated:
+            _record_system_event(db, level="info", source="library", actor_type="admin", actor_id=user.id, action=f"bulk.{action}", target_type="work", message=f"批量更新作品 {updated} 个", metadata={"ids": ids, "action": action})
     return ok({"updated": updated, "ids": ids})
 
 
 @router.post("/works/import")
 async def import_work(request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
     form = await request.form()
@@ -911,6 +1224,18 @@ async def import_work(request: Request, db: Session = Depends(get_db), settings:
             task = _row(db, "SELECT * FROM `ImportTask` WHERE `sourcePath` = :source_path ORDER BY `createdAt` DESC LIMIT 1", {"source_path": str(target)}) if _has_table(db, "ImportTask") else None
             if task:
                 tasks.append(task)
+                _record_system_event(
+                    db,
+                    level="warning" if result.import_status == "FAILED" else "info",
+                    source="import",
+                    actor_type="admin",
+                    actor_id=user.id,
+                    action="imported" if result.import_status != "FAILED" else "failed",
+                    target_type="importTask",
+                    target_id=task.get("id"),
+                    message=f"手动导入：{result.title}",
+                    metadata={"file": file_name, "workId": result.work_id, "editionId": result.edition_id, "duplicate": result.duplicate},
+                )
             results.append(
                 {
                     "bookId": result.book_id,
@@ -931,6 +1256,7 @@ async def import_work(request: Request, db: Session = Depends(get_db), settings:
             failed_task = _row(db, "SELECT * FROM `ImportTask` WHERE `sourcePath` = :source_path ORDER BY `createdAt` DESC LIMIT 1", {"source_path": str(target)}) if _has_table(db, "ImportTask") else None
             if failed_task:
                 tasks.append(failed_task)
+            _record_system_event(db, level="error", source="import", actor_type="admin", actor_id=user.id, action="failed", target_type="importTask", target_id=(failed_task or {}).get("id"), message=f"手动导入失败：{file_name}", metadata={"file": file_name, "error": str(exc)})
             return fail("导入失败", status_code=400, details={"file": file_name, "message": str(exc), "tasks": tasks})
 
     return ok({"tasks": tasks, "results": results, "queued": len(files), "imported": len(results)})
@@ -947,7 +1273,7 @@ def list_monitor_folders(request: Request, db: Session = Depends(get_db), settin
 
 @router.post("/monitor-folders")
 async def create_monitor_folder(request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
     payload = await request.json()
@@ -981,13 +1307,14 @@ async def create_monitor_folder(request: Request, db: Session = Depends(get_db),
     except IntegrityError:
         db.rollback()
         return fail("监控文件夹路径已存在", status_code=409, details={"rootPath": root_path})
+    _record_system_event(db, level="info", source="folder", actor_type="admin", actor_id=user.id, action="created", target_type="monitorFolder", target_id=folder.get("id"), message=f"新增来源目录：{folder.get('name')}", metadata={"rootPath": root_path, "importMode": import_mode})
     return ok({"folder": folder}, status_code=201)
 
 
 @router.put("/monitor-folders/{folder_id}")
 @router.patch("/monitor-folders/{folder_id}")
 async def update_monitor_folder(folder_id: str, request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
     payload = await request.json()
@@ -1017,15 +1344,21 @@ async def update_monitor_folder(folder_id: str, request: Request, db: Session = 
     except IntegrityError:
         db.rollback()
         return fail("监控文件夹路径已存在", status_code=409, details={"rootPath": values.get("rootPath")})
+    if values:
+        _record_system_event(db, level="info", source="folder", actor_type="admin", actor_id=user.id, action="updated", target_type="monitorFolder", target_id=folder_id, message=f"更新来源目录：{(folder or existing).get('name')}", metadata={"changes": values, "rootPath": (folder or existing).get("rootPath")})
     return ok({"folder": folder})
 
 
 @router.delete("/monitor-folders/{folder_id}")
 def delete_monitor_folder(folder_id: str, request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    return ok({"deleted": _delete(db, "MonitorFolder", folder_id), "id": folder_id})
+    existing = _row(db, "SELECT * FROM `MonitorFolder` WHERE `id` = :id", {"id": folder_id}) if _has_table(db, "MonitorFolder") else None
+    deleted = _delete(db, "MonitorFolder", folder_id)
+    if deleted:
+        _record_system_event(db, level="warning", source="folder", actor_type="admin", actor_id=user.id, action="deleted", target_type="monitorFolder", target_id=folder_id, message=f"删除来源目录：{(existing or {}).get('name') or folder_id}", metadata={"rootPath": (existing or {}).get("rootPath")})
+    return ok({"deleted": deleted, "id": folder_id})
 
 
 @router.get("/system-settings")
@@ -1040,7 +1373,7 @@ def get_system_settings(request: Request, db: Session = Depends(get_db), setting
 @router.put("/system-settings")
 @router.patch("/system-settings")
 async def update_system_settings(request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
     payload = await request.json()
@@ -1069,6 +1402,7 @@ async def update_system_settings(request: Request, db: Session = Depends(get_db)
             )
         saved[key] = value
     db.commit()
+    _record_system_event(db, level="warning", source="system", actor_type="admin", actor_id=user.id, action="settings.updated", target_type="settings", message=f"更新系统设置 {len(saved)} 项", metadata={"keys": list(saved.keys())})
     return ok({"settings": saved})
 
 
@@ -2195,11 +2529,12 @@ def list_download_tasks(request: Request, db: Session = Depends(get_db), setting
 
 @router.post("/download-tasks")
 async def create_download_task(request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
     payload = await request.json()
     task = _insert(db, "DownloadTask", {"id": f"py_{time_ns()}", "sourceId": payload.get("sourceId"), "searchRecordId": payload.get("searchRecordId"), "bookId": payload.get("bookId"), "type": payload.get("type") or "manual", "status": payload.get("status") or "queued", "displayName": payload.get("displayName") or payload.get("name") or "下载任务", "remoteRef": _json_text(payload.get("remoteRef", {})), "savePath": payload.get("savePath") or str(settings.resolved_download_inbox_path), "filePath": payload.get("filePath"), "errorMessage": payload.get("errorMessage"), "progress": payload.get("progress") if payload.get("progress") is not None else 0, "createdAt": _now(), "updatedAt": _now()}) if _has_table(db, "DownloadTask") else {"id": None}
+    _record_system_event(db, level="info", source="download", actor_type="admin", actor_id=user.id, action="created", target_type="downloadTask", target_id=task.get("id"), message=f"创建下载任务：{task.get('displayName')}", metadata={"status": task.get("status"), "type": task.get("type")})
     return ok({"task": task}, status_code=201)
 
 
@@ -2216,15 +2551,19 @@ def get_download_task(task_id: str, request: Request, db: Session = Depends(get_
 
 @router.delete("/download-tasks/{task_id}")
 def delete_download_task(task_id: str, request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    return ok({"deleted": _delete(db, "DownloadTask", task_id), "id": task_id})
+    task = _row(db, "SELECT * FROM `DownloadTask` WHERE `id` = :id", {"id": task_id}) if _has_table(db, "DownloadTask") else None
+    deleted = _delete(db, "DownloadTask", task_id)
+    if deleted:
+        _record_system_event(db, level="warning", source="download", actor_type="admin", actor_id=user.id, action="deleted", target_type="downloadTask", target_id=task_id, message=f"删除下载任务：{(task or {}).get('displayName') or task_id}", metadata={"status": (task or {}).get("status")})
+    return ok({"deleted": deleted, "id": task_id})
 
 
 @router.put("/download-tasks/{task_id}")
 async def update_download_task(task_id: str, request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
     payload = await request.json()
@@ -2235,6 +2574,7 @@ async def update_download_task(task_id: str, request: Request, db: Session = Dep
     task = _update(db, "DownloadTask", task_id, values)
     if not task:
         return fail("下载任务不存在", status_code=404)
+    _record_system_event(db, level="error" if task.get("status") == "failed" else "info", source="download", actor_type="admin", actor_id=user.id, action="updated", target_type="downloadTask", target_id=task_id, message=f"更新下载任务：{task.get('displayName')}", metadata={"changes": values, "status": task.get("status"), "errorMessage": task.get("errorMessage")})
     return ok({"task": task})
 
 
@@ -2243,7 +2583,7 @@ async def update_download_task(task_id: str, request: Request, db: Session = Dep
 @router.post("/download-tasks/{task_id}/cancel")
 @router.post("/download-tasks/{task_id}/import")
 def mutate_download_task(task_id: str, request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
     action = request.url.path.rsplit("/", 1)[-1]
@@ -2255,17 +2595,21 @@ def mutate_download_task(task_id: str, request: Request, db: Session = Depends(g
             if task.get("status") not in {"queued", "failed", "cancelled", "PENDING", "FAILED", "CANCELLED"}:
                 return fail("只有等待中、失败或已取消的任务可以重新排队", status_code=400)
             task = _update(db, "DownloadTask", task_id, {"status": "queued", "progress": 0, "errorMessage": None, "updatedAt": _now()})
+            _record_system_event(db, level="info", source="download", actor_type="admin", actor_id=user.id, action="retry", target_type="downloadTask", target_id=task_id, message=f"重新排队下载任务：{task.get('displayName')}", metadata={"status": task.get("status")})
             return ok({"task": task, "action": action})
         if task.get("status") not in {"queued", "failed", "PENDING", "FAILED"}:
             return fail("只有等待中或失败的任务可以开始下载", status_code=400)
         result = execute_download_task(db, settings, task_id)
+        _record_system_event(db, level="error" if result.task.get("status") == "failed" else "info", source="download", actor_type="admin", actor_id=user.id, action="start", target_type="downloadTask", target_id=task_id, message=f"执行下载任务：{result.task.get('displayName')}", metadata={"status": result.task.get("status"), "errorMessage": result.task.get("errorMessage"), "filePath": result.task.get("filePath")})
         return ok({"task": result.task, "action": action})
     if action == "cancel":
         task = _update(db, "DownloadTask", task_id, {"status": "cancelled", "updatedAt": _now()})
+        _record_system_event(db, level="warning", source="download", actor_type="admin", actor_id=user.id, action="cancelled", target_type="downloadTask", target_id=task_id, message=f"取消下载任务：{task.get('displayName')}", metadata={"status": task.get("status")})
         return ok({"task": task, "action": action})
     try:
         result = import_download_task(db, settings, task_id)
     except ValueError as exc:
+        _record_system_event(db, level="error", source="download", actor_type="admin", actor_id=user.id, action="import.failed", target_type="downloadTask", target_id=task_id, message=f"下载导入失败：{task.get('displayName')}", metadata={"error": str(exc)})
         return fail(str(exc), status_code=400)
     payload = {"task": result.task, "action": action}
     if result.import_result:
@@ -2280,6 +2624,7 @@ def mutate_download_task(task_id: str, request: Request, db: Session = Depends(g
             "totalUnits": result.import_result.total_units,
             "importStatus": result.import_result.import_status,
         }
+    _record_system_event(db, level="error" if result.task.get("status") == "failed" else "info", source="download", actor_type="admin", actor_id=user.id, action="imported", target_type="downloadTask", target_id=task_id, message=f"下载文件导入书库：{result.task.get('displayName')}", metadata={"status": result.task.get("status"), "workId": getattr(result.import_result, "work_id", None) if result.import_result else None, "errorMessage": result.task.get("errorMessage")})
     return ok(payload, status_code=400 if result.task.get("status") == "failed" else 200)
 
 
@@ -2305,7 +2650,7 @@ def list_import_tasks(request: Request, db: Session = Depends(get_db), settings:
 
 @router.delete("/import-tasks")
 def clear_import_tasks(request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
     deleted = 0
@@ -2313,12 +2658,14 @@ def clear_import_tasks(request: Request, db: Session = Depends(get_db), settings
         result = db.execute(text("DELETE FROM `ImportTask` WHERE `status` IN ('COMPLETED', 'FAILED')"))
         db.commit()
         deleted = result.rowcount or 0
+    if deleted:
+        _record_system_event(db, level="info", source="import", actor_type="admin", actor_id=user.id, action="tasks.cleared", target_type="importTask", message=f"清空已结束导入记录 {deleted} 条", metadata={"deleted": deleted})
     return ok({"deleted": deleted})
 
 
 @router.post("/import-tasks/rescan")
 def rescan_import_tasks(request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
-    _user, auth_error = _auth(db, request, settings)
+    user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
     requested_at = _now().isoformat()
@@ -2332,6 +2679,7 @@ def rescan_import_tasks(request: Request, db: Session = Depends(get_db), setting
                 {"key": "monitor.rescanRequestedAt", "value": requested_at, "created_at": _now(), "updated_at": _now()},
             )
         db.commit()
+    _record_system_event(db, level="info", source="import", actor_type="admin", actor_id=user.id, action="rescan.requested", target_type="monitorFolder", message="请求重新识别监控文件夹", metadata={"requestedAt": requested_at})
     return ok({"requestedAt": requested_at})
 
 

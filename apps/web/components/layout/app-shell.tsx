@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Search,
   Server,
+  ShieldCheck,
   Settings,
   User,
   UserCircle
@@ -35,6 +36,7 @@ const navItems = [
   { href: '/organize/pending', icon: FolderOpen, label: '待整理' },
   { href: '/downloads', icon: Download, label: '下载队列' },
   { href: '/import-tasks', icon: RefreshCw, label: '导入任务' },
+  { href: '/management', icon: ShieldCheck, label: '管理' },
   { href: '/settings', icon: Settings, label: '系统设置' }
 ];
 
@@ -43,15 +45,15 @@ const mobileNavItems = [
   { href: '/library', icon: Library, label: '书库' },
   { href: '/shelves', icon: BookMarked, label: '书架' },
   { href: '/organize/pending', icon: FolderOpen, label: '整理' },
-  { href: '/settings', icon: Settings, label: '设置' }
+  { href: '/management', icon: ShieldCheck, label: '管理' }
 ];
 
 const shellSurfaces = {
-  app: { background: '#F6F7F9', statusBarStyle: 'black-translucent' },
-  mobile: { background: '#F7F1E7', statusBarStyle: 'black-translucent' },
-  login: { background: '#F8FAFC', statusBarStyle: 'black-translucent' },
-  offline: { background: '#020617', statusBarStyle: 'black-translucent' }
-} satisfies Record<string, { background: string; statusBarStyle: 'default' | 'black-translucent' }>;
+  app: { background: '#F6F7F9', colorScheme: 'light', statusBarStyle: 'black-translucent' },
+  mobile: { background: '#F7F1E7', colorScheme: 'light', statusBarStyle: 'black-translucent' },
+  login: { background: '#F8FAFC', colorScheme: 'light', statusBarStyle: 'black-translucent' },
+  offline: { background: '#020617', colorScheme: 'dark', statusBarStyle: 'black-translucent' }
+} satisfies Record<string, { background: string; colorScheme: 'light' | 'dark'; statusBarStyle: 'default' | 'black-translucent' }>;
 
 type BooksPayload = {
   ok: boolean;
@@ -152,7 +154,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     function applySurface() {
       document.documentElement.style.backgroundColor = shellSurface.background;
       document.body.style.backgroundColor = shellSurface.background;
-      document.documentElement.style.colorScheme = shellSurface.statusBarStyle === 'black-translucent' ? 'dark' : 'light';
+      document.documentElement.style.colorScheme = shellSurface.colorScheme;
       const currentThemeColorMetas = Array.from(document.querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]'));
       const targetThemeColorMetas = currentThemeColorMetas.length > 0 ? currentThemeColorMetas : [ensureMeta('theme-color').meta];
       targetThemeColorMetas.forEach((meta) => {
@@ -395,7 +397,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen bg-[#F6F7F9] text-slate-950">
+    <div className="shuku-app-shell min-h-screen bg-[#F6F7F9] text-slate-950">
       <aside className="fixed inset-y-0 left-0 z-20 hidden w-72 flex-col border-r border-slate-200 bg-white/88 px-4 py-5 shadow-sm backdrop-blur-xl lg:flex">
         <Link href="/" className="flex shrink-0 items-center gap-3 px-2">
           <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-slate-950 text-white shadow-sm">

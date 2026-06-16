@@ -9,6 +9,43 @@ body {
   margin: 0;
 }
 
+.shuku-app-shell {
+  color-scheme: light;
+  scrollbar-color: #cbd5e1 #f1f5f9;
+}
+
+.shuku-app-shell * {
+  scrollbar-color: #cbd5e1 #f1f5f9;
+}
+
+.shuku-app-shell::-webkit-scrollbar,
+.shuku-app-shell *::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.shuku-app-shell::-webkit-scrollbar-track,
+.shuku-app-shell *::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+.shuku-app-shell::-webkit-scrollbar-thumb,
+.shuku-app-shell *::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border: 2px solid #f1f5f9;
+  border-radius: 999px;
+}
+
+.shuku-app-shell::-webkit-scrollbar-thumb:hover,
+.shuku-app-shell *::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+.shuku-app-shell input[type='checkbox'] {
+  accent-color: var(--shuku-accent);
+  color-scheme: light;
+}
+
 * {
   box-sizing: border-box;
 }
