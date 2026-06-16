@@ -153,7 +153,7 @@ export function DashboardPage() {
                   {recentBooks.map((book) => <BookCard key={book.id} book={book} compact onClick={() => router.push(`/works/${book.id}`)} />)}
                 </div>
               ) : (
-                <div className="mt-5 rounded-3xl bg-slate-50 p-8 text-sm text-slate-500">暂无读物，请上传 EPUB/CBZ/ZIP，或在系统设置中添加监控文件夹。</div>
+                <div className="mt-5 rounded-3xl bg-slate-50 p-8 text-sm text-slate-500">暂无读物，请上传 EPUB/PDF/CBZ/ZIP，或在系统设置中添加监控文件夹。</div>
               )}
             </div>
             <div className="space-y-6 xl:col-span-4">

@@ -6,7 +6,7 @@ import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
 import type { ComicDirection, ComicImageFit, ComicMode } from './comic-reader';
 
-export type ReaderKind = 'epub' | 'comic';
+export type ReaderKind = 'epub' | 'comic' | 'pdf';
 export type ReaderTheme = 'day' | 'warm' | 'night' | 'black';
 export type ReaderFontFamily = 'system' | 'serif' | 'sans';
 export type EbookFlow = 'paginated' | 'scrolled';
@@ -105,6 +105,13 @@ type ComicPagesPayload = {
   };
 };
 
+type PdfPagesPayload = {
+  ok: boolean;
+  data?: {
+    pageCount?: number;
+  };
+};
+
 export const readerThemeSurfaces: Record<ReaderTheme, { background: string; textClass: string; statusBarStyle: 'default' | 'black-translucent' }> = {
   day: { background: '#F7F7F4', textClass: 'text-slate-950', statusBarStyle: 'black-translucent' },
   warm: { background: '#FDF6EA', textClass: 'text-slate-950', statusBarStyle: 'black-translucent' },
@@ -114,6 +121,7 @@ export const readerThemeSurfaces: Record<ReaderTheme, { background: string; text
 
 const readerBottomAreaHeight = 'calc(6rem + env(safe-area-inset-bottom))';
 const readerBottomAreaOffset = 'calc(10px - env(safe-area-inset-bottom))';
+const readerBottomControlsMaxWidth = 'max-w-4xl';
 
 function ensureMeta(name: string) {
   const existing = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`);
@@ -147,6 +155,7 @@ function numberFromExtra(value: unknown) {
 
 function isActiveNavigationItem(readerType: ReaderKind, item: ReaderNavigationItem, progress: ReaderProgress, progressExtra: Record<string, unknown>) {
   if (readerType === 'comic') return item.index === progress.page;
+  if (readerType === 'pdf') return item.index === progress.page;
   const currentHref = normalizeReaderHref(progressExtra.currentHref);
   if (item.href && currentHref && normalizeReaderHref(item.href) === currentHref) return true;
   const sectionIndex = numberFromExtra(progressExtra.sectionIndex ?? progressExtra.chapterIndex);
@@ -387,7 +396,7 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
     setNavLoading(true);
     const endpoint = `/api/reader/${editionId}/bootstrap`;
     fetch(endpoint)
-      .then((response) => response.json() as Promise<ReadingUnitsPayload | ComicPagesPayload>)
+      .then((response) => response.json() as Promise<ReadingUnitsPayload | ComicPagesPayload | PdfPagesPayload>)
       .then((payload) => {
         if (!active || !payload.ok || !payload.data) return;
         if (readerType === 'comic') {
@@ -395,6 +404,9 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
           const pages: Array<{ pageIndex: number; title?: string }> = data?.pages?.length ? data.pages : Array.from({ length: data?.pageCount ?? 0 }, (_, index) => ({ pageIndex: index + 1 }));
           const orderedPages = settings.reversePages ? [...pages].reverse() : pages;
           setNavItems(orderedPages.map((page) => ({ index: page.pageIndex, title: page.title || `第 ${page.pageIndex} 页` })));
+        } else if (readerType === 'pdf') {
+          const data = payload.data as PdfPagesPayload['data'];
+          setNavItems(Array.from({ length: data?.pageCount ?? progress.total ?? 0 }, (_, index) => ({ index: index + 1, title: `第 ${index + 1} 页` })));
         } else {
           const data = payload.data as ReadingUnitsPayload['data'];
           setNavItems((data?.readingUnits ?? []).map((unit) => ({ index: unit.sortOrder, sectionIndex: Math.max(0, unit.sortOrder - 1), title: unit.title || `第 ${unit.sortOrder} 章`, href: unit.href })));
@@ -504,7 +516,7 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
             </div>
             <div className="min-w-0">
               <div className="truncate text-sm font-semibold md:text-base">{title}</div>
-              <div className="truncate text-xs opacity-60">{readerType === 'comic' ? '漫画阅读' : 'EPUB 阅读'} · {progressDetail}</div>
+              <div className="truncate text-xs opacity-60">{readerType === 'comic' ? '漫画阅读' : readerType === 'pdf' ? 'PDF 阅读' : 'EPUB 阅读'} · {progressDetail}</div>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1">
@@ -531,7 +543,7 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
         }}
         aria-hidden={controlsVisible}
       >
-        <div className="mx-auto flex h-full max-w-5xl flex-col gap-3">
+        <div className={cn('mx-auto flex h-full flex-col gap-3', readerBottomControlsMaxWidth)}>
           <div className="flex items-center justify-between gap-3 text-[11px] opacity-60 md:text-xs">
             <span className="truncate">{progressPageLabel(progress)}</span>
             <span className="shrink-0">{clampPercent(progress.percent)}%</span>
@@ -557,7 +569,7 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
         data-reader-control="true"
         onClick={stopControlEvent}
       >
-        <div className="mx-auto flex max-w-5xl flex-col gap-3">
+        <div className={cn('mx-auto flex flex-col gap-3', readerBottomControlsMaxWidth)}>
           <div className="flex items-center gap-2">
             <Button variant="ghost" icon={ChevronLeft} className={cn('min-h-11 shrink-0 px-3', dark ? 'text-slate-100 hover:bg-white/10' : '')} onClick={() => { void controls?.prev(); keepControlsOpen(); }}>
               <span className="hidden sm:inline">上一页</span>
@@ -686,7 +698,7 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
                     onChange={(value) => updateSettings({ ebookPageTurnAnimation: value as EbookPageTurnAnimation })}
                   />
                 </>
-              ) : (
+              ) : readerType === 'comic' ? (
                 <>
                   <button type="button" onClick={() => updateSettings({ theme: settings.theme === 'black' ? 'night' : 'black' })} className="flex min-h-11 items-center gap-2 rounded-xl bg-white/10 px-3 transition active:scale-[0.98] hover:bg-white/15">
                     {settings.theme === 'black' ? <Sun size={16} /> : <Moon size={16} />}
@@ -719,6 +731,21 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
                     <span>倒序页码</span>
                     <input type="checkbox" checked={settings.reversePages} onChange={(event) => updateSettings({ reversePages: event.target.checked })} className="h-5 w-5 accent-blue-500" />
                   </label>
+                </>
+              ) : (
+                <>
+                  <SegmentedSetting
+                    label="主题"
+                    value={settings.theme}
+                    options={[
+                      { value: 'day', label: '白天' },
+                      { value: 'warm', label: '暖色' },
+                      { value: 'night', label: '夜间' },
+                      { value: 'black', label: '纯黑' }
+                    ]}
+                    onChange={(value) => updateSettings({ theme: value as ReaderTheme })}
+                  />
+                  <SettingStepper label="缩放" value={`${Math.round(settings.zoom * 100)}%`} onMinus={() => updateSettings({ zoom: Math.max(0.6, Number((settings.zoom - 0.1).toFixed(1))) })} onPlus={() => updateSettings({ zoom: Math.min(2.4, Number((settings.zoom + 0.1).toFixed(1))) })} />
                 </>
               )}
             </div>

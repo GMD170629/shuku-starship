@@ -138,6 +138,12 @@ export function OrganizePage() {
   const selectedJobs = useMemo(() => jobs.filter((job) => selectedJobIds.includes(job.id)), [jobs, selectedJobIds]);
   const selectedBookIds = useMemo(() => selectedJobs.map((job) => job.book.id), [selectedJobs]);
   const allSelected = jobs.length > 0 && jobs.every((job) => selectedJobIds.includes(job.id));
+  const issueSummary = useMemo(() => ({
+    missingMetadata: jobs.filter((job) => missingLabels(job).some((label) => !['封面', '重复/版本'].includes(label))).length,
+    duplicates: jobs.filter((job) => job.duplicates.length > 0).length,
+    missingCover: jobs.filter((job) => !job.book.coverUrl || job.book.coverStatus !== 'READY').length,
+    newImports: jobs.filter((job) => job.issueCodes.includes('NEW_IMPORT')).length
+  }), [jobs]);
 
   function setSelected(jobId: string, selected: boolean) {
     setSelectedJobIds((current) => (selected ? [...new Set([...current, jobId])] : current.filter((id) => id !== jobId)));
@@ -223,6 +229,20 @@ export function OrganizePage() {
 
       {message ? <div className="rounded-2xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</div> : null}
       {error ? <div className="rounded-2xl border border-red-100 bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
+
+      <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+        {[
+          ['缺元数据', issueSummary.missingMetadata],
+          ['疑似重复', issueSummary.duplicates],
+          ['缺封面', issueSummary.missingCover],
+          ['待确认卷册', issueSummary.newImports]
+        ].map(([label, value]) => (
+          <div key={label} className="rounded-[22px] border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="text-xs text-slate-500">{label}</div>
+            <div className="mt-1 text-2xl font-semibold text-slate-950">{value}</div>
+          </div>
+        ))}
+      </div>
 
       <div className="rounded-[24px] border border-slate-200 bg-white p-4 shadow-sm">
         <div className="flex flex-wrap items-center gap-3 text-sm">

@@ -2935,6 +2935,28 @@ def test_file_streams_log_slow_requests(client, db_session, test_settings, tmp_p
 
 def test_manual_pdf_upload_imports_book(client, db_session, test_settings, tmp_path):
     create_worker_tables(db_session)
+    db_session.execute(
+        text(
+            """
+            CREATE TABLE LibraryReadingProgress (
+                id TEXT PRIMARY KEY, userId TEXT, workId TEXT, editionId TEXT, volumeId TEXT,
+                readerType TEXT, position TEXT, page INTEGER, percent REAL, extra TEXT,
+                createdAt TEXT, updatedAt TEXT
+            )
+            """
+        )
+    )
+    db_session.execute(
+        text(
+            """
+            CREATE TABLE ReaderPreference (
+                id TEXT PRIMARY KEY, userId TEXT, readerType TEXT, settings TEXT,
+                createdAt TEXT, updatedAt TEXT
+            )
+            """
+        )
+    )
+    db_session.commit()
     test_settings.resolved_storage_root.mkdir(parents=True)
     _login(client, db_session)
     pdf = tmp_path / "manual.pdf"
@@ -2953,6 +2975,25 @@ def test_manual_pdf_upload_imports_book(client, db_session, test_settings, tmp_p
     assert file_response.status_code == 206
     assert file_response.headers["content-type"].startswith("application/pdf")
     assert file_response.content == b"%PDF-"
+
+    bootstrap = client.get(f"/api/reader/{edition_id}/bootstrap")
+    assert bootstrap.status_code == 200
+    data = bootstrap.json()["data"]
+    assert data["readerType"] == "pdf"
+    assert data["book"]["formatValue"] == "PDF"
+    assert data["pageCount"] >= 1
+    assert data["volumeSection"]["pageCount"] == data["pageCount"]
+    assert data["pages"][0]["pageIndex"] == 1
+
+    saved = client.post(
+        f"/api/editions/{edition_id}/progress",
+        json={"readerType": "pdf", "position": "1", "page": 1, "percent": 0, "extra": {"pageIndex": 1, "totalPages": data["pageCount"]}},
+    )
+    assert saved.status_code == 200
+    assert saved.json()["data"]["progress"]["readerType"] == "pdf"
+    resumed = client.get(f"/api/reader/{edition_id}/bootstrap").json()["data"]
+    assert resumed["progress"]["readerType"] == "pdf"
+    assert resumed["progress"]["page"] == 1
 
 
 def test_manual_comic_upload_serves_archive_page(client, db_session, test_settings, tmp_path):

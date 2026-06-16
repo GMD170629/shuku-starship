@@ -59,6 +59,13 @@ function statusLabel(status: string) {
   return { new: '新结果', saved: '已保存', ignored: '已忽略', download_created: '已建下载', completed: '已导入', imported: '已导入', failed: '失败' }[status] ?? status;
 }
 
+function recordAvailability(record: SourceSearchRecordView) {
+  if (record.status === 'completed' || record.status === 'imported') return { label: '已导入书库', className: 'bg-emerald-50 text-emerald-700' };
+  if (record.status === 'download_created') return { label: '已创建下载任务', className: 'bg-blue-50 text-blue-700' };
+  if (record.downloadAvailable) return { label: '可加入下载队列', className: 'bg-emerald-50 text-emerald-700' };
+  return { label: '仅保存记录', className: 'bg-slate-100 text-slate-500' };
+}
+
 function dateLabel(value: string | null) {
   if (!value) return '';
   const date = new Date(value);
@@ -194,12 +201,16 @@ export function SourceResultsPage() {
       <div className="space-y-3">
         {records.map((record) => (
           <article key={record.id} className={cn('rounded-[24px] border bg-white p-5 shadow-sm', record.status === 'ignored' ? 'border-slate-100 opacity-70' : 'border-slate-200')}>
+            {(() => {
+              const availability = recordAvailability(record);
+              return (
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h2 className="break-words text-lg font-semibold text-slate-900">{record.title}</h2>
                   <span className="rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-600">{statusLabel(record.status)}</span>
                   <span className="rounded-full bg-blue-50 px-2 py-1 text-xs text-blue-700">{record.sourceName ?? record.providerType}</span>
+                  <span className={cn('rounded-full px-2 py-1 text-xs', availability.className)}>{availability.label}</span>
                 </div>
                 {record.subtitle ? <div className="mt-1 text-sm text-slate-500">{record.subtitle}</div> : null}
                 <div className="mt-3 flex flex-wrap gap-2 text-xs text-slate-600">
@@ -208,7 +219,6 @@ export function SourceResultsPage() {
                   {record.size ? <span className="rounded-full bg-slate-100 px-2 py-1">大小 {record.size}</span> : null}
                   {record.language ? <span className="rounded-full bg-slate-100 px-2 py-1">语言 {record.language}</span> : null}
                   {record.publishedAt ? <span className="rounded-full bg-slate-100 px-2 py-1">发布 {dateLabel(record.publishedAt)}</span> : null}
-                  <span className={cn('rounded-full px-2 py-1', record.downloadAvailable ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500')}>{record.downloadAvailable ? '可下载' : '不可下载'}</span>
                 </div>
                 {record.description ? <p className="mt-3 text-sm leading-6 text-slate-600">{record.description}</p> : null}
               </div>
@@ -221,6 +231,8 @@ export function SourceResultsPage() {
                 <Button loading={busy === `delete:${record.id}`} loadingText="删除中" variant="danger" icon={Trash2} onClick={() => void deleteRecord(record)}>删除</Button>
               </div>
             </div>
+              );
+            })()}
           </article>
         ))}
         {records.length === 0 ? <div className="rounded-[24px] border border-slate-200 bg-white p-8 text-sm text-slate-500 shadow-sm">暂无搜索结果记录。</div> : null}

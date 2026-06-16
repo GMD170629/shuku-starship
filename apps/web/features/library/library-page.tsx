@@ -42,6 +42,7 @@ const formatOptions = [
 
 const bulkFormatOptions = [
   { value: 'EPUB', label: 'EPUB' },
+  { value: 'PDF', label: 'PDF' },
   { value: 'COMIC', label: '漫画' }
 ];
 
@@ -298,13 +299,13 @@ export function LibraryPage() {
     <div className="space-y-6">
       <PageTitle
         title="我的书库"
-        desc="上传、浏览、搜索、筛选和批量管理 EPUB 与漫画读物。"
+        desc="上传、浏览、搜索、筛选和批量管理 EPUB、PDF 与漫画读物。"
         action={
           <div className="flex flex-wrap gap-3">
             <label className="inline-flex cursor-pointer items-center gap-2 rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700">
               <UploadCloud size={17} />
               {uploading ? '导入中...' : '上传读物'}
-              <input type="file" accept=".epub,.cbz,.zip,application/epub+zip,application/zip" className="hidden" disabled={uploading} onChange={(event) => void uploadBook(event.target.files?.[0] ?? null)} />
+              <input type="file" accept=".epub,.cbz,.zip,.pdf,application/epub+zip,application/zip,application/pdf" className="hidden" disabled={uploading} onChange={(event) => void uploadBook(event.target.files?.[0] ?? null)} />
             </label>
             <Button variant="secondary" icon={Plus} onClick={() => router.push('/settings')}>监控文件夹</Button>
           </div>
@@ -383,7 +384,7 @@ export function LibraryPage() {
                   {option.label}
                 </button>
               ))}
-              {['EPUB', 'CBZ', 'ZIP'].map((item) => (
+              {['EPUB', 'PDF', 'CBZ', 'ZIP'].map((item) => (
                 <button
                   key={item}
                   onClick={() => setFilter(item)}
@@ -432,11 +433,11 @@ export function LibraryPage() {
       {error ? <div className="rounded-3xl border border-red-100 bg-red-50 p-8 text-sm text-red-700">{error}</div> : null}
       {!loading && !error && books.length === 0 ? (
         <div className="rounded-3xl border border-slate-200 bg-white p-8">
-          <div className="text-sm text-slate-500">暂无读物，请上传 EPUB/CBZ/ZIP，或在系统设置中添加监控文件夹。</div>
+          <div className="text-sm text-slate-500">暂无读物，请上传 EPUB/PDF/CBZ/ZIP，或在系统设置中添加监控文件夹。</div>
           <div className="mt-5 flex flex-wrap gap-3">
             <label className="inline-flex cursor-pointer items-center gap-2 rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700">
               <UploadCloud size={17} />上传读物
-              <input type="file" accept=".epub,.cbz,.zip,application/epub+zip,application/zip" className="hidden" disabled={uploading} onChange={(event) => void uploadBook(event.target.files?.[0] ?? null)} />
+              <input type="file" accept=".epub,.cbz,.zip,.pdf,application/epub+zip,application/zip,application/pdf" className="hidden" disabled={uploading} onChange={(event) => void uploadBook(event.target.files?.[0] ?? null)} />
             </label>
             <Button variant="secondary" icon={RefreshCw} onClick={() => router.push('/settings')}>添加监控文件夹</Button>
           </div>

@@ -24,7 +24,8 @@ function Info({ label, value, green = false }: { label: string; value: string; g
 
 const formatOptions = [
   { value: 'COMIC', label: '漫画' },
-  { value: 'EPUB', label: 'EPUB' }
+  { value: 'EPUB', label: 'EPUB' },
+  { value: 'PDF', label: 'PDF' }
 ];
 
 const statusOptions = [

@@ -440,12 +440,12 @@ export function ComicReader({
   const imageClass = cn(
     'block',
     dark ? 'shadow-black/40' : 'shadow-slate-300/80',
-    imageFit === 'height' ? 'h-[calc(100dvh-1rem)] w-auto max-w-full md:h-[calc(100dvh-2rem)]' : '',
-    imageFit === 'contain' ? 'max-h-[calc(100dvh-1rem)] max-w-full object-contain md:max-h-[calc(100dvh-2rem)]' : '',
+    imageFit === 'height' ? 'h-[calc(100dvh-8rem)] w-auto max-w-full md:h-[calc(100dvh-10rem)]' : '',
+    imageFit === 'contain' ? 'max-h-[calc(100dvh-8rem)] max-w-full object-contain md:max-h-[calc(100dvh-10rem)]' : '',
     imageFit === 'width' && mode === 'continuous' ? 'w-full max-w-[52rem]' : '',
     imageFit === 'width' && mode === 'single' ? 'w-full max-w-[56rem]' : '',
     imageFit === 'width' && mode === 'double' ? 'w-full max-w-full' : '',
-    imageFit === 'original' ? 'h-auto w-auto max-h-[calc(100dvh-1rem)] max-w-full md:max-h-[calc(100dvh-2rem)]' : ''
+    imageFit === 'original' ? 'h-auto w-auto max-h-[calc(100dvh-8rem)] max-w-full md:max-h-[calc(100dvh-10rem)]' : ''
   );
   const continuousPageFrameClass = imageFit === 'width'
     ? 'max-w-[52rem]'
@@ -507,7 +507,7 @@ export function ComicReader({
     <div
       ref={scrollerRef}
       data-pwa-scroll="true"
-      className="h-full w-full overflow-auto overscroll-contain px-2 py-2 landscape:px-1 landscape:py-1 md:px-8 md:py-8"
+      className="h-full w-full overflow-auto overscroll-contain px-4 pb-4 pt-6 landscape:px-3 landscape:pb-3 landscape:pt-5 md:px-8 md:pb-6 md:pt-10"
       onScroll={mode === 'continuous' ? scheduleScrollProgress : undefined}
       dir={direction}
     >

@@ -376,7 +376,7 @@ export function MobileReaderApp() {
         <input
           ref={uploadInputRef}
           type="file"
-          accept=".epub,.cbz,.zip,application/epub+zip,application/zip"
+          accept=".epub,.cbz,.zip,.pdf,application/epub+zip,application/zip,application/pdf"
           className="hidden"
           disabled={uploading}
           onChange={uploadBook}
@@ -857,7 +857,7 @@ function MeView({
         </div>
       </section>
       <section className="space-y-3">
-        <MenuButton icon={UploadCloud} label={uploading ? '上传中...' : '上传读物'} value="EPUB / CBZ / ZIP" onClick={onUpload} />
+        <MenuButton icon={UploadCloud} label={uploading ? '上传中...' : '上传读物'} value="EPUB / PDF / CBZ / ZIP" onClick={onUpload} />
         <StatusPanel
           title="导入状态"
           value={importTask ? `正在导入 ${importTask.progress}%` : latestImport ? `最近任务 ${latestImport.status}` : '暂无导入任务'}
@@ -930,7 +930,7 @@ function EmptyLibrary({ onUpload }: { onUpload: () => void }) {
   return (
     <section className="rounded-[22px] border border-[#DED5C7] bg-[#FBF8F1] p-5">
       <h2 className="text-xl font-semibold">暂无读物</h2>
-      <p className="mt-2 text-sm leading-6 text-[#70665C]">上传 EPUB/CBZ/ZIP 后，就可以在手机上开始阅读。</p>
+      <p className="mt-2 text-sm leading-6 text-[#70665C]">上传 EPUB/PDF/CBZ/ZIP 后，就可以在手机上开始阅读。</p>
       <div className="mt-5 flex flex-col gap-3">
         <button type="button" onClick={onUpload} className="min-h-11 rounded-2xl bg-[#7A4B22] px-4 text-sm font-semibold text-white active:scale-[0.99]">上传读物</button>
       </div>

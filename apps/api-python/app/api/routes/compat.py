@@ -1474,8 +1474,22 @@ def reader_bootstrap(edition_id: str, request: Request, db: Session = Depends(ge
     }
     work_view = _work_view(db, work, user.id) if work else None
     book_view = {**work_view, "editionId": edition["id"], "formatValue": edition.get("format")} if work_view else None
-    reader_type = "comic" if edition.get("format") == "COMIC" else ("ebook" if edition.get("format") == "EPUB" else "unknown")
+    reader_type = "comic" if edition.get("format") == "COMIC" else ("ebook" if edition.get("format") == "EPUB" else ("pdf" if edition.get("format") == "PDF" else "unknown"))
     base_payload = {"book": book_view, "edition": edition, "units": units, "progress": progress, "preferences": preferences, "readerType": reader_type}
+    if reader_type == "pdf":
+        volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
+        volume = volumes[0] if volumes else None
+        page_count = int(volume.get("pageCount") or edition.get("pageCount") or 1) if volume else int(edition.get("pageCount") or 1)
+        return ok(
+            {
+                **base_payload,
+                "volumeSection": _volume_section_view(volume, "PDF", page_count) if volume else None,
+                "volumeSections": [_volume_section_view(item, "PDF") for item in volumes],
+                "pageCount": page_count,
+                "pages": [{"pageIndex": index + 1, "title": f"第 {index + 1} 页"} for index in range(page_count)],
+                "totalUnits": page_count,
+            }
+        )
     if reader_type == "ebook":
         requested_volume_id = request.query_params.get("volume")
         volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
@@ -1531,7 +1545,7 @@ def _reading_unit_view(unit: dict[str, Any]) -> dict[str, Any]:
 
 
 def _volume_section_view(volume: dict[str, Any], fmt: str, count_override: int | None = None) -> dict[str, Any]:
-    count_key = "pageCount" if fmt == "COMIC" else "chapterCount"
+    count_key = "pageCount" if fmt in {"COMIC", "PDF"} else "chapterCount"
     return {
         "id": volume["id"],
         "title": volume.get("title") or "未命名卷",
@@ -1553,6 +1567,12 @@ def _work_detail_navigation(db: Session, edition_id: str | None) -> dict[str, An
         return {
             "readingUnits": [],
             "volumeSections": [_volume_section_view(volume, "COMIC") for volume in volumes],
+        }
+    if edition.get("format") == "PDF":
+        volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
+        return {
+            "readingUnits": [],
+            "volumeSections": [_volume_section_view(volume, "PDF") for volume in volumes],
         }
     volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
     if len(volumes) > 1:
@@ -1589,7 +1609,7 @@ async def save_progress(edition_id: str, request: Request, db: Session = Depends
     if existing:
         progress = _update(db, "LibraryReadingProgress", existing["id"], values)
     elif _has_table(db, "LibraryReadingProgress"):
-        values.update({"id": f"py_{time_ns()}", "userId": user.id, "workId": edition["workId"], "editionId": edition_id, "volumeId": payload.get("volumeId"), "readerType": payload.get("readerType") or ("comic" if edition.get("format") == "COMIC" else "epub"), "createdAt": _now()})
+        values.update({"id": f"py_{time_ns()}", "userId": user.id, "workId": edition["workId"], "editionId": edition_id, "volumeId": payload.get("volumeId"), "readerType": payload.get("readerType") or ("comic" if edition.get("format") == "COMIC" else ("pdf" if edition.get("format") == "PDF" else "epub")), "createdAt": _now()})
         progress = _insert(db, "LibraryReadingProgress", values)
     else:
         progress = values

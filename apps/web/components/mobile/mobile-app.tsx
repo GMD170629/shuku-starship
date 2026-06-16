@@ -107,7 +107,7 @@ export function MobileApp() {
               <div className="mt-7 space-y-3">
                 <h2 className="font-semibold">最近新增</h2>
                 {books.slice(0, 3).map((book) => <MobileBookRow key={book.id} book={book} onClick={() => openBook(book)} />)}
-                {books.length === 0 ? <Empty>暂无读物，请上传 EPUB/CBZ/ZIP，或添加监控文件夹。</Empty> : null}
+                {books.length === 0 ? <Empty>暂无读物，请上传 EPUB/PDF/CBZ/ZIP，或添加监控文件夹。</Empty> : null}
               </div>
             </div>
           ) : null}
@@ -118,7 +118,7 @@ export function MobileApp() {
               <div className="mt-5 grid grid-cols-2 gap-4">
                 {books.map((book) => <button key={book.id} onClick={() => openBook(book)} className="rounded-[24px] bg-white p-3 text-left shadow-sm"><Cover book={book} className="h-40 w-full" small /><div className="mt-3 line-clamp-1 text-sm font-semibold">{book.title}</div><div className="mt-1 text-xs text-slate-500">{book.progress}% · {book.author}</div></button>)}
               </div>
-              {books.length === 0 ? <div className="mt-5"><Empty>暂无读物，请上传 EPUB/CBZ/ZIP，或添加监控文件夹。</Empty></div> : null}
+              {books.length === 0 ? <div className="mt-5"><Empty>暂无读物，请上传 EPUB/PDF/CBZ/ZIP，或添加监控文件夹。</Empty></div> : null}
             </div>
           ) : null}
           {mobilePage === 'mdetail' && selectedBook ? (
@@ -137,7 +137,7 @@ export function MobileApp() {
             <div onClick={() => setTools((value) => !value)} className={cn('relative h-full', night ? 'bg-[#111827] text-slate-100' : 'bg-[#F5F1E8] text-slate-900')}>
               {tools ? <div onClick={(event) => event.stopPropagation()} className="absolute inset-x-0 top-0 z-10 flex h-16 items-center justify-between bg-black/20 px-4 backdrop-blur"><button onClick={() => setMobilePage('mdetail')}><ChevronLeft /></button><div className="truncate text-sm font-medium">{selectedBook.title}</div><CheckCircle2 size={18} className="text-emerald-400" /></div> : null}
               <div className="px-7 pt-24 text-lg leading-[2.05]">
-                {selectedBook.formatValue === 'EPUB' ? <iframe title={selectedBook.title} src={`/reader/${selectedBook.editionId ?? selectedBook.id}`} className="h-[620px] w-full rounded-2xl bg-slate-950" /> : selectedBook.formatValue === 'COMIC' && selectedBook.volumes[0] ? <img src={`/api/volumes/${selectedBook.volumes[0].id}/pages/1`} alt={selectedBook.title} className="w-full rounded-2xl" /> : <div className="rounded-3xl bg-white/10 p-5 text-sm">该读物没有可读内容，或文件格式暂不支持。</div>}
+                {selectedBook.formatValue === 'EPUB' || selectedBook.formatValue === 'PDF' ? <iframe title={selectedBook.title} src={`/reader/${selectedBook.editionId ?? selectedBook.id}`} className="h-[620px] w-full rounded-2xl bg-slate-950" /> : selectedBook.formatValue === 'COMIC' && selectedBook.volumes[0] ? <img src={`/api/volumes/${selectedBook.volumes[0].id}/pages/1`} alt={selectedBook.title} className="w-full rounded-2xl" /> : <div className="rounded-3xl bg-white/10 p-5 text-sm">该读物没有可读内容，或文件格式暂不支持。</div>}
               </div>
               {tools ? <div onClick={(event) => event.stopPropagation()} className="absolute inset-x-0 bottom-0 z-10 bg-black/20 p-4 backdrop-blur"><div className="flex items-center gap-3"><Button variant="ghost" icon={ChevronLeft}>上一页</Button><Progress value={selectedBook.progress} className="flex-1" /><Button variant="ghost" icon={ChevronRight}>下一页</Button></div><div className="mt-4 grid grid-cols-4 gap-2 text-xs"><button className="rounded-2xl bg-white/10 p-3">字号</button><button className="rounded-2xl bg-white/10 p-3">亮度</button><button className="rounded-2xl bg-white/10 p-3">行距</button><button onClick={() => setNight((value) => !value)} className="rounded-2xl bg-white/10 p-3">{night ? '护眼' : '夜间'}</button></div></div> : null}
             </div>

@@ -73,6 +73,8 @@ const fontFamilies: Record<ReaderFontFamily, string> = {
   sans: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'
 };
 
+const readerContentMaxWidth = 960;
+
 const executableElementSelector = 'script, iframe, object, embed';
 const urlAttributeNames = ['href', 'src', 'xlink:href', 'formaction', 'action', 'data', 'poster', 'srcset'];
 const activeStylePattern = /(?:javascript\s*:|expression\s*\()/i;
@@ -820,12 +822,13 @@ export function EbookReader({
   }, []);
 
   const tokens = themeTokens[theme];
+  const constrainedPageWidth = Math.min(pageWidth, readerContentMaxWidth);
 
   return (
-    <div className="h-full w-full" data-allow-text-selection="true" style={{ background: tokens.background }}>
+    <div className="flex h-full w-full flex-col px-4 pb-4 pt-6 md:px-8 md:pb-6 md:pt-10" data-allow-text-selection="true" style={{ background: tokens.background }}>
       <div
-        className="relative h-full min-h-0 w-full overflow-hidden"
-        style={{ background: tokens.background }}
+        className="relative mx-auto min-h-0 w-full flex-1 overflow-hidden"
+        style={{ background: tokens.background, maxWidth: constrainedPageWidth }}
       >
         <div ref={containerRef} className="h-full w-full" aria-label={`${title} EPUB 阅读器`} />
         {loading || navigating ? (

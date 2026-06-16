@@ -1,6 +1,7 @@
 'use client';
 
-import { AlertTriangle, Ban, CheckCircle2, Download, FileCheck2, RefreshCw, RotateCcw, UploadCloud } from 'lucide-react';
+import { AlertTriangle, Ban, BookOpen, CheckCircle2, Download, FileCheck2, RefreshCw, RotateCcw, UploadCloud } from 'lucide-react';
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { Badge, type BadgeTone } from '../../components/ui/badge';
 import { Button } from '../../components/ui/button';
@@ -66,6 +67,17 @@ function statusTone(status: string): BadgeTone {
 function dateLabel(value: string) {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString();
+}
+
+function taskStageHint(task: DownloadTask) {
+  if (task.status === 'queued') return '等待开始，可手动开始下载或由队列处理。';
+  if (task.status === 'downloading') return '正在从外部来源保存文件。';
+  if (task.status === 'downloaded') return '文件已保存，下一步导入书库。';
+  if (task.status === 'importing') return '正在导入书库，完成后会进入书库和待整理。';
+  if (task.status === 'completed') return '已导入书库，可继续查看书库或待整理任务。';
+  if (task.status === 'failed') return '任务失败，可修正配置后重试。';
+  if (task.status === 'cancelled') return '任务已取消，可重新排队。';
+  return '';
 }
 
 export function DownloadsPage() {
@@ -237,6 +249,7 @@ export function DownloadsPage() {
                       <span className="rounded-full bg-slate-100 px-2 py-1">创建 {dateLabel(task.createdAt)}</span>
                       {task.progress !== null ? <span className="rounded-full bg-slate-100 px-2 py-1">进度 {task.progress}%</span> : null}
                     </div>
+                    {taskStageHint(task) ? <div className="mt-3 rounded-2xl bg-blue-50 px-4 py-3 text-sm text-blue-700">{taskStageHint(task)}</div> : null}
                     {task.errorMessage ? (
                       <div className="mt-3 flex gap-2 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">
                         <AlertTriangle size={16} className="mt-0.5 shrink-0" />
@@ -266,6 +279,7 @@ export function DownloadsPage() {
                     <Button loading={busy === `retry:${task.id}`} disabled={!['failed', 'cancelled'].includes(task.status)} variant="secondary" icon={RotateCcw} onClick={() => void postTaskAction(task, 'retry')}>重试</Button>
                     <Button loading={busy === `downloaded:${task.id}`} disabled={['downloaded', 'importing', 'completed'].includes(task.status)} variant="secondary" icon={FileCheck2} onClick={() => void updateTask(task, { status: 'downloaded' })}>标记已下载</Button>
                     <Button loading={busy === `completed:${task.id}`} disabled={task.status !== 'importing'} variant="secondary" icon={CheckCircle2} onClick={() => void updateTask(task, { status: 'completed' })}>标记导入完成</Button>
+                    {task.status === 'completed' ? <Link href={task.bookId ? `/works/${task.bookId}` : '/organize'} className="inline-flex min-h-11 items-center gap-2 rounded-2xl border border-slate-200 px-4 text-sm font-medium text-slate-700 hover:bg-slate-50"><BookOpen size={15} />{task.bookId ? '打开读物' : '查看待整理'}</Link> : null}
                     <Button loading={busy === `failed:${task.id}`} variant="danger" icon={AlertTriangle} onClick={() => markFailed(task)}>标记失败</Button>
                   </div>
                 </div>

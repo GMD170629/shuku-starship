@@ -51,6 +51,14 @@ const kindOptions = [
   { value: 'comic', label: '漫画' }
 ];
 
+function resultAvailability(result: SourceSearchResult, record?: SourceSearchRecordView) {
+  if (record?.status === 'completed' || record?.status === 'imported') return { label: '已导入书库', className: 'bg-emerald-50 text-emerald-700' };
+  if (record?.status === 'download_created') return { label: '已创建下载任务', className: 'bg-blue-50 text-blue-700' };
+  if (record?.status === 'ignored') return { label: '已忽略', className: 'bg-slate-100 text-slate-500' };
+  if (result.downloadAvailable) return { label: '可加入下载队列', className: 'bg-emerald-50 text-emerald-700' };
+  return { label: '仅保存记录', className: 'bg-slate-100 text-slate-500' };
+}
+
 export function SourceSearchPage() {
   const searchParams = useSearchParams();
   const urlKeyword = searchParams.get('keyword')?.trim() ?? '';
@@ -245,15 +253,14 @@ export function SourceSearchPage() {
           const record = records.find((item) => item.externalId === result.externalId);
           const queued = record?.status === 'download_created';
           const resultSource = sources.find((source) => source.id === result.sourceId);
+          const availability = resultAvailability(result, record);
           return (
           <article key={`${result.sourceId}-${result.externalId}`} className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
             <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <h2 className="break-words text-lg font-semibold text-slate-900">{result.title}</h2>
-                  <span className={cn('rounded-full px-2 py-1 text-xs', result.downloadAvailable ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500')}>
-                    {result.downloadAvailable ? '可下载' : '不可下载'}
-                  </span>
+                  <span className={cn('rounded-full px-2 py-1 text-xs', availability.className)}>{availability.label}</span>
                   {record ? (
                     <span className="rounded-full bg-blue-50 px-2 py-1 text-xs text-blue-700">
                       {record.status === 'ignored' ? '已忽略' : queued ? '已加入队列' : '已保存'}
