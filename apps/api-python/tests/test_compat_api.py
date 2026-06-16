@@ -940,6 +940,55 @@ def test_delete_work_removes_storage_managed_files_only(client, db_session, test
     assert db_session.execute(text("SELECT COUNT(*) FROM LibraryWork WHERE id = 'delete-with-files'")).scalar() == 0
 
 
+def test_regenerate_cover_uses_primary_edition_first_volume(client, db_session):
+    create_worker_tables(db_session)
+    _login(client, db_session)
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryWork (
+                id, monitorFolderId, origin, title, normalizedTitle, author, normalizedAuthor, description,
+                workType, status, publicationStatus, trackingStatus, tags, metadataQuality, organizeStatus,
+                coverPath, coverStatus, hidden, organized, primaryEditionId, mergeKey, createdAt, updatedAt
+            ) VALUES (
+                'work-cover', NULL, 'MANUAL', '星舰漫画', '星舰漫画', '画师', '画师', NULL,
+                'COMIC', 'WANT', 'UNKNOWN', 'NOT_TRACKING', '[]', 0, 'REVIEWING',
+                'books/work-cover/edition-main/volume-2/cover.jpg', 'READY', 0, 0,
+                'edition-main', 'comic:cover', 'now', 'now'
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryEdition (
+                id, workId, monitorFolderId, origin, format, versionName, versionKey, sourceGroupKey,
+                description, language, publisher, publishedAt, identifier, isbn, importStatus, importError,
+                sizeBytes, pageCount, chapterCount, coverPath, coverStatus, "primary", hidden, createdAt, updatedAt
+            ) VALUES (
+                'edition-main', 'work-cover', NULL, 'MANUAL', 'COMIC', '漫画版本', 'main', NULL,
+                NULL, NULL, NULL, NULL, NULL, NULL, 'COMPLETED', NULL,
+                0, 4, NULL, 'books/work-cover/edition-main/volume-2/cover.jpg', 'READY', 1, 0, 'now', 'now'
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryVolume (
+                id, editionId, title, volumeIndex, sortOrder, pageCount, chapterCount, coverPath, createdAt, updatedAt
+            ) VALUES
+                ('volume-2', 'edition-main', '第 2 卷', 2, 2000, 2, NULL, 'books/work-cover/edition-main/volume-2/cover.jpg', 'now', 'now'),
+                ('volume-1', 'edition-main', '第 1 卷', 1, 1000, 2, NULL, 'books/work-cover/edition-main/volume-1/cover.jpg', 'now', 'now')
+            """
+        )
+    )
+    db_session.commit()
+
+    response = client.post("/api/works/work-cover/cover/regenerate")
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert db_session.execute(text("SELECT coverPath FROM LibraryWork WHERE id = 'work-cover'")).scalar() == "books/work-cover/edition-main/volume-1/cover.jpg"
+
+
 def test_organize_jobs_return_frontend_contract(client, db_session):
     create_worker_tables(db_session)
     create_organize_detail_tables(db_session)

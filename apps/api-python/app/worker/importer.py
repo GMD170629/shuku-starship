@@ -847,7 +847,74 @@ def _finalize_work_primary(db: Session, work_id: str, edition_id: str, cover_pat
     work = _row(db, "SELECT * FROM `LibraryWork` WHERE `id` = :id", {"id": work_id})
     if not work:
         return
-    _update(db, "LibraryWork", work_id, {"primaryEditionId": work.get("primaryEditionId") or edition_id, "coverPath": work.get("coverPath") or cover_path, "coverStatus": "READY" if (work.get("coverPath") or cover_path) else work.get("coverStatus"), "updatedAt": _now()})
+    primary_edition_id = work.get("primaryEditionId") or edition_id
+    preferred_cover_path = _preferred_work_cover_path(db, work_id, primary_edition_id) or cover_path
+    current_cover_path = work.get("coverPath")
+    should_update_cover = not current_cover_path or _is_generated_work_cover_path(db, work_id, str(current_cover_path))
+    _update(
+        db,
+        "LibraryWork",
+        work_id,
+        {
+            "primaryEditionId": primary_edition_id,
+            "coverPath": preferred_cover_path if should_update_cover else current_cover_path,
+            "coverStatus": "READY" if ((preferred_cover_path if should_update_cover else current_cover_path)) else work.get("coverStatus"),
+            "updatedAt": _now(),
+        },
+    )
+
+
+def _preferred_work_cover_path(db: Session, work_id: str, primary_edition_id: str | None) -> str | None:
+    if primary_edition_id:
+        volume = _row(
+            db,
+            """
+            SELECT `coverPath`
+            FROM `LibraryVolume`
+            WHERE `editionId` = :edition_id AND `coverPath` IS NOT NULL AND `coverPath` != ''
+            ORDER BY
+                CASE WHEN `volumeIndex` IS NULL THEN 1 ELSE 0 END ASC,
+                `volumeIndex` ASC,
+                `sortOrder` ASC,
+                `createdAt` ASC
+            LIMIT 1
+            """,
+            {"edition_id": primary_edition_id},
+        )
+        if volume and volume.get("coverPath"):
+            return str(volume["coverPath"])
+        edition = _row(db, "SELECT `coverPath` FROM `LibraryEdition` WHERE `id` = :edition_id", {"edition_id": primary_edition_id})
+        if edition and edition.get("coverPath"):
+            return str(edition["coverPath"])
+    edition = _row(
+        db,
+        """
+        SELECT `coverPath`
+        FROM `LibraryEdition`
+        WHERE `workId` = :work_id AND `hidden` = 0 AND `coverPath` IS NOT NULL AND `coverPath` != ''
+        ORDER BY CASE WHEN `primary` = 1 THEN 0 ELSE 1 END ASC, `createdAt` ASC
+        LIMIT 1
+        """,
+        {"work_id": work_id},
+    )
+    return str(edition["coverPath"]) if edition and edition.get("coverPath") else None
+
+
+def _is_generated_work_cover_path(db: Session, work_id: str, cover_path: str) -> bool:
+    generated = _row(
+        db,
+        """
+        SELECT `coverPath` FROM `LibraryEdition` WHERE `workId` = :work_id AND `coverPath` = :cover_path
+        UNION
+        SELECT v.`coverPath`
+        FROM `LibraryVolume` v
+        JOIN `LibraryEdition` e ON e.`id` = v.`editionId`
+        WHERE e.`workId` = :work_id AND v.`coverPath` = :cover_path
+        LIMIT 1
+        """,
+        {"work_id": work_id, "cover_path": cover_path},
+    )
+    return generated is not None
 
 
 def _find_edition_duplicate_volume(db: Session, work_id: str, fmt: str, volume_index: float | None, volume_title: str) -> dict[str, Any] | None:

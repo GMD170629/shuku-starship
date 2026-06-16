@@ -266,13 +266,13 @@ def write_epub_without_toc_fixture(path: Path, one_body: str, two_body: str):
         archive.writestr("OEBPS/two.xhtml", f"<html><body>{two_body}</body></html>")
 
 
-def write_comic_fixture(path: Path):
+def write_comic_fixture(path: Path, volume: int = 1, cover_bytes: bytes = b"one"):
     with zipfile.ZipFile(path, "w") as archive:
         archive.writestr(
             "ComicInfo.xml",
-            """<ComicInfo><Title>第一卷</Title><Series>星舰漫画</Series><Volume>1</Volume><Writer>画师</Writer><Publisher>星舰出版社</Publisher><Summary>漫画简介</Summary><Tags>manga,space</Tags><Pages><Page Image="0" Type="FrontCover"/></Pages></ComicInfo>""",
+            f"""<ComicInfo><Title>第{volume}卷</Title><Series>星舰漫画</Series><Volume>{volume}</Volume><Writer>画师</Writer><Publisher>星舰出版社</Publisher><Summary>漫画简介</Summary><Tags>manga,space</Tags><Pages><Page Image="0" Type="FrontCover"/></Pages></ComicInfo>""",
         )
-        archive.writestr("001.jpg", b"one")
+        archive.writestr("001.jpg", cover_bytes)
         archive.writestr("002.jpg", b"two")
 
 
@@ -617,6 +617,24 @@ def test_import_comic_defers_page_units_and_detects_duplicate(db_session, test_s
     raw_metadata = json.loads(db_session.execute(text("SELECT rawJson FROM LibraryMetadata WHERE source = 'comic_info'")).scalar())
     assert raw_metadata["comicInfo"]["Publisher"] == "星舰出版社"
     assert raw_metadata["comicInfo"]["Tags"] == "manga,space"
+
+
+def test_import_comic_updates_generated_work_cover_to_first_volume(db_session, test_settings, tmp_path):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    volume_2 = tmp_path / "星舰漫画 Vol.2.zip"
+    volume_1 = tmp_path / "星舰漫画 Vol.1.zip"
+    write_comic_fixture(volume_2, volume=2, cover_bytes=b"volume-two-cover")
+    write_comic_fixture(volume_1, volume=1, cover_bytes=b"volume-one-cover")
+
+    first_import = import_managed_book(db_session, test_settings, ImportOptions(source_file_path=volume_2, origin="MANUAL", original_name=volume_2.name))
+    second_import = import_managed_book(db_session, test_settings, ImportOptions(source_file_path=volume_1, origin="MANUAL", original_name=volume_1.name))
+
+    assert first_import.work_id == second_import.work_id
+    work_cover = db_session.execute(text("SELECT coverPath FROM LibraryWork WHERE id = :work_id"), {"work_id": first_import.work_id}).scalar()
+    assert work_cover is not None
+    assert Path(work_cover).read_bytes() == b"volume-one-cover"
+    assert db_session.execute(text("SELECT volumeIndex FROM LibraryVolume WHERE coverPath = :cover_path"), {"cover_path": work_cover}).scalar() == 1
 
 
 def test_import_pdf_creates_library_records(db_session, test_settings, tmp_path):

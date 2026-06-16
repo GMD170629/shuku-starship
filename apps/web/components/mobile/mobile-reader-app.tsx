@@ -586,22 +586,14 @@ function ShelfOverviewHeader({ onAction }: { onAction: () => void }) {
 
 function ContinueCard({ item, onOpenBook }: { item: NonNullable<ContinueItem>; onOpenBook: OpenBookHandler }) {
   const entryRef = useRef<HTMLElement>(null);
-  const totalLabel = isComic(item.book)
-    ? item.book.pageCount
-      ? `${Math.max(1, Math.round((item.progress / 100) * item.book.pageCount))} / ${item.book.pageCount} 页`
-      : item.book.volumeCount > 0
-        ? `${item.book.volumeCount} 卷`
-        : ''
-    : item.book.chapterCount
-      ? `${Math.max(1, Math.round((item.progress / 100) * item.book.chapterCount))} / ${item.book.chapterCount} 章`
-      : '';
+  const progressLabel = `${Math.round(item.progress)}%`;
 
   return (
     <section
       ref={entryRef}
       data-mobile-book-entry="true"
       className="flex overflow-hidden border border-[#DCD4C6] bg-[#FBF8F1]"
-      style={{ height: sv(177), borderRadius: sv(10), boxShadow: `0 ${sv(5)} ${sv(14)} rgba(80,55,32,0.035)` }}
+      style={{ minHeight: sv(177), borderRadius: sv(10), boxShadow: `0 ${sv(5)} ${sv(14)} rgba(80,55,32,0.035)` }}
     >
       <button
         type="button"
@@ -613,7 +605,7 @@ function ContinueCard({ item, onOpenBook }: { item: NonNullable<ContinueItem>; o
         <Cover book={item.book} size="medium" className="h-full w-full rounded-none shadow-none" />
       </button>
       <div className="flex min-w-0 flex-1 flex-col" style={{ padding: `${sv(12)} ${sv(15)} ${sv(10)} ${sv(15)}` }}>
-        <div className="min-h-0">
+        <div className="min-h-0 flex-1 overflow-hidden">
           <span
             className="inline-flex items-center border border-[#D7CCB9] bg-[#F8F2E8] text-[#7B6A5B]"
             style={{ height: sv(18), borderRadius: sv(4), paddingLeft: sv(7), paddingRight: sv(7), fontSize: sv(10.5) }}
@@ -621,21 +613,20 @@ function ContinueCard({ item, onOpenBook }: { item: NonNullable<ContinueItem>; o
             {isComic(item.book) ? '漫画' : item.book.format}
           </span>
           <h2
-            className="truncate font-medium tracking-normal text-[#211C17]"
-            style={{ marginTop: sv(7), fontFamily: displayFont, fontSize: sv(19), lineHeight: sv(23) }}
+            className="line-clamp-2 overflow-hidden break-words font-medium tracking-normal text-[#211C17]"
+            style={{ marginTop: sv(7), fontFamily: displayFont, fontSize: sv(16.5), lineHeight: sv(20) }}
           >
             {item.book.title}
           </h2>
           <div className="truncate text-[#4D443C]" style={{ marginTop: sv(5), fontSize: sv(11), lineHeight: sv(13) }}>{bookMeta(item.book)}</div>
-          <div className="truncate text-[#6D5F52]" style={{ marginTop: sv(7), fontSize: sv(12), lineHeight: sv(14) }}>{item.chapter ?? item.book.chapter}</div>
         </div>
-        <div className="mt-auto">
+        <div className="shrink-0" style={{ marginTop: sv(8) }}>
           <div
             className="flex items-center justify-between leading-none text-[#7B6A5B]"
             style={{ marginBottom: sv(5), gap: sv(12), fontSize: sv(10.5) }}
           >
-            <span>已读 {Math.round(item.progress)}%</span>
-            {totalLabel ? <span>{totalLabel}</span> : null}
+            <span className="min-w-0 truncate">{item.chapter ?? item.book.chapter}</span>
+            <span className="shrink-0">{progressLabel}</span>
           </div>
           <BookProgress value={item.progress} style={{ height: sv(3) }} />
           <div className="flex" style={{ marginTop: sv(9), gap: sv(12) }}>

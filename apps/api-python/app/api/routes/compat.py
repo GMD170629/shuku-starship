@@ -1978,6 +1978,45 @@ def metadata_cover_proxy(url: str, request: Request, db: Session = Depends(get_d
     return Response(data, media_type=content_type, headers={"Cache-Control": "private, max-age=86400"})
 
 
+def _preferred_work_cover_path(db: Session, work_id: str) -> str | None:
+    work = _row(db, "SELECT `primaryEditionId` FROM `LibraryWork` WHERE `id` = :work_id", {"work_id": work_id}) if _has_table(db, "LibraryWork") else None
+    primary_edition_id = (work or {}).get("primaryEditionId")
+    if primary_edition_id and _has_table(db, "LibraryVolume"):
+        volume = _row(
+            db,
+            """
+            SELECT `coverPath`
+            FROM `LibraryVolume`
+            WHERE `editionId` = :edition_id AND `coverPath` IS NOT NULL AND `coverPath` != ''
+            ORDER BY
+                CASE WHEN `volumeIndex` IS NULL THEN 1 ELSE 0 END ASC,
+                `volumeIndex` ASC,
+                `sortOrder` ASC,
+                `createdAt` ASC
+            LIMIT 1
+            """,
+            {"edition_id": primary_edition_id},
+        )
+        if volume and volume.get("coverPath"):
+            return str(volume["coverPath"])
+    if primary_edition_id and _has_table(db, "LibraryEdition"):
+        edition = _row(db, "SELECT `coverPath` FROM `LibraryEdition` WHERE `id` = :edition_id", {"edition_id": primary_edition_id})
+        if edition and edition.get("coverPath"):
+            return str(edition["coverPath"])
+    edition = _row(
+        db,
+        """
+        SELECT `coverPath`
+        FROM `LibraryEdition`
+        WHERE `workId` = :work_id AND `hidden` = 0 AND `coverPath` IS NOT NULL AND `coverPath` != ''
+        ORDER BY CASE WHEN `primary` = 1 THEN 0 ELSE 1 END ASC, `createdAt` ASC
+        LIMIT 1
+        """,
+        {"work_id": work_id},
+    ) if _has_table(db, "LibraryEdition") else None
+    return str(edition["coverPath"]) if edition and edition.get("coverPath") else None
+
+
 @router.post("/works/{work_id}/cover/upload")
 async def upload_cover(work_id: str, request: Request, cover: UploadFile = File(...), db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
     _user, auth_error = _auth(db, request, settings)
@@ -1999,6 +2038,10 @@ def regenerate_cover(work_id: str, request: Request, db: Session = Depends(get_d
     _user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
+    cover_path = _preferred_work_cover_path(db, work_id)
+    if not cover_path:
+        return fail("没有可用的卷册封面", status_code=404)
+    _update(db, "LibraryWork", work_id, {"coverPath": cover_path, "coverStatus": "READY", "updatedAt": _now()})
     return ok({"bookId": work_id, "coverUrl": f"/api/works/{work_id}/cover?size=medium&v={int(_now().timestamp())}"})
 
 
