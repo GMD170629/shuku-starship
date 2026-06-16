@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertCircle, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Database, Download, Edit3, EyeOff, FileText, RefreshCw, Save, Trash2, UploadCloud, X } from 'lucide-react';
+import { AlertCircle, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Database, Download, Edit3, EyeOff, RefreshCw, Save, Trash2, UploadCloud, X } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Cover } from '../../components/book/cover';
@@ -48,6 +48,8 @@ const trackingStatusOptions = [
   { value: 'PAUSED', label: '暂停追更' },
   { value: 'IGNORED', label: '忽略更新' }
 ];
+
+const DEFAULT_DESCRIPTION = '暂无简介，可在详情页补充元数据。';
 
 function toDateTimeLocal(value: string | null) {
   if (!value) return '';
@@ -98,11 +100,6 @@ function metadataMissingLabels(book: WorkView, metadata: DetailMetadata | null) 
   const missing: string[] = [];
   if (!book.author || book.author === '未知作者') missing.push('作者');
   if (!book.seriesName) missing.push('系列');
-  if (book.type === 'ebook') {
-    if (!metadata?.isbn) missing.push('ISBN');
-    if (!metadata?.publisher) missing.push('出版社');
-    if (!metadata?.language) missing.push('语言');
-  }
   if (!book.publishedYear) missing.push('出版年');
   if (!book.tags.length) missing.push('标签');
   return missing;
@@ -162,7 +159,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
           setForm({
             title: nextBook.title,
             author: nextBook.author === '未知作者' ? '' : nextBook.author,
-            description: nextBook.desc === '暂无简介，可在详情页补充元数据。' ? '' : nextBook.desc,
+            description: nextBook.desc === DEFAULT_DESCRIPTION ? '' : nextBook.desc,
             seriesName: nextBook.seriesName ?? '',
             seriesIndex: nextBook.seriesIndex === null ? '' : String(nextBook.seriesIndex),
             publishedYear: nextBook.publishedYear === null ? '' : String(nextBook.publishedYear),
@@ -375,15 +372,16 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   }
 
   if (error && !book) return <div className="rounded-3xl border border-red-100 bg-red-50 p-8 text-sm text-red-700">{error}</div>;
-  if (!book || !displayBook) return <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取读物详情...</div>;
+  if (!book || !displayBook) return <div className="shuku-loading-panel p-8 text-sm" role="status" aria-live="polite">正在读取读物详情...</div>;
   const readerEditionId = readableEditionId(book);
   const hasVolumeSections = volumeSections.length > 0;
   const readerUrl = readerUrlForBook(book, volumeSections);
   const missingMetadata = metadataMissingLabels(book, metadata);
   const quality = qualityLabel(book.metadataQuality);
-  const primaryEdition = book.editions.find((edition) => edition.id === book.primaryEditionId) ?? book.editions.find((edition) => !edition.hidden) ?? book.editions[0] ?? null;
   const visibleReadingUnits = readingUnits.slice(0, 120);
-  const chapterHealth = hasVolumeSections ? `${volumeSections.length} 个卷册` : readingUnits.length > 0 ? `${readingUnits.length} 个章节` : '未解析章节';
+  const navigationTitle = hasVolumeSections ? '卷册' : '章节';
+  const navigationSummary = hasVolumeSections ? `${volumeSections.length} 个卷册` : readingUnits.length > 0 ? `${readingUnits.length} 章` : '未解析章节';
+  const hasDescription = Boolean(book.desc && book.desc !== DEFAULT_DESCRIPTION);
 
   return (
     <div className="space-y-5">
@@ -425,6 +423,12 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
                 </div>
               </div>
             </div>
+            <section className="mt-4 rounded-2xl bg-slate-50 px-4 py-3">
+              <h2 className="text-sm font-semibold text-slate-950">简介</h2>
+              <p className={cn('mt-2 whitespace-pre-line text-sm leading-6', hasDescription ? 'line-clamp-5 text-slate-700' : 'text-slate-400')}>
+                {hasDescription ? book.desc : '暂无简介'}
+              </p>
+            </section>
             <div className="mt-4 flex flex-wrap gap-2">
               <Button disabled={!readerEditionId || !readerUrl} icon={BookOpen} onClick={() => readerUrl && router.push(readerUrl)}>{book.progress > 0 ? '继续阅读' : '开始阅读'}</Button>
               <Button variant="secondary" icon={Edit3} onClick={() => setEditing((value) => !value)}>{editing ? '收起编辑' : '编辑信息'}</Button>
@@ -446,8 +450,8 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
             </div>
             <div className="mt-3 grid gap-2 text-sm">
               <div className="flex items-center justify-between rounded-xl bg-white px-3 py-2">
-                <span className="text-slate-500">章节结构</span>
-                <span className="font-medium text-slate-950">{chapterHealth}</span>
+                <span className="text-slate-500">{navigationTitle}</span>
+                <span className="font-medium text-slate-950">{navigationSummary}</span>
               </div>
               <div className="flex items-center justify-between rounded-xl bg-white px-3 py-2">
                 <span className="text-slate-500">版本</span>
@@ -555,50 +559,43 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
         <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <h2 className="text-lg font-semibold text-slate-950">{hasVolumeSections ? '卷册与章节' : '章节列表'}</h2>
-              <p className="mt-1 text-sm text-slate-500">{chapterHealth} · 点击进入阅读器校对内容</p>
-            </div>
-            <div className="flex items-center gap-2 text-sm text-slate-500">
-              <FileText size={16} />
-              <span>{primaryEdition ? compactEditionLabel(book) : '暂无版本'}</span>
+              <h2 className="text-lg font-semibold text-slate-950">{navigationTitle}</h2>
+              <p className="mt-1 text-sm text-slate-500">{navigationSummary}</p>
             </div>
           </div>
-          <div className="mt-4 overflow-hidden rounded-2xl border border-slate-100">
+          <div className="mt-4 overflow-x-auto pb-2">
             {hasVolumeSections ? (
-              <div className="divide-y divide-slate-100">
+              <div className="flex gap-3">
                 {volumeSections.map((volume, index) => (
-                  <button key={volume.id} disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}?volume=${encodeURIComponent(volume.id)}`)} className="grid w-full grid-cols-[42px_48px_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2.5 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
-                    <span className="text-right text-xs tabular-nums text-slate-400">{String(index + 1).padStart(2, '0')}</span>
-                    <img src={volume.coverUrl} alt={`${volume.title} 封面`} className="h-16 w-11 rounded-md object-cover" />
-                    <span className="min-w-0">
-                      <span className="block truncate font-medium text-slate-950">{volume.title}</span>
-                      <span className="mt-1 block text-xs text-slate-500">{book.format} · {volume.pageCount} {book.type === 'comic' ? '页' : '章'}</span>
-                    </span>
-                    <span className="flex items-center gap-1" onClick={(event) => event.stopPropagation()}>
-                      <Button loading={busyAction === `move:${volume.id}:up`} disabled={saving && busyAction !== `move:${volume.id}:up`} variant="ghost" className="min-h-8 px-2 py-1" onClick={() => moveVolume(volume.id, 'up')}>上移</Button>
-                      <Button loading={busyAction === `move:${volume.id}:down`} disabled={saving && busyAction !== `move:${volume.id}:down`} variant="ghost" className="min-h-8 px-2 py-1" onClick={() => moveVolume(volume.id, 'down')}>下移</Button>
-                      <ChevronRight size={16} className="text-slate-400" />
-                    </span>
-                  </button>
+                  <div key={volume.id} className="group relative w-36 shrink-0 rounded-2xl border border-slate-100 bg-white p-2 shadow-sm transition hover:border-blue-100 hover:shadow-md">
+                    <button disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}?volume=${encodeURIComponent(volume.id)}`)} className="block w-full text-left disabled:cursor-not-allowed disabled:opacity-50">
+                      <span className="absolute left-3 top-3 rounded-full bg-white/90 px-2 py-0.5 text-xs tabular-nums text-slate-500 shadow-sm">{String(index + 1).padStart(2, '0')}</span>
+                      <img src={volume.coverUrl} alt={`${volume.title} 封面`} className="aspect-[2/3] w-full rounded-xl object-cover bg-slate-100" />
+                      <span className="mt-2 block line-clamp-2 min-h-10 text-sm font-medium leading-5 text-slate-950">{volume.title}</span>
+                    </button>
+                    <div className="absolute right-3 top-3 flex overflow-hidden rounded-full border border-slate-100 bg-white/95 opacity-0 shadow-sm transition group-hover:opacity-100 group-focus-within:opacity-100">
+                      <button type="button" disabled={saving && busyAction !== `move:${volume.id}:up`} onClick={() => moveVolume(volume.id, 'up')} className="flex h-8 w-8 items-center justify-center text-slate-500 transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50" aria-label={`前移 ${volume.title}`}>
+                        <ChevronLeft size={15} />
+                      </button>
+                      <button type="button" disabled={saving && busyAction !== `move:${volume.id}:down`} onClick={() => moveVolume(volume.id, 'down')} className="flex h-8 w-8 items-center justify-center border-l border-slate-100 text-slate-500 transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50" aria-label={`后移 ${volume.title}`}>
+                        <ChevronRight size={15} />
+                      </button>
+                    </div>
+                  </div>
                 ))}
               </div>
             ) : readingUnits.length > 0 ? (
-              <div className="divide-y divide-slate-100">
+              <div className="flex gap-3">
                 {visibleReadingUnits.map((unit, index) => (
-                  <button key={unit.id} disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}`)} className="grid w-full grid-cols-[52px_minmax(0,1fr)_120px_24px] items-center gap-3 px-4 py-2.5 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
+                  <button key={unit.id} disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}`)} className="min-h-24 w-56 shrink-0 rounded-2xl border border-slate-100 bg-white p-4 text-left shadow-sm transition hover:border-blue-100 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50">
                     <span className="text-xs tabular-nums text-slate-400">{String(index + 1).padStart(3, '0')}</span>
-                    <span className="min-w-0">
-                      <span className="block truncate font-medium text-slate-950">{unit.title}</span>
-                      <span className="mt-0.5 block truncate text-xs text-slate-400">{unit.href}</span>
-                    </span>
-                    <span className="hidden rounded-lg bg-slate-50 px-2 py-1 text-center text-xs text-slate-500 sm:block">{unit.unitType === 'page' ? '漫画页' : unit.mediaType ?? '章节'}</span>
-                    <ChevronRight size={16} className="text-slate-400" />
+                    <span className="mt-2 line-clamp-3 text-sm font-medium leading-5 text-slate-950">{unit.title}</span>
                   </button>
                 ))}
               </div>
             ) : (
-              <button disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}`)} className="flex w-full items-center justify-between px-4 py-4 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
-                <div className="text-sm text-slate-500">未拿到章节明细，可以进入阅读器检查内容。</div>
+              <button disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}`)} className="flex w-full items-center justify-between rounded-2xl border border-slate-100 bg-white px-4 py-4 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
+                <div className="text-sm text-slate-500">未拿到章节明细</div>
                 <ChevronRight size={16} className="text-slate-400" />
               </button>
             )}
@@ -618,7 +615,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <div className="truncate font-medium text-slate-950">{edition.versionName}</div>
-                      <div className="mt-1 text-xs text-slate-500">{edition.format} · {edition.size} · {edition.formatValue === 'COMIC' ? `${edition.volumes.length} 卷` : `${edition.chapterCount ?? 0} 章`}</div>
+                      <div className="mt-1 text-xs text-slate-500">{edition.formatValue === 'COMIC' ? `${edition.volumes.length} 卷` : `${edition.chapterCount ?? 0} 章`}</div>
                     </div>
                     {edition.primary ? <Badge tone="blue">主版本</Badge> : null}
                   </div>
@@ -634,22 +631,40 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
           </section>
 
           <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
-            <h2 className="text-lg font-semibold text-slate-950">{book.type === 'comic' ? '漫画信息' : '元数据详情'}</h2>
-            <div className="mt-4 rounded-2xl bg-slate-50 p-4 text-sm text-slate-600">{book.status} · {book.progress}% · {book.trackingStatus}</div>
-            {book.type === 'ebook' ? (
-              <>
-                <Info label="ISBN" value={metadata?.isbn ?? '未知'} />
-                <Info label="出版社" value={metadata?.publisher ?? '未知'} />
-                <Info label="语言" value={metadata?.language ?? '未知'} />
-              </>
-            ) : (
-              <>
-                <Info label="系列" value={String((metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.Series ?? (metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.series ?? '未知')} />
-                <Info label="卷数" value={String((metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.Volume ?? (metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.volume ?? '未知')} />
-                <Info label="页数" value={`${book.totalUnits || '未知'}`} />
-                <Info label="标签" value={book.tags.join(', ') || '无'} />
-              </>
-            )}
+            <h2 className="text-lg font-semibold text-slate-950">更多信息</h2>
+            <div className="mt-4 grid grid-cols-2 gap-2 text-sm">
+              <div className="rounded-2xl bg-slate-50 p-3">
+                <div className="text-xs text-slate-400">阅读状态</div>
+                <div className="mt-1 font-medium text-slate-950">{book.status}</div>
+              </div>
+              <div className="rounded-2xl bg-slate-50 p-3">
+                <div className="text-xs text-slate-400">追更状态</div>
+                <div className="mt-1 font-medium text-slate-950">{book.trackingStatus}</div>
+              </div>
+            </div>
+            <Info label="标签" value={book.tags.join(', ') || '无'} />
+            <details className="group mt-4 rounded-2xl bg-slate-50">
+              <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-3 text-sm font-medium text-slate-700">
+                出版信息
+                <ChevronDown size={16} className="text-slate-400 transition group-open:rotate-180" />
+              </summary>
+              <div className="border-t border-slate-100 px-3 pb-3">
+                {book.type === 'ebook' ? (
+                  <>
+                    <Info label="ISBN" value={metadata?.isbn ?? '未知'} />
+                    <Info label="出版社" value={metadata?.publisher ?? '未知'} />
+                    <Info label="语言" value={metadata?.language ?? '未知'} />
+                    <Info label="出版年" value={book.publishedYear === null ? '未知' : String(book.publishedYear)} />
+                  </>
+                ) : (
+                  <>
+                    <Info label="系列" value={String((metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.Series ?? (metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.series ?? '未知')} />
+                    <Info label="卷数" value={String((metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.Volume ?? (metadata?.items?.[0]?.metadataJson as any)?.comicInfo?.volume ?? '未知')} />
+                    <Info label="页数" value={`${book.totalUnits || '未知'}`} />
+                  </>
+                )}
+              </div>
+            </details>
             <details className="group mt-4 rounded-2xl bg-slate-50">
               <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-3 text-sm font-medium text-slate-700">
                 文件信息
