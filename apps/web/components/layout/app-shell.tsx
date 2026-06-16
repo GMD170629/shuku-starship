@@ -503,7 +503,7 @@ export function AppShell({ children }: { children: ReactNode }) {
               <div data-testid="top-search-dropdown" className="absolute left-0 right-0 top-[calc(100%+8px)] z-30 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-xl shadow-slate-200/70">
                 <div className="max-h-[360px] overflow-y-auto py-2">
                   {topSearchLoading ? (
-                    <div className="px-4 py-4 text-sm text-slate-500">正在搜索书库...</div>
+                    <div className="shuku-loading-panel mx-2 my-2 px-3 py-3 text-sm" role="status" aria-live="polite">正在搜索书库...</div>
                   ) : null}
                   {!topSearchLoading && topSearchBooks.map((book, index) => (
                     <button

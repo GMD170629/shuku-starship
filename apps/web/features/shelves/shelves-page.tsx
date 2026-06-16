@@ -226,11 +226,11 @@ export function ShelvesPage() {
             <div className="flex flex-wrap gap-2">
               {!activeIsNew ? <Button disabled={saving || detailLoading} variant="danger" icon={Trash2} onClick={deleteShelf}>删除书架</Button> : null}
               <Button disabled={saving || detailLoading} variant="secondary" icon={X} onClick={closeEditor}>关闭</Button>
-              <Button disabled={saving || detailLoading} icon={Save} onClick={saveShelf}>{saving ? '保存中...' : '保存书架'}</Button>
+              <Button loading={saving} loadingText="保存中" disabled={detailLoading} icon={Save} onClick={saveShelf}>保存书架</Button>
             </div>
           </div>
 
-          {detailLoading ? <div className="mt-5 rounded-2xl bg-slate-50 p-4 text-sm text-slate-500">正在读取书架详情...</div> : null}
+          {detailLoading ? <div className="shuku-loading-panel mt-5 p-4 text-sm" role="status" aria-live="polite">正在读取书架详情...</div> : null}
 
           {!detailLoading ? (
             <div className="mt-5 grid gap-5 xl:grid-cols-[minmax(0,1fr)_380px]">
@@ -308,7 +308,7 @@ export function ShelvesPage() {
         </section>
       ) : null}
 
-      {loading ? <div className="rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-500">正在读取书架...</div> : null}
+      {loading ? <div className="shuku-loading-panel p-6 text-sm" role="status" aria-live="polite">正在读取书架...</div> : null}
       {!loading && shelves.length === 0 ? (
         <div className="rounded-3xl border border-slate-200 bg-white p-8">
           <div className="text-sm text-slate-500">还没有自定义书架。创建一个书架后，就可以搜索并加入图书。</div>

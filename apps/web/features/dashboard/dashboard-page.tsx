@@ -106,7 +106,7 @@ export function DashboardPage() {
         </div>
         <Button variant="secondary" icon={UploadCloud} onClick={() => router.push('/library')}>导入读物</Button>
       </div>
-      {loading ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取真实书库状态...</div> : null}
+      {loading ? <div className="shuku-loading-panel p-8 text-sm" role="status" aria-live="polite">正在读取真实书库状态...</div> : null}
       {error ? <div className="rounded-3xl border border-red-100 bg-red-50 p-8 text-sm text-red-700">{error}</div> : null}
       {!loading && !error ? (
         <>

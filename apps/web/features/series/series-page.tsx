@@ -141,7 +141,7 @@ export function SeriesPage({ initialName = '' }: { initialName?: string }) {
             </div>
           }
         />
-        {loading ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取系列图书...</div> : null}
+        {loading ? <div className="shuku-loading-panel p-8 text-sm" role="status" aria-live="polite">正在读取系列图书...</div> : null}
         {error ? <div className="rounded-3xl border border-red-100 bg-red-50 p-8 text-sm text-red-700">{error}</div> : null}
         {!loading && !error && books.length === 0 ? (
           <div className="rounded-3xl border border-slate-200 bg-white p-8">
@@ -172,7 +172,7 @@ export function SeriesPage({ initialName = '' }: { initialName?: string }) {
           <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索系列" className="w-full bg-transparent text-sm outline-none" />
         </div>
       </div>
-      {loading ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取系列...</div> : null}
+      {loading ? <div className="shuku-loading-panel p-8 text-sm" role="status" aria-live="polite">正在读取系列...</div> : null}
       {error ? <div className="rounded-3xl border border-red-100 bg-red-50 p-8 text-sm text-red-700">{error}</div> : null}
       {!loading && !error && filteredSeries.length === 0 ? (
         <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">暂无系列。为图书补充系列元数据后，这里会自动出现。</div>

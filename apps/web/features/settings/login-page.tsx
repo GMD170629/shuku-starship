@@ -74,7 +74,7 @@ export function LoginPage() {
             <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none ring-blue-100 transition focus:border-blue-500 focus:ring-4" />
           </label>
           {error ? <div className="rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">{error}</div> : null}
-          <Button className="h-12 w-full" disabled={loading}>{loading ? '登录中...' : '登录'}</Button>
+          <Button className="h-12 w-full" loading={loading} loadingText="登录中">登录</Button>
         </div>
         <div className="mt-6 grid grid-cols-3 gap-2 text-center text-xs text-slate-500">
           <div className="rounded-2xl bg-slate-50 p-3"><Server className="mx-auto mb-1" size={16} />NAS 在线</div>

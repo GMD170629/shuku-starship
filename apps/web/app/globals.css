@@ -111,3 +111,42 @@ html.pwa-native [data-pwa-scroll-x='true'] {
   touch-action: pan-x;
   -webkit-overflow-scrolling: touch;
 }
+
+@keyframes shuku-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+html:not(.pwa-native) .shuku-app-shell :where(button[class*='rounded'], a[href][class*='rounded'], [role='button'][class*='rounded']) {
+  transition-property: color, background-color, border-color, opacity;
+  transition-duration: 150ms;
+  transition-timing-function: ease;
+}
+
+html:not(.pwa-native) .shuku-app-shell :where(button[class*='rounded'], a[href][class*='rounded'], [role='button'][class*='rounded']):where(:not(:disabled, [aria-disabled='true'])):focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgb(191 219 254 / 0.95);
+}
+
+.shuku-loading-panel {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  border: 1px solid #bfdbfe;
+  border-radius: 1.5rem;
+  background: #eff6ff;
+  color: #475569;
+}
+
+.shuku-loading-panel::after {
+  content: '';
+  width: 0.9rem;
+  height: 0.9rem;
+  flex: 0 0 auto;
+  order: -1;
+  border-radius: 999px;
+  border: 2px solid #bfdbfe;
+  border-top-color: #2563eb;
+  animation: shuku-loading-spin 0.85s linear infinite;
+}

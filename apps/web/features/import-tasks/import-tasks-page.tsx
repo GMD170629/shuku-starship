@@ -178,7 +178,7 @@ export function ImportTasksPage() {
           </div>
         ))}
       </div>
-      {loading ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取导入任务...</div> : null}
+      {loading ? <div className="shuku-loading-panel p-8 text-sm" role="status" aria-live="polite">正在读取导入任务...</div> : null}
       {error ? <div className="rounded-3xl border border-red-100 bg-red-50 p-8 text-sm text-red-700">{error}</div> : null}
       {!loading && !error && tasks.length === 0 ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">暂无导入任务。</div> : null}
       <div className="space-y-3">

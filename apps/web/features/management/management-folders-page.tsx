@@ -247,7 +247,7 @@ export function ManagementFoldersPage() {
           </section>
         </div>
       )}
-      {busy.startsWith('delete:') ? <div className="rounded-2xl border border-amber-100 bg-amber-50 p-4 text-sm text-amber-700">正在删除托管内容...</div> : null}
+      {busy.startsWith('delete:') ? <div className="shuku-loading-panel p-4 text-sm" role="status" aria-live="polite">正在删除托管内容...</div> : null}
     </div>
   );
 }

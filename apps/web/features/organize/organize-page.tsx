@@ -259,7 +259,7 @@ export function OrganizePage() {
         </div>
       </div>
 
-      {loading ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取待整理任务...</div> : null}
+      {loading ? <div className="shuku-loading-panel p-8 text-sm" role="status" aria-live="polite">正在读取待整理任务...</div> : null}
       {!loading && jobs.length === 0 ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">暂无待整理任务。</div> : null}
 
       {!loading && jobs.length > 0 ? (

@@ -1,6 +1,6 @@
 'use client';
 
-import { CheckCircle2, ChevronDown, EyeOff, Filter, Grid3X3, List, Plus, RefreshCw, Search, Tags, Trash2, UploadCloud, X } from 'lucide-react';
+import { CheckCircle2, ChevronDown, EyeOff, Filter, Grid3X3, List, Loader2, Plus, RefreshCw, Search, Tags, Trash2, UploadCloud, X } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { BookCard } from '../../components/book/book-card';
@@ -302,9 +302,9 @@ export function LibraryPage() {
         desc="上传、浏览、搜索、筛选和批量管理 EPUB、PDF 与漫画读物。"
         action={
           <div className="flex flex-wrap gap-3">
-            <label className="inline-flex cursor-pointer items-center gap-2 rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition hover:bg-blue-700">
-              <UploadCloud size={17} />
-              {uploading ? '导入中...' : '上传读物'}
+            <label className={cn('inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition-colors duration-150 hover:bg-blue-700 focus-within:ring-2 focus-within:ring-blue-200', uploading ? 'cursor-not-allowed opacity-80' : '')}>
+              {uploading ? <Loader2 size={17} className="animate-spin" strokeWidth={2.4} /> : <UploadCloud size={17} strokeWidth={2.2} />}
+              {uploading ? '导入中' : '上传读物'}
               <input type="file" accept=".epub,.cbz,.zip,.pdf,application/epub+zip,application/zip,application/pdf" className="hidden" disabled={uploading} onChange={(event) => void uploadBook(event.target.files?.[0] ?? null)} />
             </label>
             <Button variant="secondary" icon={Plus} onClick={() => router.push('/settings')}>监控文件夹</Button>
@@ -429,7 +429,7 @@ export function LibraryPage() {
           </div>
         ) : null}
       </div>
-      {loading ? <div className="rounded-3xl border border-slate-200 bg-white p-8 text-sm text-slate-500">正在读取书库...</div> : null}
+      {loading ? <div className="shuku-loading-panel p-8 text-sm" role="status" aria-live="polite">正在读取书库...</div> : null}
       {error ? <div className="rounded-3xl border border-red-100 bg-red-50 p-8 text-sm text-red-700">{error}</div> : null}
       {!loading && !error && books.length === 0 ? (
         <div className="rounded-3xl border border-slate-200 bg-white p-8">
