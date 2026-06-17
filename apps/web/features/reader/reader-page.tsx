@@ -295,6 +295,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
   const settingsSyncTimerRef = useRef<number | null>(null);
   const lastProgressPayloadRef = useRef('');
   const lastSettingsPayloadRef = useRef('');
+  const requestedHrefRef = useRef<string | null>(null);
 
   const readerType = useMemo(() => readerTypeForBook(book), [book]);
   const preferenceType = preferenceTypeForReader(readerType);
@@ -423,14 +424,18 @@ export function ReaderPage({ editionId }: { editionId: string }) {
   }
 
   useEffect(() => {
-    const cached = readCache<{ progress: ReaderProgress; extra: Record<string, unknown> }>(progressCacheKey(editionId));
+    const searchParams = typeof window === 'undefined' ? new URLSearchParams() : new URLSearchParams(window.location.search);
+    const requestedVolumeId = searchParams.get('volume');
+    const cached = readCache<{ progress: ReaderProgress; extra: Record<string, unknown> }>(
+      requestedVolumeId ? volumeProgressCacheKey(editionId, requestedVolumeId) : progressCacheKey(editionId)
+    );
     if (cached) {
       applyProgressState(cached.progress, cached.extra ?? {});
     }
 
     let active = true;
-    const searchParams = typeof window === 'undefined' ? new URLSearchParams() : new URLSearchParams(window.location.search);
-    loadBootstrap(editionId, searchParams.get('volume'))
+    requestedHrefRef.current = searchParams.get('href');
+    loadBootstrap(editionId, requestedVolumeId)
       .catch((reason) => {
         if (active) setError(reason instanceof Error ? reason.message : '读取阅读器启动信息失败');
       });
@@ -529,7 +534,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
   useEffect(() => {
     if (!book || readerType === 'unknown') return;
     writeCache(progressCacheKey(editionId), { progress, extra: progressExtra });
-    if (readerType === 'comic' && currentVolumeSection) {
+    if ((readerType === 'comic' || readerType === 'epub') && currentVolumeSection) {
       writeCache(volumeProgressCacheKey(editionId, currentVolumeSection.id), { progress, extra: progressExtra });
     }
   }, [book, currentVolumeSection, editionId, progress, progressExtra, readerType]);
@@ -545,6 +550,13 @@ export function ReaderPage({ editionId }: { editionId: string }) {
     const timer = window.setTimeout(() => setReaderReady(true), 6000);
     return () => window.clearTimeout(timer);
   }, [book, readerReady, readerType]);
+
+  useEffect(() => {
+    if (readerType !== 'epub' || !readerReady || !controls?.jumpToHref || !requestedHrefRef.current) return;
+    const href = requestedHrefRef.current;
+    requestedHrefRef.current = null;
+    void controls.jumpToHref(href);
+  }, [controls, readerReady, readerType]);
 
   useEffect(() => {
     if (!hydrated || !preferenceType) return;

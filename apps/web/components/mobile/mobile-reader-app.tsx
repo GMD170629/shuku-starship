@@ -26,8 +26,8 @@ type ShelfFilter = 'all' | 'reading' | 'unread' | 'finished';
 type BooksPayload = { ok: boolean; data?: { books: WorkView[]; total: number }; error?: { message: string } };
 type ImportPayload = { ok: boolean; data?: { title: string; duplicate?: boolean }; error?: { message: string } };
 type ContinueItem = { book: WorkView; progress: number; lastReadAt: string; chapter: string | null } | null;
-type ReadingUnitView = { id: string; unitType: string; title: string; href: string; sortOrder: number; mediaType?: string | null; size?: string | number | null };
-type VolumeSectionView = { id: string; title: string; index: number; fileId: string; pageCount: number; coverUrl: string };
+type ReadingUnitView = { id: string; unitType: string; title: string; href?: string | null; sortOrder: number; volumeId?: string | null; mediaType?: string | null; size?: string | number | null };
+type VolumeSectionView = { id: string; title: string; index: number; fileId: string; pageCount: number; coverUrl: string; progress?: number; lastReadAt?: string | null; position?: string | null; currentPage?: number | null };
 type WorkDetailPayload = { ok: boolean; data?: { book: WorkView; readingUnits?: ReadingUnitView[]; volumeSections?: VolumeSectionView[] }; error?: { message: string } };
 type Summary = { totalBooks: number; latestSyncAt: string | null };
 type UserInfo = { email: string; name: string; role: string };
@@ -36,7 +36,7 @@ type SystemStatus = {
   latestImportTask: { status: string; progress: number; finishedAt?: string | null } | null;
 };
 type OpenBookHandler = (book: WorkView, sourceElement?: HTMLElement | null) => void;
-type OpenReaderHandler = (book: WorkView, sourceElement?: HTMLElement | null, volumeId?: string | null) => void;
+type OpenReaderHandler = (book: WorkView, sourceElement?: HTMLElement | null, volumeId?: string | null, href?: string | null) => void;
 const displayFont = '"Songti SC", "STSong", "Noto Serif CJK SC", serif';
 type MobileScaleStyle = CSSProperties & { '--mobile-scale'?: string };
 const mobileDesignWidth = 426.5;
@@ -113,12 +113,13 @@ function readableEditionId(book: WorkView) {
   return book.recentEditionId ?? book.editionId ?? book.primaryEditionId ?? book.editions.find((edition) => !edition.hidden)?.id ?? null;
 }
 
-function readerUrlForBook(book: WorkView, tab: MobileTab, volumeId?: string | null) {
+function readerUrlForBook(book: WorkView, tab: MobileTab, volumeId?: string | null, href?: string | null) {
   const editionId = readableEditionId(book);
   if (!editionId) return null;
   const params = new URLSearchParams({ from: 'mobile', tab });
   const targetVolumeId = volumeId ?? book.recentVolumeId;
   if (targetVolumeId) params.set('volume', targetVolumeId);
+  if (href) params.set('href', href);
   return `/reader/${editionId}?${params.toString()}`;
 }
 
@@ -166,6 +167,8 @@ export function MobileReaderApp() {
   const [detailBook, setDetailBook] = useState<WorkView | null>(null);
   const [detailReadingUnits, setDetailReadingUnits] = useState<ReadingUnitView[]>([]);
   const [detailVolumeSections, setDetailVolumeSections] = useState<VolumeSectionView[]>([]);
+  const [detailSelectedVolumeId, setDetailSelectedVolumeId] = useState<string | null>(null);
+  const [detailLoadingVolumeId, setDetailLoadingVolumeId] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
 
@@ -240,11 +243,20 @@ export function MobileReaderApp() {
     let active = true;
     setDetailLoading(true);
     setDetailError('');
-    fetch(`/api/works/${detailBookId}`)
+    const requestedVolumeId = detailSelectedVolumeId;
+    const params = new URLSearchParams();
+    if (requestedVolumeId) params.set('volumeId', requestedVolumeId);
+    fetch(`/api/works/${detailBookId}${params.toString() ? `?${params.toString()}` : ''}`)
       .then((response) => readMobilePayload<WorkDetailPayload>(response, '读取图书详情失败'))
       .then((payload) => {
         if (!active) return;
-        if (payload.data?.book) setDetailBook(payload.data.book);
+        if (payload.data?.book) {
+          setDetailBook(payload.data.book);
+          if (!detailSelectedVolumeId) {
+            const firstVolumeId = payload.data.volumeSections?.[0]?.id ?? payload.data.book.volumes[0]?.id ?? null;
+            setDetailSelectedVolumeId(payload.data.book.recentVolumeId ?? firstVolumeId);
+          }
+        }
         setDetailReadingUnits(payload.data?.readingUnits ?? []);
         setDetailVolumeSections(payload.data?.volumeSections ?? []);
       })
@@ -252,12 +264,15 @@ export function MobileReaderApp() {
         if (active) setDetailError(reason instanceof Error ? reason.message : '读取图书详情失败');
       })
       .finally(() => {
-        if (active) setDetailLoading(false);
+        if (active) {
+          setDetailLoading(false);
+          setDetailLoadingVolumeId((current) => (current === requestedVolumeId ? null : current));
+        }
       });
     return () => {
       active = false;
     };
-  }, [detailBookId]);
+  }, [detailBookId, detailSelectedVolumeId]);
 
   const baseShelfBooks = searchText.trim() ? searchBooks : books;
   const shelfBooks = useMemo(() => baseShelfBooks.filter((book) => shelfFilterMatches(book, shelfFilter)), [baseShelfBooks, shelfFilter]);
@@ -277,24 +292,39 @@ export function MobileReaderApp() {
   function openBookDetail(book: WorkView) {
     setDetailBook(book);
     setDetailReadingUnits([]);
-    setDetailVolumeSections(book.volumes.map((volume) => ({
+    const seededVolumes = book.volumes.map((volume) => ({
       id: volume.id,
       title: volume.title,
       index: volume.volumeIndex ?? volume.sortOrder ?? 0,
       fileId: volume.id,
       pageCount: volume.pageCount ?? volume.chapterCount ?? 0,
-      coverUrl: volume.coverUrl
-    })));
+      coverUrl: volume.coverUrl,
+      progress: volume.progress,
+      lastReadAt: volume.lastReadAt,
+      position: volume.position,
+      currentPage: volume.currentPage
+    }));
+    setDetailVolumeSections(seededVolumes);
+    setDetailSelectedVolumeId(book.recentVolumeId ?? seededVolumes[0]?.id ?? null);
+    setDetailLoadingVolumeId(null);
     setDetailBookId(book.id);
   }
 
   function closeBookDetail() {
     setDetailBookId('');
+    setDetailSelectedVolumeId(null);
+    setDetailLoadingVolumeId(null);
     setDetailError('');
   }
 
-  function openReader(book: WorkView, sourceElement?: HTMLElement | null, volumeId?: string | null) {
-    const url = readerUrlForBook(book, tab, volumeId);
+  function selectDetailVolume(volumeId: string) {
+    if (detailSelectedVolumeId === volumeId) return;
+    setDetailLoadingVolumeId(volumeId);
+    setDetailSelectedVolumeId(volumeId);
+  }
+
+  function openReader(book: WorkView, sourceElement?: HTMLElement | null, volumeId?: string | null, href?: string | null) {
+    const url = readerUrlForBook(book, tab, volumeId, href);
     if (!url) return;
     storeReaderOpeningContext(book, sourceElement);
     router.push(url);
@@ -353,7 +383,10 @@ export function MobileReaderApp() {
               loading={detailLoading}
               readingUnits={detailReadingUnits}
               volumeSections={detailVolumeSections}
+              selectedVolumeId={detailSelectedVolumeId}
+              loadingVolumeId={detailLoadingVolumeId}
               onBack={closeBookDetail}
+              onSelectVolume={selectDetailVolume}
               onOpenReader={openReader}
             />
           ) : null}
@@ -897,7 +930,10 @@ function MobileBookDetailView({
   loading,
   readingUnits,
   volumeSections,
+  selectedVolumeId,
+  loadingVolumeId,
   onBack,
+  onSelectVolume,
   onOpenReader
 }: {
   book: WorkView;
@@ -905,7 +941,10 @@ function MobileBookDetailView({
   loading: boolean;
   readingUnits: ReadingUnitView[];
   volumeSections: VolumeSectionView[];
+  selectedVolumeId: string | null;
+  loadingVolumeId: string | null;
   onBack: () => void;
+  onSelectVolume: (volumeId: string) => void;
   onOpenReader: OpenReaderHandler;
 }) {
   const coverRef = useRef<HTMLDivElement>(null);
@@ -917,10 +956,16 @@ function MobileBookDetailView({
     index: volume.volumeIndex ?? volume.sortOrder ?? 0,
     fileId: volume.id,
     pageCount: volume.pageCount ?? volume.chapterCount ?? 0,
-    coverUrl: volume.coverUrl
+    coverUrl: volume.coverUrl,
+    progress: volume.progress,
+    lastReadAt: volume.lastReadAt,
+    position: volume.position,
+    currentPage: volume.currentPage
   }));
-  const selectedVolumeId = book.recentVolumeId ?? visibleVolumes[0]?.id ?? null;
-  const chapterRows = detailChapterRows(book, readingUnits, visibleVolumes);
+  const activeVolumeId = selectedVolumeId ?? book.recentVolumeId ?? visibleVolumes[0]?.id ?? null;
+  const activeVolume = visibleVolumes.find((volume) => volume.id === activeVolumeId) ?? null;
+  const chapterRows = detailChapterRows(book, readingUnits, activeVolume);
+  const showChapterSkeleton = loading && !loadingVolumeId && chapterRows.length === 0;
 
   return (
     <div className="space-y-3">
@@ -933,7 +978,6 @@ function MobileBookDetailView({
       </header>
 
       {error ? <Notice tone="error">{error}</Notice> : null}
-      {loading ? <LoadingBlock label="正在更新目录..." /> : null}
 
       <section className="flex items-center" style={{ gap: sv(16), paddingTop: sv(2), paddingBottom: sv(4) }}>
         <div ref={coverRef} className="shrink-0" style={{ width: sv(116) }}>
@@ -988,18 +1032,21 @@ function MobileBookDetailView({
             style={{ gap: sv(8), paddingBottom: sv(6), scrollbarWidth: 'none' }}
           >
             {visibleVolumes.map((volume, index) => {
-              const selected = volume.id === selectedVolumeId;
+              const selected = volume.id === activeVolumeId;
+              const volumeLoading = loadingVolumeId === volume.id;
               return (
                 <button
                   key={volume.id}
                   type="button"
-                  onClick={() => onOpenReader(book, coverRef.current, volume.id)}
+                  onClick={() => onSelectVolume(volume.id)}
                   className={cn(
-                    'shrink-0 border font-medium transition active:scale-[0.98]',
+                    'inline-flex shrink-0 items-center justify-center border font-medium transition active:scale-[0.98]',
                     selected ? 'border-[#B7660B] bg-[#FFF5E7] text-[#8D4E07]' : 'border-[#DED5C7] bg-[#FBF8F1] text-[#5E5349]'
                   )}
                   style={{ minHeight: `max(44px, ${sv(36)})`, borderRadius: sv(999), paddingLeft: sv(14), paddingRight: sv(14), fontSize: sv(12) }}
+                  aria-busy={volumeLoading || undefined}
                 >
+                  {volumeLoading ? <span className="shrink-0 animate-spin rounded-full border-current border-t-transparent" style={{ width: sv(10), height: sv(10), borderWidth: sv(1.5), marginRight: sv(6) }} aria-hidden="true" /> : null}
                   {volume.title || `第 ${index + 1} 卷`}
                 </button>
               );
@@ -1009,14 +1056,16 @@ function MobileBookDetailView({
       ) : null}
 
       <section>
-        <SectionTitle title="章节" meta={chapterRows.length > 0 ? `${chapterRows.length} 项` : '目录'} />
+        <SectionTitle title="章节" meta={showChapterSkeleton ? '目录' : chapterRows.length > 0 ? `${chapterRows.length} 项` : '目录'} />
         <div className="overflow-hidden border-y border-[#E1D8CB]">
-          {chapterRows.length > 0 ? chapterRows.map((row) => (
+          {showChapterSkeleton ? (
+            <ChapterListSkeleton />
+          ) : chapterRows.length > 0 ? chapterRows.map((row) => (
             <button
               key={row.key}
               type="button"
-              onClick={() => onOpenReader(book, coverRef.current, row.volumeId)}
-              className={cn('flex w-full items-center text-left transition active:bg-[#EFE4D6]', row.current ? 'bg-[#FFF7EA] text-[#211C17]' : row.read ? 'text-[#92877B]' : 'text-[#4D443C]')}
+              onClick={() => onOpenReader(book, coverRef.current, row.volumeId ?? activeVolumeId, row.href)}
+              className={cn('flex w-full items-center text-left transition active:bg-[#EFE4D6]', row.read && !row.current ? 'text-[#92877B]' : 'text-[#4D443C]')}
               style={{ minHeight: `max(44px, ${sv(40)})`, gap: sv(11), borderBottom: '1px solid #E8DED1', fontSize: sv(13) }}
             >
               <span
@@ -1026,7 +1075,6 @@ function MobileBookDetailView({
                 {row.current ? '读' : row.read ? '✓' : row.indexLabel}
               </span>
               <span className={cn('min-w-0 flex-1 truncate', row.current ? 'font-semibold' : 'font-medium')}>{row.title}</span>
-              {row.current ? <span className="shrink-0 text-[#A65B08]" style={{ fontSize: sv(11) }}>当前</span> : null}
             </button>
           )) : (
             <button
@@ -1063,9 +1111,29 @@ function SectionTitle({ title, meta }: { title: string; meta: string }) {
   );
 }
 
+function ChapterListSkeleton() {
+  return (
+    <div role="status" aria-live="polite" aria-label="正在加载章节目录">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <div
+          key={index}
+          className="flex w-full items-center animate-pulse"
+          style={{ minHeight: `max(44px, ${sv(40)})`, gap: sv(11), borderBottom: '1px solid #E8DED1' }}
+        >
+          <span className="shrink-0 rounded-full bg-[#E8DED1]" style={{ height: sv(22), width: sv(22) }} />
+          <span className="min-w-0 flex-1">
+            <span className="block rounded-full bg-[#E8DED1]" style={{ height: sv(10), width: index % 2 === 0 ? '54%' : '68%' }} />
+            <span className="mt-2 block rounded-full bg-[#EFE6D9]" style={{ height: sv(7), width: index % 2 === 0 ? '30%' : '42%' }} />
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function contentStatsLabel(book: WorkView, readingUnits: ReadingUnitView[], volumeSections: VolumeSectionView[]) {
   const volumeCount = volumeSections.length || book.volumeCount || book.volumes.length;
-  const chapterCount = readingUnits.length || book.chapterCount || book.totalUnits;
+  const chapterCount = volumeCount > 1 ? (book.chapterCount || book.totalUnits || readingUnits.length) : (readingUnits.length || book.chapterCount || book.totalUnits);
   const parts = [
     volumeCount > 0 ? `${volumeCount} 卷` : '',
     chapterCount > 0 ? `${chapterCount} ${isComic(book) ? '页' : '章'}` : ''
@@ -1099,33 +1167,21 @@ function remainingEstimate(book: WorkView) {
   return `约 ${remaining} 小时`;
 }
 
-function detailChapterRows(book: WorkView, readingUnits: ReadingUnitView[], volumes: VolumeSectionView[]) {
-  const hasReadingPosition = Boolean(book.lastReadAt || (book.chapter && book.chapter !== '未开始'));
+function detailChapterRows(book: WorkView, readingUnits: ReadingUnitView[], activeVolume: VolumeSectionView | null) {
+  const progress = activeVolume?.progress ?? book.progress;
+  const hasReadingPosition = Boolean(activeVolume?.lastReadAt || book.lastReadAt || (book.chapter && book.chapter !== '未开始'));
   if (readingUnits.length > 0) {
-    const currentIndex = Math.max(0, Math.min(readingUnits.length - 1, Math.round((book.progress / 100) * Math.max(0, readingUnits.length - 1))));
+    const currentIndex = Math.max(0, Math.min(readingUnits.length - 1, Math.round((progress / 100) * Math.max(0, readingUnits.length - 1))));
     return readingUnits.map((unit, absoluteIndex) => {
-      const current = absoluteIndex === currentIndex && hasReadingPosition && book.progress < 100;
+      const current = absoluteIndex === currentIndex && hasReadingPosition && progress < 100;
       return {
         key: unit.id,
         title: unit.title || `第 ${unit.sortOrder || absoluteIndex + 1} 章`,
         indexLabel: String((unit.sortOrder || absoluteIndex + 1) % 100).padStart(2, '0'),
-        read: !current && (absoluteIndex < currentIndex || book.progress >= 100),
+        read: !current && (absoluteIndex < currentIndex || progress >= 100),
         current,
-        volumeId: null
-      };
-    });
-  }
-  if (volumes.length > 0) {
-    const currentIndex = Math.max(0, volumes.findIndex((volume) => volume.id === book.recentVolumeId));
-    return volumes.map((volume, absoluteIndex) => {
-      const current = (volume.id === book.recentVolumeId || (!book.recentVolumeId && absoluteIndex === 0)) && hasReadingPosition && book.progress < 100;
-      return {
-        key: volume.id,
-        title: volume.title || `第 ${absoluteIndex + 1} 卷`,
-        indexLabel: String(absoluteIndex + 1).padStart(2, '0'),
-        read: !current && (absoluteIndex < currentIndex || book.progress >= 100),
-        current,
-        volumeId: volume.id
+        volumeId: unit.volumeId ?? activeVolume?.id ?? null,
+        href: unit.href ?? null
       };
     });
   }

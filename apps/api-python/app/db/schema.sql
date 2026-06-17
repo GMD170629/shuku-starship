@@ -503,7 +503,7 @@ CREATE TABLE `LibraryReadingProgress` (
     INDEX `LibraryReadingProgress_workId_idx`(`workId`),
     INDEX `LibraryReadingProgress_editionId_idx`(`editionId`),
     INDEX `LibraryReadingProgress_volumeId_idx`(`volumeId`),
-    UNIQUE INDEX `LibraryReadingProgress_userId_editionId_key`(`userId`, `editionId`),
+    UNIQUE INDEX `LibraryReadingProgress_userId_editionId_volumeId_key`(`userId`, `editionId`, `volumeId`),
     PRIMARY KEY (`id`)
 ) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 

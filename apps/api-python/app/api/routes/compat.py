@@ -399,35 +399,48 @@ def _raw_progress_percent(progress: dict[str, Any] | None) -> int:
     return max(0, min(100, round(float(progress.get("percent", 0) if progress else 0))))
 
 
-def _comic_cumulative_progress_percent(edition: dict[str, Any] | None, progress: dict[str, Any] | None, volumes: list[dict[str, Any]]) -> int:
-    raw_percent = _raw_progress_percent(progress)
-    if not edition or edition.get("format") != "COMIC" or not progress or len(volumes) <= 1:
-        return raw_percent
-    volume_id = progress.get("volumeId")
-    if not volume_id:
-        return raw_percent
-    total_pages = sum(max(0, _coerce_int(volume.get("pageCount"))) for volume in volumes)
-    if total_pages <= 0:
-        return raw_percent
-    completed_pages = 0
-    current_volume = None
-    for volume in volumes:
-        if volume.get("id") == volume_id:
-            current_volume = volume
-            break
-        completed_pages += max(0, _coerce_int(volume.get("pageCount")))
-    if not current_volume:
-        return raw_percent
-    current_page_count = max(1, _coerce_int(current_volume.get("pageCount"), 1))
-    current_page = _coerce_int(progress.get("page"))
-    if current_page <= 0:
-        current_page = round(current_page_count * (raw_percent / 100))
-    current_page = max(0, min(current_page_count, current_page))
-    return max(0, min(100, round(((completed_pages + current_page) / total_pages) * 100)))
-
-
 def _display_progress_percent(edition: dict[str, Any] | None, progress: dict[str, Any] | None, volumes: list[dict[str, Any]]) -> int:
-    return _comic_cumulative_progress_percent(edition, progress, volumes)
+    return _raw_progress_percent(progress)
+
+
+def _latest_progress(progresses: list[dict[str, Any]]) -> dict[str, Any] | None:
+    return next(iter(sorted(progresses, key=lambda item: _dt(item.get("updatedAt")) or "", reverse=True)), None)
+
+
+def _progress_for_volume(progresses: list[dict[str, Any]], volume_id: str | None) -> dict[str, Any] | None:
+    if volume_id:
+        specific = next((item for item in progresses if item.get("volumeId") == volume_id), None)
+        if specific:
+            return specific
+    return next((item for item in progresses if not item.get("volumeId")), None)
+
+
+def _choose_continue_volume(volumes: list[dict[str, Any]], progresses: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not volumes:
+        return None
+    progress_by_volume = {volume["id"]: _raw_progress_percent(_progress_for_volume(progresses, volume["id"])) for volume in volumes}
+    for volume in volumes:
+        percent = progress_by_volume.get(volume["id"], 0)
+        if 0 < percent < 100:
+            return volume
+    for volume in volumes:
+        if progress_by_volume.get(volume["id"], 0) <= 0:
+            return volume
+    return volumes[-1]
+
+
+def _empty_progress_for_volume(edition: dict[str, Any] | None, volume: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not edition or not volume:
+        return None
+    return {"editionId": edition.get("id"), "workId": edition.get("workId"), "volumeId": volume.get("id"), "position": "0", "page": None, "percent": 0, "extra": "{}", "updatedAt": None}
+
+
+def _continue_progress_for_edition(edition: dict[str, Any] | None, progresses: list[dict[str, Any]], volumes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if edition and edition.get("format") in {"EPUB", "COMIC"} and len(volumes) > 1:
+        volume = _choose_continue_volume(volumes, progresses)
+        volume_progress = _progress_for_volume(progresses, volume.get("id") if volume else None)
+        return volume_progress or _empty_progress_for_volume(edition, volume)
+    return _latest_progress(progresses)
 
 
 def _progress_chapter_label(progress: dict[str, Any] | None, volumes: list[dict[str, Any]]) -> str:
@@ -452,7 +465,7 @@ def _work_view(db: Session, work: dict[str, Any], user_id: str | None = None) ->
     editions = []
     files_by_edition: dict[str, list[dict[str, Any]]] = {}
     volumes_by_edition: dict[str, list[dict[str, Any]]] = {}
-    progress_by_edition: dict[str, dict[str, Any]] = {}
+    progresses_by_edition: dict[str, list[dict[str, Any]]] = {}
     if _has_table(db, "LibraryEdition"):
         editions = _rows(
             db,
@@ -476,17 +489,22 @@ def _work_view(db: Session, work: dict[str, Any], user_id: str | None = None) ->
             )
     if edition_ids and user_id and _has_table(db, "LibraryReadingProgress"):
         for edition in editions:
-            progress = _row(
+            progresses = _rows(
                 db,
-                "SELECT * FROM `LibraryReadingProgress` WHERE `editionId` = :edition_id AND `userId` = :user_id ORDER BY `updatedAt` DESC LIMIT 1",
+                "SELECT * FROM `LibraryReadingProgress` WHERE `editionId` = :edition_id AND `userId` = :user_id ORDER BY `updatedAt` DESC",
                 {"edition_id": edition["id"], "user_id": user_id},
             )
-            if progress:
-                progress_by_edition[edition["id"]] = progress
+            if progresses:
+                progresses_by_edition[edition["id"]] = progresses
 
     primary = next((item for item in editions if item["id"] == work.get("primaryEditionId")), None) or next((item for item in editions if item.get("primary")), None)
     display = primary or (editions[0] if editions else None)
-    recent = sorted(progress_by_edition.values(), key=lambda item: _dt(item.get("updatedAt")) or "", reverse=True)
+    progress_by_edition = {
+        edition["id"]: _continue_progress_for_edition(edition, progresses_by_edition.get(edition["id"], []), volumes_by_edition.get(edition["id"], []))
+        for edition in editions
+        if progresses_by_edition.get(edition["id"])
+    }
+    recent = sorted((item for item in progress_by_edition.values() if item), key=lambda item: _dt(item.get("updatedAt")) or "", reverse=True)
     progress = recent[0] if recent else (progress_by_edition.get(display["id"]) if display else None)
     progress_edition = next((item for item in editions if progress and item["id"] == progress.get("editionId")), None) or display
     progress_volumes = volumes_by_edition.get(progress_edition["id"], []) if progress_edition else []
@@ -494,7 +512,8 @@ def _work_view(db: Session, work: dict[str, Any], user_id: str | None = None) ->
     labels = _labels()
     total_size = sum(int(file.get("sizeBytes") or 0) for files in files_by_edition.values() for file in files)
 
-    def volume_view(volume: dict[str, Any]) -> dict[str, Any]:
+    def volume_view(volume: dict[str, Any], progress_rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        volume_progress = _progress_for_volume(progress_rows or [], volume["id"])
         return {
             "id": volume["id"],
             "editionId": volume["editionId"],
@@ -504,6 +523,10 @@ def _work_view(db: Session, work: dict[str, Any], user_id: str | None = None) ->
             "pageCount": volume.get("pageCount"),
             "chapterCount": volume.get("chapterCount"),
             "coverUrl": _cover_url("volumes", volume["id"], volume, workId=work["id"]),
+            "progress": _raw_progress_percent(volume_progress),
+            "lastReadAt": _dt(volume_progress.get("updatedAt")) if volume_progress else None,
+            "position": volume_progress.get("position") if volume_progress else None,
+            "currentPage": volume_progress.get("page") if volume_progress else None,
         }
 
     def file_view(file: dict[str, Any]) -> dict[str, Any]:
@@ -519,8 +542,9 @@ def _work_view(db: Session, work: dict[str, Any], user_id: str | None = None) ->
     edition_views = []
     for edition in editions:
         e_progress = progress_by_edition.get(edition["id"])
+        e_progress_rows = progresses_by_edition.get(edition["id"], [])
         edition_files = files_by_edition.get(edition["id"], [])
-        edition_volumes = [volume_view(volume) for volume in volumes_by_edition.get(edition["id"], [])]
+        edition_volumes = [volume_view(volume, e_progress_rows) for volume in volumes_by_edition.get(edition["id"], [])]
         raw_edition_volumes = volumes_by_edition.get(edition["id"], [])
         edition_views.append(
             {
@@ -1105,7 +1129,7 @@ def list_works(request: Request, page: int = 1, pageSize: int = 24, visibility: 
 
 
 @router.get("/works/{work_id}")
-def get_work(work_id: str, request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+def get_work(work_id: str, request: Request, volumeId: str | None = None, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
     user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
@@ -1113,7 +1137,7 @@ def get_work(work_id: str, request: Request, db: Session = Depends(get_db), sett
     if not work:
         return fail("作品不存在", status_code=404)
     book = _work_view(db, work, user.id)
-    return ok({"book": book, **_work_detail_navigation(db, book.get("recentEditionId") or book.get("editionId"))})
+    return ok({"book": book, **_work_detail_navigation(db, book.get("recentEditionId") or book.get("editionId"), user.id, volumeId)})
 
 
 @router.patch("/works/{work_id}")
@@ -1479,7 +1503,7 @@ def reader_bootstrap(edition_id: str, request: Request, db: Session = Depends(ge
         return fail("版本不存在", status_code=404)
     work = _get_work(db, edition["workId"])
     units = _rows(db, "SELECT * FROM `LibraryReadingUnit` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryReadingUnit") else []
-    progress = _row(db, "SELECT * FROM `LibraryReadingProgress` WHERE `userId` = :user_id AND `editionId` = :edition_id", {"user_id": user.id, "edition_id": edition_id}) if _has_table(db, "LibraryReadingProgress") else None
+    progress_rows = _rows(db, "SELECT * FROM `LibraryReadingProgress` WHERE `userId` = :user_id AND `editionId` = :edition_id ORDER BY `updatedAt` DESC", {"user_id": user.id, "edition_id": edition_id}) if _has_table(db, "LibraryReadingProgress") else []
     preferences = {
         row["readerType"]: _parse_json(row.get("settings"), {})
         for row in (_rows(db, "SELECT * FROM `ReaderPreference` WHERE `userId` = :user_id", {"user_id": user.id}) if _has_table(db, "ReaderPreference") else [])
@@ -1487,16 +1511,18 @@ def reader_bootstrap(edition_id: str, request: Request, db: Session = Depends(ge
     work_view = _work_view(db, work, user.id) if work else None
     book_view = {**work_view, "editionId": edition["id"], "formatValue": edition.get("format")} if work_view else None
     reader_type = "comic" if edition.get("format") == "COMIC" else ("ebook" if edition.get("format") == "EPUB" else ("pdf" if edition.get("format") == "PDF" else "unknown"))
-    base_payload = {"book": book_view, "edition": edition, "units": units, "progress": progress, "preferences": preferences, "readerType": reader_type}
+    def base_payload(progress: dict[str, Any] | None) -> dict[str, Any]:
+        return {"book": book_view, "edition": edition, "units": units, "progress": progress, "preferences": preferences, "readerType": reader_type}
     if reader_type == "pdf":
+        progress = _latest_progress(progress_rows)
         volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
         volume = volumes[0] if volumes else None
         page_count = int(volume.get("pageCount") or edition.get("pageCount") or 1) if volume else int(edition.get("pageCount") or 1)
         return ok(
             {
-                **base_payload,
-                "volumeSection": _volume_section_view(volume, "PDF", page_count) if volume else None,
-                "volumeSections": [_volume_section_view(item, "PDF") for item in volumes],
+                **base_payload(progress),
+                "volumeSection": _volume_section_view(volume, "PDF", page_count, progress) if volume else None,
+                "volumeSections": [_volume_section_view(item, "PDF", progress=_progress_for_volume(progress_rows, item["id"])) for item in volumes],
                 "pageCount": page_count,
                 "pages": [{"pageIndex": index + 1, "title": f"第 {index + 1} 页"} for index in range(page_count)],
                 "totalUnits": page_count,
@@ -1506,14 +1532,15 @@ def reader_bootstrap(edition_id: str, request: Request, db: Session = Depends(ge
         requested_volume_id = request.query_params.get("volume")
         volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
         volume = next((item for item in volumes if item["id"] == requested_volume_id), None) if requested_volume_id else None
-        volume = volume or (volumes[0] if volumes else None)
+        volume = volume or _choose_continue_volume(volumes, progress_rows) or (volumes[0] if volumes else None)
+        progress = (_progress_for_volume(progress_rows, volume["id"]) or _empty_progress_for_volume(edition, volume)) if volume else _latest_progress(progress_rows)
         scoped_units = [unit for unit in units if not volume or unit.get("volumeId") == volume["id"]]
         reading_units = [_reading_unit_view(unit) for unit in scoped_units]
         return ok(
             {
-                **base_payload,
-                "volumeSection": _volume_section_view(volume, "EPUB", len(scoped_units)) if volume else None,
-                "volumeSections": [_volume_section_view(item, "EPUB") for item in volumes],
+                **base_payload(progress),
+                "volumeSection": _volume_section_view(volume, "EPUB", len(scoped_units), progress) if volume else None,
+                "volumeSections": [_volume_section_view(item, "EPUB", progress=_progress_for_volume(progress_rows, item["id"])) for item in volumes],
                 "readingUnits": reading_units,
                 "totalUnits": len(reading_units),
             }
@@ -1522,9 +1549,8 @@ def reader_bootstrap(edition_id: str, request: Request, db: Session = Depends(ge
         requested_volume_id = request.query_params.get("volume")
         volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
         volume = next((item for item in volumes if item["id"] == requested_volume_id), None) if requested_volume_id else None
-        if not volume and progress and progress.get("volumeId"):
-            volume = next((item for item in volumes if item["id"] == progress.get("volumeId")), None)
-        volume = volume or (volumes[0] if volumes else None)
+        volume = volume or _choose_continue_volume(volumes, progress_rows) or (volumes[0] if volumes else None)
+        progress = (_progress_for_volume(progress_rows, volume["id"]) or _empty_progress_for_volume(edition, volume)) if volume else _latest_progress(progress_rows)
         page_units = [unit for unit in units if not volume or unit.get("volumeId") == volume["id"]]
         if volume and not page_units:
             _ensure_volume_page_index(db, settings, volume["id"])
@@ -1542,21 +1568,21 @@ def reader_bootstrap(edition_id: str, request: Request, db: Session = Depends(ge
         ]
         return ok(
             {
-                **base_payload,
-                "volumeSection": _volume_section_view(volume, "COMIC", len(page_units)) if volume else None,
-                "volumeSections": [_volume_section_view(item, "COMIC") for item in volumes],
+                **base_payload(progress),
+                "volumeSection": _volume_section_view(volume, "COMIC", len(page_units), progress) if volume else None,
+                "volumeSections": [_volume_section_view(item, "COMIC", progress=_progress_for_volume(progress_rows, item["id"])) for item in volumes],
                 "pageCount": len(page_units),
                 "pages": pages,
             }
         )
-    return ok(base_payload)
+    return ok(base_payload(_latest_progress(progress_rows)))
 
 
 def _reading_unit_view(unit: dict[str, Any]) -> dict[str, Any]:
     return {**unit, "metadataJson": _parse_json(unit.get("metadataJson"), {})}
 
 
-def _volume_section_view(volume: dict[str, Any], fmt: str, count_override: int | None = None) -> dict[str, Any]:
+def _volume_section_view(volume: dict[str, Any], fmt: str, count_override: int | None = None, progress: dict[str, Any] | None = None) -> dict[str, Any]:
     count_key = "pageCount" if fmt in {"COMIC", "PDF"} else "chapterCount"
     return {
         "id": volume["id"],
@@ -1565,43 +1591,56 @@ def _volume_section_view(volume: dict[str, Any], fmt: str, count_override: int |
         "fileId": volume.get("fileId") or volume["id"],
         "pageCount": count_override if count_override is not None else (volume.get(count_key) or 0),
         "coverUrl": _cover_url("volumes", volume["id"], volume, editionId=volume.get("editionId")),
+        "progress": _raw_progress_percent(progress),
+        "lastReadAt": _dt(progress.get("updatedAt")) if progress else None,
+        "position": progress.get("position") if progress else None,
+        "currentPage": progress.get("page") if progress else None,
     }
 
 
-def _work_detail_navigation(db: Session, edition_id: str | None) -> dict[str, Any]:
+def _work_detail_navigation(db: Session, edition_id: str | None, user_id: str | None = None, requested_volume_id: str | None = None) -> dict[str, Any]:
     if not edition_id or not _has_table(db, "LibraryEdition"):
         return {"readingUnits": [], "volumeSections": []}
     edition = _row(db, "SELECT * FROM `LibraryEdition` WHERE `id` = :id", {"id": edition_id})
     if not edition:
         return {"readingUnits": [], "volumeSections": []}
+    progresses = _rows(db, "SELECT * FROM `LibraryReadingProgress` WHERE `editionId` = :edition_id AND `userId` = :user_id ORDER BY `updatedAt` DESC", {"edition_id": edition_id, "user_id": user_id}) if user_id and _has_table(db, "LibraryReadingProgress") else []
     if edition.get("format") == "COMIC":
         volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
         return {
             "readingUnits": [],
-            "volumeSections": [_volume_section_view(volume, "COMIC") for volume in volumes],
+            "volumeSections": [_volume_section_view(volume, "COMIC", progress=_progress_for_volume(progresses, volume["id"])) for volume in volumes],
         }
     if edition.get("format") == "PDF":
         volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
         return {
             "readingUnits": [],
-            "volumeSections": [_volume_section_view(volume, "PDF") for volume in volumes],
+            "volumeSections": [_volume_section_view(volume, "PDF", progress=_progress_for_volume(progresses, volume["id"])) for volume in volumes],
         }
     volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
     if len(volumes) > 1:
+        selected_volume = next((item for item in volumes if item["id"] == requested_volume_id), None) if requested_volume_id else None
+        selected_volume = selected_volume or _choose_continue_volume(volumes, progresses) or volumes[0]
+        units = _rows(db, "SELECT * FROM `LibraryReadingUnit` WHERE `editionId` = :edition_id AND `volumeId` = :volume_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id, "volume_id": selected_volume["id"]}) if _has_table(db, "LibraryReadingUnit") else []
         return {
-            "readingUnits": [],
-            "volumeSections": [_volume_section_view(volume, "EPUB") for volume in volumes],
+            "readingUnits": [_reading_unit_view(unit) for unit in units],
+            "volumeSections": [_volume_section_view(volume, "EPUB", progress=_progress_for_volume(progresses, volume["id"])) for volume in volumes],
         }
     units = _rows(db, "SELECT * FROM `LibraryReadingUnit` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryReadingUnit") else []
     return {"readingUnits": [_reading_unit_view(unit) for unit in units], "volumeSections": []}
 
 
 @router.get("/editions/{edition_id}/progress")
-def get_progress(edition_id: str, request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+def get_progress(edition_id: str, request: Request, volumeId: str | None = None, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
     user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
-    progress = _row(db, "SELECT * FROM `LibraryReadingProgress` WHERE `userId` = :user_id AND `editionId` = :edition_id", {"user_id": user.id, "edition_id": edition_id}) if _has_table(db, "LibraryReadingProgress") else None
+    if not _has_table(db, "LibraryReadingProgress"):
+        progress = None
+    elif volumeId:
+        progress = _row(db, "SELECT * FROM `LibraryReadingProgress` WHERE `userId` = :user_id AND `editionId` = :edition_id AND `volumeId` = :volume_id ORDER BY `updatedAt` DESC LIMIT 1", {"user_id": user.id, "edition_id": edition_id, "volume_id": volumeId})
+    else:
+        progress = _row(db, "SELECT * FROM `LibraryReadingProgress` WHERE `userId` = :user_id AND `editionId` = :edition_id ORDER BY `updatedAt` DESC LIMIT 1", {"user_id": user.id, "edition_id": edition_id})
     return ok({"progress": progress})
 
 
@@ -1616,12 +1655,18 @@ async def save_progress(edition_id: str, request: Request, db: Session = Depends
     edition = _row(db, "SELECT * FROM `LibraryEdition` WHERE `id` = :id", {"id": edition_id}) if _has_table(db, "LibraryEdition") else None
     if not edition:
         return fail("版本不存在", status_code=404)
-    existing = _row(db, "SELECT * FROM `LibraryReadingProgress` WHERE `userId` = :user_id AND `editionId` = :edition_id", {"user_id": user.id, "edition_id": edition_id}) if _has_table(db, "LibraryReadingProgress") else None
-    values = {"position": str(payload.get("position", "0")), "page": payload.get("page"), "percent": float(payload.get("percent", 0)), "extra": _json_text(payload.get("extra", {})), "volumeId": payload.get("volumeId"), "updatedAt": _now()}
+    volume_id = payload.get("volumeId")
+    if volume_id and _has_table(db, "LibraryReadingProgress"):
+        existing = _row(db, "SELECT * FROM `LibraryReadingProgress` WHERE `userId` = :user_id AND `editionId` = :edition_id AND `volumeId` = :volume_id", {"user_id": user.id, "edition_id": edition_id, "volume_id": volume_id})
+    elif _has_table(db, "LibraryReadingProgress"):
+        existing = _row(db, "SELECT * FROM `LibraryReadingProgress` WHERE `userId` = :user_id AND `editionId` = :edition_id AND `volumeId` IS NULL", {"user_id": user.id, "edition_id": edition_id})
+    else:
+        existing = None
+    values = {"position": str(payload.get("position", "0")), "page": payload.get("page"), "percent": float(payload.get("percent", 0)), "extra": _json_text(payload.get("extra", {})), "volumeId": volume_id, "updatedAt": _now()}
     if existing:
         progress = _update(db, "LibraryReadingProgress", existing["id"], values)
     elif _has_table(db, "LibraryReadingProgress"):
-        values.update({"id": f"py_{time_ns()}", "userId": user.id, "workId": edition["workId"], "editionId": edition_id, "volumeId": payload.get("volumeId"), "readerType": payload.get("readerType") or ("comic" if edition.get("format") == "COMIC" else ("pdf" if edition.get("format") == "PDF" else "epub")), "createdAt": _now()})
+        values.update({"id": f"py_{time_ns()}", "userId": user.id, "workId": edition["workId"], "editionId": edition_id, "volumeId": volume_id, "readerType": payload.get("readerType") or ("comic" if edition.get("format") == "COMIC" else ("pdf" if edition.get("format") == "PDF" else "epub")), "createdAt": _now()})
         progress = _insert(db, "LibraryReadingProgress", values)
     else:
         progress = values

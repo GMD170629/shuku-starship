@@ -74,6 +74,10 @@ export type WorkView = {
     pageCount: number | null;
     chapterCount: number | null;
     coverUrl: string;
+    progress?: number;
+    lastReadAt?: string | null;
+    position?: string | null;
+    currentPage?: number | null;
   }>;
   editions: Array<{
     id: string;

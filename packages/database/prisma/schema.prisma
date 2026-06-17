@@ -589,7 +589,7 @@ model LibraryReadingProgress {
   createdAt  DateTime       @default(now())
   updatedAt  DateTime       @updatedAt
 
-  @@unique([userId, editionId])
+  @@unique([userId, editionId, volumeId])
   @@index([workId])
   @@index([editionId])
   @@index([volumeId])

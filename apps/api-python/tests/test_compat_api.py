@@ -2829,7 +2829,7 @@ def test_reader_bootstrap_matches_node_shapes_for_epub_and_comic(client, db_sess
     assert [page["pageIndex"] for page in alt_data["pages"]] == [1, 2, 3]
 
 
-def test_multi_volume_comic_progress_is_cumulative_and_bootstrap_resumes_recent_volume(client, db_session, test_settings, tmp_path):
+def test_multi_volume_comic_progress_is_volume_scoped_and_bootstrap_opens_next_target(client, db_session, test_settings, tmp_path):
     create_worker_tables(db_session)
     db_session.execute(
         text(
@@ -2887,29 +2887,133 @@ def test_multi_volume_comic_progress_is_cumulative_and_bootstrap_resumes_recent_
     )
     assert first_progress.status_code == 200
     first_detail = client.get(f"/api/works/{work_id}").json()["data"]["book"]
-    assert first_detail["progress"] == 40
-    assert first_detail["recentVolumeId"] == first_volume_id
-    assert first_detail["chapter"] == "第 1 卷 · 第 2 页"
+    assert first_detail["progress"] == 0
+    assert first_detail["recentVolumeId"] == second_volume_id
+    assert first_detail["chapter"] == "未开始"
 
     second_progress = client.post(
         f"/api/editions/{edition_id}/progress",
-        json={"readerType": "comic", "volumeId": second_volume_id, "page": 1, "position": "1", "percent": 0, "extra": {"volumeId": second_volume_id, "pageIndex": 1}},
+        json={"readerType": "comic", "volumeId": second_volume_id, "page": 1, "position": "1", "percent": 20, "extra": {"volumeId": second_volume_id, "pageIndex": 1}},
     )
     assert second_progress.status_code == 200
     second_detail = client.get(f"/api/works/{work_id}").json()["data"]["book"]
-    assert second_detail["progress"] == 60
+    assert second_detail["progress"] == 20
     assert second_detail["recentVolumeId"] == second_volume_id
     assert second_detail["chapter"] == "第 2 卷 · 第 1 页"
 
     continue_item = client.get("/api/dashboard/continue-reading").json()["data"]["item"]
-    assert continue_item["progress"] == 60
+    assert continue_item["progress"] == 20
     assert continue_item["book"]["recentVolumeId"] == second_volume_id
     assert continue_item["chapter"] == "第 2 卷 · 第 1 页"
 
     resumed = client.get(f"/api/reader/{edition_id}/bootstrap").json()["data"]
     assert resumed["volumeSection"]["id"] == second_volume_id
+    assert resumed["progress"]["percent"] == 20
     explicit = client.get(f"/api/reader/{edition_id}/bootstrap?volume={first_volume_id}").json()["data"]
     assert explicit["volumeSection"]["id"] == first_volume_id
+    assert explicit["progress"]["percent"] == 100
+
+    completed = client.post(
+        f"/api/editions/{edition_id}/progress",
+        json={"readerType": "comic", "volumeId": second_volume_id, "page": 3, "position": "3", "percent": 100, "extra": {"volumeId": second_volume_id, "pageIndex": 3}},
+    )
+    assert completed.status_code == 200
+    complete_detail = client.get(f"/api/works/{work_id}").json()["data"]["book"]
+    assert complete_detail["progress"] == 100
+    assert complete_detail["recentVolumeId"] == second_volume_id
+    assert complete_detail["chapter"] == "第 2 卷 · 第 3 页"
+
+
+def test_multi_volume_epub_detail_returns_selected_volume_chapters_and_scoped_progress(client, db_session):
+    create_worker_tables(db_session)
+    db_session.execute(
+        text(
+            """
+            CREATE TABLE LibraryReadingProgress (
+                id TEXT PRIMARY KEY, userId TEXT, workId TEXT, editionId TEXT, volumeId TEXT,
+                readerType TEXT, position TEXT, page INTEGER, percent REAL, extra TEXT,
+                createdAt TEXT, updatedAt TEXT
+            )
+            """
+        )
+    )
+    db_session.execute(
+        text(
+            """
+            INSERT INTO LibraryWork (
+                id, monitorFolderId, origin, title, normalizedTitle, author, normalizedAuthor, description,
+                workType, status, publicationStatus, trackingStatus, tags, metadataQuality, organizeStatus,
+                coverPath, coverStatus, hidden, organized, primaryEditionId, mergeKey, createdAt, updatedAt
+            ) VALUES (
+                'epub-work', NULL, 'MANUAL', '多卷 EPUB', '多卷 epub', '作者', '作者', NULL,
+                'EPUB', 'WANT', 'UNKNOWN', 'NOT_TRACKING', '[]', 0, 'REVIEWING',
+                NULL, 'PENDING', 0, 0, 'epub-edition', 'epub-work', 'now', 'now'
+            )
+            """
+        )
+    )
+    db_session.execute(
+        text(
+            """
+            INSERT INTO LibraryEdition (
+                id, workId, monitorFolderId, origin, format, versionName, versionKey, sourceGroupKey,
+                description, language, publisher, publishedAt, identifier, isbn, importStatus, importError,
+                sizeBytes, pageCount, chapterCount, coverPath, coverStatus, "primary", hidden, createdAt, updatedAt
+            ) VALUES (
+                'epub-edition', 'epub-work', NULL, 'MANUAL', 'EPUB', '默认版本', 'default', NULL,
+                NULL, NULL, NULL, NULL, NULL, NULL, 'COMPLETED', NULL,
+                0, NULL, 4, NULL, 'PENDING', 1, 0, 'now', 'now'
+            )
+            """
+        )
+    )
+    db_session.execute(
+        text(
+            """
+            INSERT INTO LibraryVolume (
+                id, editionId, title, volumeIndex, sortOrder, pageCount, chapterCount, coverPath, createdAt, updatedAt
+            ) VALUES
+                ('epub-volume-1', 'epub-edition', '第 1 卷', 1, 1, NULL, 2, NULL, 'now', 'now'),
+                ('epub-volume-2', 'epub-edition', '第 2 卷', 2, 2, NULL, 2, NULL, 'now', 'now')
+            """
+        )
+    )
+    db_session.execute(
+        text(
+            """
+            INSERT INTO LibraryReadingUnit (
+                id, editionId, volumeId, fileId, unitType, title, href, mediaType, sortOrder,
+                width, height, size, metadataJson, createdAt, updatedAt
+            ) VALUES
+                ('epub-v1-c1', 'epub-edition', 'epub-volume-1', NULL, 'chapter', '第一卷 第一章', 'v1-c1.xhtml', NULL, 1, NULL, NULL, NULL, '{}', 'now', 'now'),
+                ('epub-v1-c2', 'epub-edition', 'epub-volume-1', NULL, 'chapter', '第一卷 第二章', 'v1-c2.xhtml', NULL, 2, NULL, NULL, NULL, '{}', 'now', 'now'),
+                ('epub-v2-c1', 'epub-edition', 'epub-volume-2', NULL, 'chapter', '第二卷 第一章', 'v2-c1.xhtml', NULL, 1, NULL, NULL, NULL, '{}', 'now', 'now'),
+                ('epub-v2-c2', 'epub-edition', 'epub-volume-2', NULL, 'chapter', '第二卷 第二章', 'v2-c2.xhtml', NULL, 2, NULL, NULL, NULL, '{}', 'now', 'now')
+            """
+        )
+    )
+    db_session.commit()
+    _login(client, db_session)
+
+    first_progress = client.post(
+        "/api/editions/epub-edition/progress",
+        json={"readerType": "epub", "volumeId": "epub-volume-1", "page": 2, "position": "cfi-1", "percent": 100, "extra": {"volumeId": "epub-volume-1"}},
+    )
+    assert first_progress.status_code == 200
+    second_progress = client.post(
+        "/api/editions/epub-edition/progress",
+        json={"readerType": "epub", "volumeId": "epub-volume-2", "page": 1, "position": "cfi-2", "percent": 20, "extra": {"volumeId": "epub-volume-2"}},
+    )
+    assert second_progress.status_code == 200
+
+    detail = client.get("/api/works/epub-work").json()["data"]
+    assert detail["book"]["recentVolumeId"] == "epub-volume-2"
+    assert detail["book"]["progress"] == 20
+    assert [unit["title"] for unit in detail["readingUnits"]] == ["第二卷 第一章", "第二卷 第二章"]
+    assert [(volume["id"], volume["progress"]) for volume in detail["volumeSections"]] == [("epub-volume-1", 100), ("epub-volume-2", 20)]
+
+    first_volume_detail = client.get("/api/works/epub-work?volumeId=epub-volume-1").json()["data"]
+    assert [unit["title"] for unit in first_volume_detail["readingUnits"]] == ["第一卷 第一章", "第一卷 第二章"]
 
 
 def test_volume_move_reorders_epub_and_comic_volumes_and_rejects_cross_work(client, db_session, test_settings, tmp_path):
