@@ -33,7 +33,6 @@ type SourceFolder = {
   name: string;
   rootPath: string;
   enabled: boolean;
-  importMode: string;
   readable: boolean;
   writable: boolean;
   children: Array<{ name: string; path: string; type: string; sizeBytes: number }>;
@@ -97,7 +96,7 @@ function WorkList({ items, onDelete }: { items: WorkItem[]; onDelete: (work: Wor
           </div>
           <div className="flex shrink-0 flex-wrap gap-2">
             <Link href={`/works/${work.id}`} className="inline-flex min-h-9 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-medium text-slate-700 hover:bg-slate-50"><Eye size={15} />打开</Link>
-            <button type="button" onClick={() => onDelete(work)} className="inline-flex min-h-9 items-center gap-2 rounded-xl border border-red-100 bg-red-50 px-3 text-sm font-medium text-red-700 hover:bg-red-100"><Trash2 size={15} />删除托管</button>
+            <button type="button" onClick={() => onDelete(work)} className="inline-flex min-h-9 items-center gap-2 rounded-xl border border-red-100 bg-red-50 px-3 text-sm font-medium text-red-700 hover:bg-red-100"><Trash2 size={15} />删除记录</button>
           </div>
         </div>
       ))}
@@ -143,7 +142,7 @@ export function ManagementFoldersPage() {
   }
 
   async function deleteWork(work: WorkItem) {
-    const typed = window.prompt(`彻底删除系统托管内容，不删除来源文件。请输入作品名确认：${work.title}`);
+    const typed = window.prompt(`删除书库记录，不删除来源文件。请输入作品名确认：${work.title}`);
     if (typed !== work.title) {
       toast.info('已取消删除');
       return;
@@ -153,10 +152,10 @@ export function ManagementFoldersPage() {
       const response = await fetch(`/api/works/${work.id}`, { method: 'DELETE' });
       const payload = await response.json().catch(() => null) as { ok?: boolean; data?: { deletedFiles: number }; error?: { message: string } } | null;
       if (!payload?.ok) throw new Error(payload?.error?.message ?? '删除失败');
-      toast.success(`已删除托管内容，移除文件 ${payload.data?.deletedFiles ?? 0} 个`);
+      toast.success(`已删除书库记录，移除派生文件 ${payload.data?.deletedFiles ?? 0} 个`);
       await load();
     } catch (reason) {
-      toast.error('删除托管内容失败', reason instanceof Error ? reason.message : '请稍后重试');
+      toast.error('删除书库记录失败', reason instanceof Error ? reason.message : '请稍后重试');
     } finally {
       setBusy('');
     }
@@ -172,7 +171,7 @@ export function ManagementFoldersPage() {
     <div className="space-y-6">
       <PageTitle
         title="文件夹管理"
-        desc="按逻辑组织和真实路径查看来源目录、托管目录与作品对象。"
+        desc="按逻辑组织和真实路径查看来源目录、引用文件与作品对象。"
         action={(
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" icon={RefreshCw} loading={loading} loadingText="刷新中" onClick={() => void load()}>刷新</Button>
@@ -220,7 +219,7 @@ export function ManagementFoldersPage() {
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-medium text-slate-950">{source.name}</span>
                     <Badge tone={source.enabled ? 'green' : 'slate'}>{source.enabled ? '启用' : '停用'}</Badge>
-                    <Badge>{source.importMode}</Badge>
+                    <Badge>{source.enabled ? '启用' : '停用'}</Badge>
                     <Badge tone={statusTone(source.readable)}>可读</Badge>
                     <Badge tone={statusTone(source.writable)}>可写</Badge>
                   </div>
@@ -239,15 +238,15 @@ export function ManagementFoldersPage() {
             </div>
           </section>
           <section className="rounded-[24px] border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="font-semibold text-slate-950">托管目录</div>
+            <div className="font-semibold text-slate-950">派生缓存</div>
             <div className="mt-1 break-words text-xs text-slate-500">{data?.disk.managed.rootPath}</div>
             <div className="mt-4 max-h-[620px] overflow-auto rounded-2xl bg-slate-50 p-3">
-              {data?.disk.managed.tree ? <TreeView node={data.disk.managed.tree} /> : <div className="p-4 text-sm text-slate-500">暂无托管文件。</div>}
+              {data?.disk.managed.tree ? <TreeView node={data.disk.managed.tree} /> : <div className="p-4 text-sm text-slate-500">暂无派生缓存。</div>}
             </div>
           </section>
         </div>
       )}
-      {busy.startsWith('delete:') ? <div className="shuku-loading-panel p-4 text-sm" role="status" aria-live="polite">正在删除托管内容...</div> : null}
+      {busy.startsWith('delete:') ? <div className="shuku-loading-panel p-4 text-sm" role="status" aria-live="polite">正在删除书库记录...</div> : null}
     </div>
   );
 }

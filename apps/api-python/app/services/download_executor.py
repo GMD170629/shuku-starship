@@ -7,7 +7,6 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from time import time_ns
 from typing import Any
 from urllib.parse import unquote, urlparse
 from urllib.parse import urljoin
@@ -20,13 +19,11 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings
 from app.services.zlibrary_eapi import USER_AGENT, login_with_config
-from app.worker.importer import ImportOptions, import_managed_book
 
 
 ALLOWED_EXTENSIONS = {".epub", ".txt", ".pdf", ".cbz", ".zip", ".rar", ".7z", ".torrent"}
 BLOCKED_EXTENSIONS = {".exe", ".sh", ".bat", ".cmd", ".js", ".php", ".msi", ".com", ".scr", ".ps1", ".vbs"}
-ACTIVE_DOWNLOAD_STATUSES = {"queued", "downloading", "downloaded", "importing", "completed"}
-SUPPORTED_IMPORT_EXTENSIONS = {".epub", ".cbz", ".zip", ".pdf"}
+ACTIVE_DOWNLOAD_STATUSES = {"queued", "downloading", "downloaded", "completed"}
 
 
 @dataclass(frozen=True)
@@ -180,22 +177,44 @@ def filename_from_url(value: str) -> str:
     return unquote(Path(parsed.path).name) if parsed.path else ""
 
 
-def unique_inbox_path(settings: Settings, filename: str) -> Path:
-    inbox = settings.resolved_download_inbox_path
-    inbox.mkdir(parents=True, exist_ok=True)
+def default_monitor_folder_path(db: Session, setting_key: str) -> Path:
+    folder_id = system_setting(db, setting_key)
+    if not folder_id:
+        raise ValueError("请先在设置中选择默认下载监控文件夹")
+    folder = row(db, "SELECT `rootPath`, `enabled` FROM `MonitorFolder` WHERE `id` = :id", {"id": folder_id}) if has_table(db, "MonitorFolder") else None
+    if not folder or not folder.get("enabled"):
+        raise ValueError("默认下载监控文件夹不存在或未启用")
+    root = Path(str(folder.get("rootPath") or "")).expanduser().resolve()
+    if not root.exists() or not root.is_dir():
+        raise ValueError("默认下载监控文件夹不可访问")
+    return root
+
+
+def unique_download_path(filename: str, root: Path) -> Path:
+    directory = root.expanduser().resolve()
+    directory.mkdir(parents=True, exist_ok=True)
     sanitized = sanitize_filename(filename)
     parsed = Path(sanitized)
     stem = sanitize_filename(parsed.stem) or "download"
     suffix = parsed.suffix
     index = 0
     while True:
-        candidate = inbox / f"{stem}{suffix}" if index == 0 else inbox / f"{stem}-{index}{suffix}"
+        candidate = directory / f"{stem}{suffix}" if index == 0 else directory / f"{stem}-{index}{suffix}"
         resolved = candidate.resolve()
-        if inbox != resolved and inbox not in resolved.parents:
+        if directory != resolved and directory not in resolved.parents:
             raise ValueError("下载路径越界")
         if not resolved.exists():
             return resolved
         index += 1
+
+
+def task_save_root(db: Session, task: dict[str, Any]) -> Path:
+    raw = string_value(task.get("savePath"))
+    if raw:
+        root = Path(raw).expanduser().resolve()
+        if root.exists() and root.is_dir():
+            return root
+    return default_monitor_folder_path(db, "library.defaultDownloadFolderId")
 
 
 def execute_http_download(db: Session, settings: Settings, task: dict[str, Any]) -> Path:
@@ -216,7 +235,7 @@ def execute_http_download(db: Session, settings: Settings, task: dict[str, Any])
             or string_value(task.get("displayName"))
         )
         assert_allowed_extension(filename)
-        target_path = unique_inbox_path(settings, filename)
+        target_path = unique_download_path(filename, task_save_root(db, task))
         try:
             with target_path.open("xb") as handle:
                 shutil.copyfileobj(response, handle)
@@ -228,9 +247,9 @@ def execute_http_download(db: Session, settings: Settings, task: dict[str, Any])
             raise
 
 
-def execute_blackhole(settings: Settings, task: dict[str, Any]) -> Path:
+def execute_blackhole(db: Session, settings: Settings, task: dict[str, Any]) -> Path:
     filename = sanitize_filename(f"{task.get('displayName') or task.get('id')}.txt")
-    target_path = unique_inbox_path(settings, filename)
+    target_path = unique_download_path(filename, task_save_root(db, task))
     note = "\n".join(
         [
             "Blackhole download placeholder",
@@ -274,7 +293,7 @@ def qbittorrent_cookie(config: QbittorrentConfig) -> str | None:
     return cookie
 
 
-def execute_qbittorrent_task(settings: Settings, config: QbittorrentConfig, task: dict[str, Any], torrent_ref: str, ref_type: str) -> Path:
+def execute_qbittorrent_task(db: Session, settings: Settings, config: QbittorrentConfig, task: dict[str, Any], torrent_ref: str, ref_type: str) -> Path:
     cookie = qbittorrent_cookie(config)
     payload = {"urls": torrent_ref, "paused": "false"}
     category = string_value(config.category)
@@ -287,7 +306,7 @@ def execute_qbittorrent_task(settings: Settings, config: QbittorrentConfig, task
     if status < 200 or status >= 300 or body.strip().lower() in {"fails.", "fail"}:
         raise ValueError(f"qBittorrent 提交失败：{body.strip() or status}")
     filename = ensure_suffix(string_value(task.get("displayName")) or string_value(task.get("id")) or "torrent", ".qbittorrent.json")
-    target_path = unique_inbox_path(settings, filename)
+    target_path = unique_download_path(filename, task_save_root(db, task))
     target_path.write_text(
         json.dumps(
             {
@@ -320,7 +339,7 @@ def execute_torrent_task(db: Session, settings: Settings, task: dict[str, Any]) 
     torrent_url = string_value(ref.get("torrentUrl"))
     if torrent_url:
         if string_value(qbit.url):
-            return execute_qbittorrent_task(settings, qbit, task, torrent_url, "torrentUrl")
+            return execute_qbittorrent_task(db, settings, qbit, task, torrent_url, "torrentUrl")
         return execute_http_download(db, settings, {**task, "remoteRef": {**ref, "downloadUrl": torrent_url, "filename": ensure_suffix(string_value(ref.get("filename")) or string_value(task.get("displayName")) or "download", ".torrent")}})
 
     magnet_url = string_value(ref.get("magnetUrl"))
@@ -328,15 +347,15 @@ def execute_torrent_task(db: Session, settings: Settings, task: dict[str, Any]) 
         if not magnet_url.startswith("magnet:?"):
             raise ValueError("magnetUrl 格式不正确")
         if string_value(qbit.url):
-            return execute_qbittorrent_task(settings, qbit, task, magnet_url, "magnetUrl")
+            return execute_qbittorrent_task(db, settings, qbit, task, magnet_url, "magnetUrl")
         filename = ensure_suffix(string_value(ref.get("filename")) or string_value(task.get("displayName")) or string_value(ref.get("externalId")) or str(task.get("id") or "torrent"), ".magnet")
-        target_path = unique_inbox_path(settings, filename)
+        target_path = unique_download_path(filename, task_save_root(db, task))
         target_path.write_text(magnet_url, encoding="utf-8")
         return target_path
 
     blackhole_path = string_value(ref.get("blackholePath"))
     if blackhole_path:
-        return execute_blackhole(settings, task)
+        return execute_blackhole(db, settings, task)
     raise ValueError("torrent 下载任务缺少 torrentUrl、magnetUrl 或 blackholePath")
 
 
@@ -394,7 +413,7 @@ def execute_zlibrary_task(db: Session, settings: Settings, task: dict[str, Any])
             or string_value(task.get("displayName"))
         )
         assert_allowed_extension(filename)
-        target_path = unique_inbox_path(settings, filename)
+        target_path = unique_download_path(filename, task_save_root(db, task))
         try:
             with target_path.open("xb") as handle:
                 shutil.copyfileobj(response, handle)
@@ -411,7 +430,7 @@ def run_task(db: Session, settings: Settings, task: dict[str, Any]) -> Path:
     if task_type == "http":
         return execute_http_download(db, settings, task)
     if task_type == "blackhole":
-        return execute_blackhole(settings, task)
+        return execute_blackhole(db, settings, task)
     if task_type == "torrent":
         return execute_torrent_task(db, settings, task)
     if task_type == "zlibrary":
@@ -437,133 +456,11 @@ def execute_download_task(db: Session, settings: Settings, task_id: str) -> Down
             db,
             "DownloadTask",
             task_id,
-            {"status": "downloaded", "progress": 100, "filePath": str(file_path), "savePath": str(settings.resolved_download_inbox_path), "errorMessage": None, "updatedAt": now()},
+            {"status": "downloaded", "progress": 100, "filePath": str(file_path), "savePath": str(file_path.parent), "errorMessage": None, "updatedAt": now()},
         )
         return DownloadExecutionResult(updated or task)
     except Exception as exc:
         updated = update_row(db, "DownloadTask", task_id, {"status": "failed", "errorMessage": error_summary(exc), "updatedAt": now()})
-        return DownloadExecutionResult(updated or task)
-
-
-def validate_inbox_file(settings: Settings, file_path: str | None) -> Path:
-    if not file_path:
-        raise ValueError("下载任务没有可导入文件")
-    inbox = settings.resolved_download_inbox_path
-    resolved = Path(file_path).expanduser().resolve()
-    if inbox != resolved and inbox not in resolved.parents:
-        raise ValueError("只能导入下载队列中的文件")
-    if not resolved.exists() or not resolved.is_file():
-        raise ValueError("下载任务文件不存在或不是普通文件")
-    return resolved
-
-
-def load_qbittorrent_manifest(file_path: Path) -> dict[str, Any] | None:
-    if file_path.suffix.lower() != ".json":
-        return None
-    try:
-        payload = json.loads(file_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    return payload if isinstance(payload, dict) and payload.get("type") == "qbittorrent_submission" else None
-
-
-def configured_qbittorrent_save_root(config: QbittorrentConfig, manifest: dict[str, Any]) -> Path:
-    save_path = string_value(manifest.get("savePath")) or string_value(config.save_path)
-    if not save_path:
-        raise ValueError("qBittorrent 任务缺少保存目录，无法拾取完成文件")
-    return Path(save_path).expanduser().resolve()
-
-
-def find_qbittorrent_completed_file(config: QbittorrentConfig, manifest: dict[str, Any], task: dict[str, Any]) -> Path:
-    root = configured_qbittorrent_save_root(config, manifest)
-    if not root.exists() or not root.is_dir():
-        raise ValueError("qBittorrent 保存目录不存在或不可访问")
-    expected_values = [
-        string_value(manifest.get("completedFile")),
-        string_value(manifest.get("expectedName")),
-        string_value(task.get("displayName")),
-    ]
-    candidates: list[Path] = []
-    for value in expected_values:
-        if not value:
-            continue
-        candidate = (root / sanitize_filename(value)).resolve()
-        if root == candidate or root in candidate.parents:
-            candidates.append(candidate)
-        stem = sanitize_filename(Path(value).stem)
-        if stem:
-            candidates.extend(path for path in root.rglob(f"{stem}.*") if path.is_file())
-    candidates.extend(path for path in root.rglob("*") if path.is_file())
-    seen: set[Path] = set()
-    for candidate in candidates:
-        resolved = candidate.resolve()
-        if resolved in seen:
-            continue
-        seen.add(resolved)
-        if root != resolved and root not in resolved.parents:
-            continue
-        if resolved.suffix.lower() in SUPPORTED_IMPORT_EXTENSIONS and resolved.exists() and resolved.stat().st_size > 0:
-            return resolved
-    raise ValueError("未在 qBittorrent 保存目录中找到可导入的 EPUB、CBZ、ZIP 或 PDF 文件")
-
-
-def stage_completed_download_to_inbox(settings: Settings, source: Path) -> Path:
-    assert_allowed_extension(source.name)
-    target = unique_inbox_path(settings, source.name)
-    shutil.copy2(source, target)
-    return target
-
-
-def resolve_download_import_file(db: Session, settings: Settings, task: dict[str, Any]) -> Path:
-    qbit = qbittorrent_config(db, settings)
-    try:
-        file_path = validate_inbox_file(settings, task.get("filePath"))
-    except Exception:
-        raw_path = task.get("filePath")
-        candidate = Path(raw_path).expanduser().resolve() if raw_path else None
-        manifest = load_qbittorrent_manifest(candidate) if candidate and candidate.exists() else None
-        if not manifest:
-            raise
-        completed = find_qbittorrent_completed_file(qbit, manifest, task)
-        return stage_completed_download_to_inbox(settings, completed)
-    manifest = load_qbittorrent_manifest(file_path)
-    if manifest:
-        completed = find_qbittorrent_completed_file(qbit, manifest, task)
-        return stage_completed_download_to_inbox(settings, completed)
-    return file_path
-
-
-def import_download_task(db: Session, settings: Settings, task_id: str) -> DownloadExecutionResult:
-    task = row(db, "SELECT * FROM `DownloadTask` WHERE `id` = :id", {"id": task_id}) if has_table(db, "DownloadTask") else None
-    if not task:
-        raise ValueError("下载任务不存在")
-    if task.get("status") != "downloaded":
-        raise ValueError("只有已下载任务可以导入书库")
-
-    try:
-        file_path = resolve_download_import_file(db, settings, task)
-    except Exception as exc:
-        update_row(db, "DownloadTask", task_id, {"status": "failed", "errorMessage": error_summary(exc), "updatedAt": now()})
-        if task.get("searchRecordId") and has_table(db, "SourceSearchRecord"):
-            update_row(db, "SourceSearchRecord", task["searchRecordId"], {"status": "failed", "updatedAt": now()})
-        raise
-
-    update_row(db, "DownloadTask", task_id, {"status": "importing", "filePath": str(file_path), "errorMessage": None, "updatedAt": now()})
-    try:
-        result = import_managed_book(db, settings, ImportOptions(source_file_path=file_path, original_name=file_path.name, origin="MANUAL"))
-        updated = update_row(
-            db,
-            "DownloadTask",
-            task_id,
-            {"status": "completed", "bookId": result.book_id, "progress": 100, "errorMessage": None, "updatedAt": now()},
-        )
-        if task.get("searchRecordId") and has_table(db, "SourceSearchRecord"):
-            update_row(db, "SourceSearchRecord", task["searchRecordId"], {"status": "completed", "updatedAt": now()})
-        return DownloadExecutionResult(updated or task, import_result=result)
-    except Exception as exc:
-        updated = update_row(db, "DownloadTask", task_id, {"status": "failed", "errorMessage": error_summary(exc), "updatedAt": now()})
-        if task.get("searchRecordId") and has_table(db, "SourceSearchRecord"):
-            update_row(db, "SourceSearchRecord", task["searchRecordId"], {"status": "failed", "updatedAt": now()})
         return DownloadExecutionResult(updated or task)
 
 

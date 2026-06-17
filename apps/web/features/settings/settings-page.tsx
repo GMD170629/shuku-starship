@@ -14,7 +14,6 @@ type MonitorFolder = {
   name: string;
   rootPath: string;
   enabled: boolean;
-  importMode: 'COPY' | 'MOVE';
   ignorePatterns?: string | null;
   ignoreHidden: boolean;
   minFileSizeBytes: number;
@@ -24,6 +23,8 @@ type MonitorFolder = {
 type MonitorFoldersPayload = {
   folders: MonitorFolder[];
   monitorRoot?: string;
+  defaultUploadFolderId?: string | null;
+  defaultDownloadFolderId?: string | null;
 };
 
 type BackupItem = {
@@ -71,13 +72,10 @@ function hasCompleteAiSettings(settings: AppSettings) {
   return Boolean(settings['metadata.ai.baseUrl']?.trim() && settings['metadata.ai.model']?.trim() && settings['metadata.ai.apiKey']?.trim());
 }
 
-const importModeOptions = [
-  { value: 'COPY', label: '复制到项目文件夹' },
-  { value: 'MOVE', label: '移动到项目文件夹' }
-];
-
 const editableSystemSettingKeys = new Set([
   'systemName',
+  'library.defaultUploadFolderId',
+  'library.defaultDownloadFolderId',
   'metadata.external.enabled',
   'metadata.douban.enabled',
   'metadata.douban.mode',
@@ -129,6 +127,8 @@ export function SettingsPage() {
     'metadata.ai.baseUrl': '',
     'metadata.ai.apiKey': '',
     'metadata.ai.model': '',
+    'library.defaultUploadFolderId': '',
+    'library.defaultDownloadFolderId': '',
     'download.qbittorrent.url': '',
     'download.qbittorrent.username': '',
     'download.qbittorrent.password': '',
@@ -137,7 +137,6 @@ export function SettingsPage() {
   });
   const [name, setName] = useState('我的监控文件夹');
   const [rootPath, setRootPath] = useState('/books');
-  const [importMode, setImportMode] = useState<'COPY' | 'MOVE'>('COPY');
   const [ignorePatterns, setIgnorePatterns] = useState('');
   const [ignoreHidden, setIgnoreHidden] = useState(true);
   const [minFileSizeKb, setMinFileSizeKb] = useState('0');
@@ -156,6 +155,11 @@ export function SettingsPage() {
     if (payload.ok) {
       setFolders(payload.data?.folders ?? []);
       if (payload.data?.monitorRoot && rootPath === '/books') setRootPath(payload.data.monitorRoot);
+      setSettings((current) => ({
+        ...current,
+        'library.defaultUploadFolderId': current['library.defaultUploadFolderId'] || payload.data?.defaultUploadFolderId || '',
+        'library.defaultDownloadFolderId': current['library.defaultDownloadFolderId'] || payload.data?.defaultDownloadFolderId || ''
+      }));
     } else {
       setError(payload.error?.message ?? '读取监控文件夹失败');
     }
@@ -196,7 +200,7 @@ export function SettingsPage() {
     const response = await fetch('/api/monitor-folders', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, rootPath, enabled: true, importMode, ignorePatterns, ignoreHidden, minFileSizeBytes: Math.max(0, Math.round(Number(minFileSizeKb || 0) * 1024)) })
+      body: JSON.stringify({ name, rootPath, enabled: true, ignorePatterns, ignoreHidden, minFileSizeBytes: Math.max(0, Math.round(Number(minFileSizeKb || 0) * 1024)) })
     });
     const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
     if (!payload.ok) {
@@ -239,7 +243,7 @@ export function SettingsPage() {
     setPathBusy('');
   }
 
-  async function saveScanRules(path: MonitorFolder, updates: Pick<MonitorFolder, 'importMode' | 'ignorePatterns' | 'ignoreHidden' | 'minFileSizeBytes'>) {
+  async function saveScanRules(path: MonitorFolder, updates: Pick<MonitorFolder, 'ignorePatterns' | 'ignoreHidden' | 'minFileSizeBytes'>) {
     setError('');
     setMessage('');
     setRuleBusy(path.id);
@@ -408,13 +412,9 @@ export function SettingsPage() {
                   <span className="text-sm font-medium text-slate-700">名称</span>
                   <input value={name} onChange={(event) => setName(event.target.value)} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
                 </label>
-                <label className="md:col-span-6">
+                <label className="md:col-span-9">
                   <span className="text-sm font-medium text-slate-700">监控文件夹路径</span>
                   <input value={rootPath} onChange={(event) => setRootPath(event.target.value)} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
-                </label>
-                <label className="md:col-span-3">
-                  <span className="text-sm font-medium text-slate-700">添加模式</span>
-                  <Select value={importMode} options={importModeOptions} onChange={(value) => setImportMode(value as 'COPY' | 'MOVE')} ariaLabel="添加模式" className="mt-2 w-full" />
                 </label>
                 <label className="md:col-span-9">
                   <span className="text-sm font-medium text-slate-700">自定义忽略规则</span>
@@ -448,7 +448,7 @@ export function SettingsPage() {
                     <div className="min-w-0 flex-1">
                       <div className="font-semibold">{path.name}</div>
                       <div className="break-words text-sm text-slate-500">{path.rootPath}</div>
-                      <div className="mt-2 text-xs text-slate-500">{path.importMode === 'MOVE' ? '移动到项目文件夹' : '复制到项目文件夹'} · {path.ignoreHidden ? '忽略隐藏文件' : '包含隐藏文件'} · 小于 {Math.round((path.minFileSizeBytes ?? 0) / 1024)} KB 跳过 · {path.ignorePatterns?.trim() ? '已配置自定义忽略规则' : '仅默认忽略规则'}</div>
+                      <div className="mt-2 text-xs text-slate-500">引用原文件 · {path.ignoreHidden ? '忽略隐藏文件' : '包含隐藏文件'} · 小于 {Math.round((path.minFileSizeBytes ?? 0) / 1024)} KB 跳过 · {path.ignorePatterns?.trim() ? '已配置自定义忽略规则' : '仅默认忽略规则'}</div>
                     </div>
                     <button disabled={pathBusy === `toggle:${path.id}`} onClick={() => togglePath(path)} className={cn('h-7 w-12 rounded-full p-1 transition disabled:cursor-not-allowed disabled:opacity-60', path.enabled ? 'bg-blue-600' : 'bg-slate-300')} aria-label="启用监控文件夹">
                       <span className={cn('block h-5 w-5 rounded-full bg-white transition', path.enabled && 'translate-x-5')} />
@@ -458,6 +458,32 @@ export function SettingsPage() {
                 ))}
                 {folders.length === 0 ? <div className="rounded-3xl bg-slate-50 p-6 text-sm text-slate-500">尚未保存监控文件夹。</div> : null}
               </div>
+              <section className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+                <div className="font-semibold text-slate-950">默认投递目录</div>
+                <div className="mt-1 text-sm text-slate-500">上传和下载只会保存到这里选择的监控文件夹，随后由监控服务自动识别入库。</div>
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <label className="text-sm text-slate-600">
+                    默认上传目录
+                    <Select
+                      value={settings['library.defaultUploadFolderId'] || ''}
+                      options={[{ value: '', label: '请选择监控文件夹' }, ...folders.filter((folder) => folder.enabled).map((folder) => ({ value: folder.id, label: folder.name }))]}
+                      onChange={(value) => setSettings({ ...settings, 'library.defaultUploadFolderId': value })}
+                      ariaLabel="默认上传目录"
+                      className="mt-2 w-full"
+                    />
+                  </label>
+                  <label className="text-sm text-slate-600">
+                    默认下载目录
+                    <Select
+                      value={settings['library.defaultDownloadFolderId'] || ''}
+                      options={[{ value: '', label: '请选择监控文件夹' }, ...folders.filter((folder) => folder.enabled).map((folder) => ({ value: folder.id, label: folder.name }))]}
+                      onChange={(value) => setSettings({ ...settings, 'library.defaultDownloadFolderId': value })}
+                      ariaLabel="默认下载目录"
+                      className="mt-2 w-full"
+                    />
+                  </label>
+                </div>
+              </section>
             </div>
           ) : active === '监控规则' ? (
             <div className="mt-6 space-y-4">
@@ -665,17 +691,15 @@ export function SettingsPage() {
   );
 }
 
-function ScanRuleEditor({ path, saving, onSave }: { path: MonitorFolder; saving: boolean; onSave: (path: MonitorFolder, updates: Pick<MonitorFolder, 'importMode' | 'ignorePatterns' | 'ignoreHidden' | 'minFileSizeBytes'>) => Promise<void> }) {
+function ScanRuleEditor({ path, saving, onSave }: { path: MonitorFolder; saving: boolean; onSave: (path: MonitorFolder, updates: Pick<MonitorFolder, 'ignorePatterns' | 'ignoreHidden' | 'minFileSizeBytes'>) => Promise<void> }) {
   const [patterns, setPatterns] = useState(path.ignorePatterns ?? '');
   const [hidden, setHidden] = useState(path.ignoreHidden);
   const [minSizeKb, setMinSizeKb] = useState(String(Math.round((path.minFileSizeBytes ?? 0) / 1024)));
-  const [mode, setMode] = useState<'COPY' | 'MOVE'>(path.importMode ?? 'COPY');
 
   useEffect(() => {
     setPatterns(path.ignorePatterns ?? '');
     setHidden(path.ignoreHidden);
     setMinSizeKb(String(Math.round((path.minFileSizeBytes ?? 0) / 1024)));
-    setMode(path.importMode ?? 'COPY');
   }, [path]);
 
   return (
@@ -690,10 +714,6 @@ function ScanRuleEditor({ path, saving, onSave }: { path: MonitorFolder; saving:
           忽略隐藏文件
         </label>
       </div>
-      <label className="mt-4 block text-sm text-slate-600">
-        添加模式
-        <Select value={mode} options={importModeOptions} onChange={(value) => setMode(value as 'COPY' | 'MOVE')} ariaLabel="添加模式" className="mt-2 w-full max-w-xs" />
-      </label>
       <label className="mt-4 block text-sm text-slate-600">
         小于此大小的文件跳过（KB）
         <input
@@ -712,7 +732,7 @@ function ScanRuleEditor({ path, saving, onSave }: { path: MonitorFolder; saving:
       />
       <div className="mt-2 text-xs leading-5 text-slate-500">默认已忽略封面、缩略图、临时文件、说明文件和普通图片；这里填写额外规则，每行一条。</div>
       <div className="mt-3 flex justify-end">
-        <Button type="button" icon={CheckCircle2} loading={saving} loadingText="保存中" onClick={() => onSave(path, { importMode: mode, ignorePatterns: patterns, ignoreHidden: hidden, minFileSizeBytes: Math.max(0, Math.round(Number(minSizeKb || 0) * 1024)) })}>保存规则</Button>
+        <Button type="button" icon={CheckCircle2} loading={saving} loadingText="保存中" onClick={() => onSave(path, { ignorePatterns: patterns, ignoreHidden: hidden, minFileSizeBytes: Math.max(0, Math.round(Number(minSizeKb || 0) * 1024)) })}>保存规则</Button>
       </div>
     </div>
   );

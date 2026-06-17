@@ -1,2 +1,0 @@
-ALTER TABLE `MonitorFolder`
-  ADD COLUMN `importMode` ENUM('COPY', 'MOVE') NOT NULL DEFAULT 'COPY';

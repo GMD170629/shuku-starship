@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings
-from app.services.download_executor import execute_download_task, has_table, import_download_task
+from app.services.download_executor import execute_download_task, has_table
 
 
 class DownloadQueueWorker:
@@ -66,10 +66,7 @@ def process_next_download_task(db: Session, settings: Settings) -> bool:
         return False
     result = execute_download_task(db, settings, str(task["id"]))
     if result.task.get("status") == "downloaded":
-        try:
-            import_download_task(db, settings, str(task["id"]))
-        except Exception as exc:
-            print(f"[download-queue] automatic import failed for {task['id']}: {exc}", flush=True)
+        print(f"[download-queue] downloaded {task['id']} to monitored folder; watcher will import it", flush=True)
     return True
 
 

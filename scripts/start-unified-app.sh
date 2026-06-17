@@ -33,9 +33,8 @@ trap shutdown INT TERM EXIT
 
 "$ROOT_DIR/scripts/require-env.sh" DATABASE_URL
 export STORAGE_ROOT="${STORAGE_ROOT:-$ROOT_DIR/storage}"
-export DOWNLOAD_INBOX_PATH="${DOWNLOAD_INBOX_PATH:-$STORAGE_ROOT/downloads/inbox}"
 export MONITOR_ROOT="${MONITOR_ROOT:-/monitor}"
-mkdir -p "$MONITOR_ROOT" "$STORAGE_ROOT/covers" "$STORAGE_ROOT/indexes" "$STORAGE_ROOT/temp" "$STORAGE_ROOT/logs" "$DOWNLOAD_INBOX_PATH" "$STORAGE_ROOT/secrets"
+mkdir -p "$MONITOR_ROOT" "$STORAGE_ROOT/covers" "$STORAGE_ROOT/indexes" "$STORAGE_ROOT/temp" "$STORAGE_ROOT/logs" "$STORAGE_ROOT/secrets"
 
 if [ -z "${SESSION_SECRET:-}" ]; then
   secret_file="$STORAGE_ROOT/secrets/session-secret"

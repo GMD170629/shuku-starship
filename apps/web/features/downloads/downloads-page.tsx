@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertTriangle, Ban, BookOpen, CheckCircle2, Download, FileCheck2, RefreshCw, RotateCcw, UploadCloud } from 'lucide-react';
+import { AlertTriangle, Ban, BookOpen, CheckCircle2, Download, FileCheck2, RefreshCw, RotateCcw } from 'lucide-react';
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { Badge, type BadgeTone } from '../../components/ui/badge';
@@ -72,9 +72,9 @@ function dateLabel(value: string) {
 function taskStageHint(task: DownloadTask) {
   if (task.status === 'queued') return '等待开始，可手动开始下载或由队列处理。';
   if (task.status === 'downloading') return '正在从外部来源保存文件。';
-  if (task.status === 'downloaded') return '文件已保存，下一步导入书库。';
-  if (task.status === 'importing') return '正在导入书库，完成后会进入书库和待整理。';
-  if (task.status === 'completed') return '已导入书库，可继续查看书库或待整理任务。';
+  if (task.status === 'downloaded') return '文件已保存到监控目录，监控服务会自动识别入库。';
+  if (task.status === 'importing') return '等待监控服务识别，完成后会进入书库和待整理。';
+  if (task.status === 'completed') return '已由监控流程入库，可继续查看书库或待整理任务。';
   if (task.status === 'failed') return '任务失败，可修正配置后重试。';
   if (task.status === 'cancelled') return '任务已取消，可重新排队。';
   return '';
@@ -181,27 +181,6 @@ export function DownloadsPage() {
     }
   }
 
-  async function importDownloadedFile(task: DownloadTask) {
-    setBusy(`import:${task.id}`);
-    setError('');
-    setMessage('');
-    try {
-      const response = await fetch(`/api/download-tasks/${task.id}/import`, { method: 'POST' });
-      const payload = (await response.json()) as DownloadTasksPayload;
-      if (!payload.ok) throw new Error(payload.error?.message ?? '导入书库失败');
-      setMessage('已导入书库');
-      toast.success('已导入书库');
-      await loadTasks();
-    } catch (reason) {
-      const nextError = reason instanceof Error ? reason.message : '导入书库失败';
-      setError(nextError);
-      toast.error('导入书库失败', nextError);
-      await loadTasks();
-    } finally {
-      setBusy('');
-    }
-  }
-
   function markFailed(task: DownloadTask) {
     const reason = window.prompt('失败原因', task.errorMessage ?? '');
     if (reason === null) return;
@@ -212,7 +191,7 @@ export function DownloadsPage() {
     <div className="space-y-6">
       <PageTitle
         title="下载队列"
-        desc="查看下载进度，完成后导入书库继续整理。"
+        desc="查看下载进度，文件保存到监控目录后会自动识别入库。"
         action={<Button variant="secondary" icon={RefreshCw} loading={loading} loadingText="刷新中" onClick={() => void loadTasks()}>刷新</Button>}
       />
       <div className="grid grid-cols-2 gap-3 md:grid-cols-4 xl:grid-cols-7">
@@ -263,18 +242,18 @@ export function DownloadsPage() {
                     ) : null}
                     {task.status === 'importing' ? (
                       <div className="mt-3 rounded-2xl bg-amber-50 px-4 py-3 text-sm text-amber-700">
-                        正在导入书库，请稍候。
+                        等待监控服务识别，请稍候。
                       </div>
                     ) : null}
                     {task.status === 'completed' ? (
                       <div className="mt-3 rounded-2xl bg-emerald-50 px-4 py-3 text-sm text-emerald-700">
-                        已导入书库，可在书库或待整理中继续处理。
+                        已由监控流程入库，可在书库或待整理中继续处理。
                       </div>
                     ) : null}
                   </div>
                   <div className="flex shrink-0 flex-wrap gap-2">
                     {['queued', 'failed'].includes(task.status) ? <Button loading={busy === `start:${task.id}`} loadingText="开始中" variant="secondary" icon={Download} onClick={() => void startDownload(task)}>开始下载</Button> : null}
-                    {task.status === 'downloaded' ? <Button loading={busy === `import:${task.id}`} loadingText="导入中" variant="secondary" icon={UploadCloud} onClick={() => void importDownloadedFile(task)}>导入书库</Button> : null}
+                    {task.status === 'downloaded' ? <span className="inline-flex min-h-11 items-center rounded-2xl border border-emerald-100 bg-emerald-50 px-4 text-sm font-medium text-emerald-700">等待自动识别</span> : null}
                     <Button loading={busy === `cancel:${task.id}`} disabled={task.status === 'completed' || task.status === 'cancelled'} variant="secondary" icon={Ban} onClick={() => void postTaskAction(task, 'cancel')}>取消</Button>
                     <Button loading={busy === `retry:${task.id}`} disabled={!['failed', 'cancelled'].includes(task.status)} variant="secondary" icon={RotateCcw} onClick={() => void postTaskAction(task, 'retry')}>重试</Button>
                     <Button loading={busy === `downloaded:${task.id}`} disabled={['downloaded', 'importing', 'completed'].includes(task.status)} variant="secondary" icon={FileCheck2} onClick={() => void updateTask(task, { status: 'downloaded' })}>标记已下载</Button>

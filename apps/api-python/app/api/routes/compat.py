@@ -34,10 +34,10 @@ from app.services.backup_service import list_backups as list_backup_archives
 from app.services.backup_service import restore_backup as restore_backup_archive
 from app.services.download_executor import (
     create_remote_ref_from_search_record,
+    default_monitor_folder_path,
     execute_download_task,
     find_active_download_task,
     has_usable_download_meta,
-    import_download_task,
     infer_download_task_type,
 )
 from app.services.health import run_system_health_checks
@@ -52,7 +52,7 @@ from app.services.organize_service import (
     refresh_organize_job,
 )
 from app.services.source_providers import PROVIDER_CAPABILITIES, search_source_provider, test_source_provider
-from app.worker.importer import ImportOptions, import_managed_book, is_supported_import_file, parse_comic_archive, parse_series_volume_info
+from app.worker.importer import is_supported_import_file, parse_comic_archive, parse_series_volume_info
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -919,15 +919,48 @@ def _monitor_folder_by_root_path(db: Session, root_path: str, exclude_id: str | 
     return _row(db, f"{sql} LIMIT 1", params)
 
 
-def _monitor_move_writable_error(root_path: str, import_mode: str | None) -> Response | None:
-    if str(import_mode or "COPY").upper() != "MOVE":
+def _system_setting_value(db: Session, key: str) -> str | None:
+    if not _has_table(db, "SystemSetting"):
         return None
-    path = Path(root_path)
+    row = _row(db, "SELECT `value` FROM `SystemSetting` WHERE `key` = :key", {"key": key})
+    value = (row or {}).get("value")
+    parsed = _parse_json(value, value)
+    return str(parsed).strip() if parsed is not None and str(parsed).strip() else None
+
+
+def _monitor_folder_for_setting(db: Session, key: str) -> dict[str, Any] | None:
+    folder_id = _system_setting_value(db, key)
+    if not folder_id or not _has_table(db, "MonitorFolder"):
+        return None
+    return _row(db, "SELECT * FROM `MonitorFolder` WHERE `id` = :id AND `enabled` = 1", {"id": folder_id})
+
+
+def _default_monitor_folder_path(db: Session, key: str, missing_message: str) -> Path:
+    folder = _monitor_folder_for_setting(db, key)
+    if not folder:
+        raise ValueError(missing_message)
+    path = Path(str(folder.get("rootPath") or "")).expanduser().resolve()
     if not path.exists() or not path.is_dir():
-        return fail("移动模式需要监控文件夹在容器内存在", status_code=400, details={"rootPath": root_path})
-    if not os.access(path, os.W_OK):
-        return fail("移动模式需要监控文件夹可写；当前 /monitor 挂载可能是只读，请改用复制模式或将监控目录以可写方式挂载。", status_code=400, details={"rootPath": root_path, "importMode": "MOVE"})
-    return None
+        raise ValueError("默认监控文件夹不可访问")
+    return path
+
+
+def _unique_file_in_directory(directory: Path, filename: str) -> Path:
+    directory = directory.expanduser().resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    safe_name = _safe_upload_name(filename)
+    parsed = Path(safe_name)
+    stem = parsed.stem or "upload"
+    suffix = parsed.suffix
+    index = 0
+    while True:
+        candidate = directory / safe_name if index == 0 else directory / f"{stem}-{index}{suffix}"
+        resolved = candidate.resolve()
+        if directory != resolved and directory not in resolved.parents:
+            raise ValueError("目标路径越界")
+        if not resolved.exists():
+            return resolved
+        index += 1
 
 
 @router.get("/dashboard/summary")
@@ -1276,7 +1309,7 @@ def delete_work(work_id: str, request: Request, db: Session = Depends(get_db), s
             action="deleted",
             target_type="work",
             target_id=work_id,
-            message=f"彻底删除托管作品：{(work or {}).get('title') or work_id}",
+            message=f"删除书库记录：{(work or {}).get('title') or work_id}",
             metadata={"workTitle": (work or {}).get("title"), "deletedFiles": result.get("deletedFiles"), "failedFileDeletes": result.get("failedFileDeletes")},
         )
     return ok(result)
@@ -1305,7 +1338,7 @@ async def bulk_works(request: Request, db: Session = Depends(get_db), settings: 
                 deleted_files += int(result.get("deletedFiles") or 0)
                 failed_file_deletes.extend(result.get("failedFileDeletes") or [])
         if updated:
-            _record_system_event(db, level="error", source="library", actor_type="admin", actor_id=user.id, action="bulk.deleted", target_type="work", message=f"批量彻底删除托管作品 {updated} 个", metadata={"ids": ids, "deletedFiles": deleted_files, "failedFileDeletes": failed_file_deletes})
+            _record_system_event(db, level="error", source="library", actor_type="admin", actor_id=user.id, action="bulk.deleted", target_type="work", message=f"批量删除书库记录 {updated} 个", metadata={"ids": ids, "deletedFiles": deleted_files, "failedFileDeletes": failed_file_deletes})
         return ok({"updated": updated, "deleted": updated, "deletedFiles": deleted_files, "failedFileDeletes": failed_file_deletes, "ids": ids})
     if _has_table(db, "LibraryWork") and ids and action in {"hide", "ignore", "restore", "unignore", "mark_organized"}:
         hidden = action in {"hide", "ignore"}
@@ -1329,69 +1362,63 @@ async def import_work(request: Request, db: Session = Depends(get_db), settings:
     if not files:
         return fail("请选择要导入的文件", status_code=400)
 
-    import_dir = settings.resolved_storage_root / "imports" / str(time_ns())
-    import_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        upload_dir = _default_monitor_folder_path(db, "library.defaultUploadFolderId", "请先在设置中选择默认上传监控文件夹")
+    except ValueError as exc:
+        return fail(str(exc), status_code=400)
     tasks: list[dict[str, Any]] = []
     results: list[dict[str, Any]] = []
 
     for upload in files:
         file_name = _safe_upload_name(getattr(upload, "filename", None))
-        target = import_dir / file_name
+        target = _unique_file_in_directory(upload_dir, file_name)
+        if not is_supported_import_file(target):
+            return fail("当前版本仅支持 EPUB、CBZ、ZIP、PDF 格式。", status_code=400, details={"file": file_name})
         with target.open("wb") as handle:
             shutil.copyfileobj(upload.file, handle)
         if not is_supported_import_file(target):
             target.unlink(missing_ok=True)
             return fail("当前版本仅支持 EPUB、CBZ、ZIP、PDF 格式。", status_code=400, details={"file": file_name})
-        try:
-            result = import_managed_book(
-                db,
-                settings,
-                ImportOptions(
-                    source_file_path=target,
-                    original_name=file_name,
-                    origin="MANUAL",
-                    import_mode="MOVE",
-                ),
-            )
-            task = _row(db, "SELECT * FROM `ImportTask` WHERE `sourcePath` = :source_path ORDER BY `createdAt` DESC LIMIT 1", {"source_path": str(target)}) if _has_table(db, "ImportTask") else None
-            if task:
-                tasks.append(task)
-                _record_system_event(
-                    db,
-                    level="warning" if result.import_status == "FAILED" else "info",
-                    source="import",
-                    actor_type="admin",
-                    actor_id=user.id,
-                    action="imported" if result.import_status != "FAILED" else "failed",
-                    target_type="importTask",
-                    target_id=task.get("id"),
-                    message=f"手动导入：{result.title}",
-                    metadata={"file": file_name, "workId": result.work_id, "editionId": result.edition_id, "duplicate": result.duplicate},
-                )
-            results.append(
-                {
-                    "bookId": result.book_id,
-                    "workId": result.work_id,
-                    "editionId": result.edition_id,
-                    "volumeId": result.volume_id,
-                    "title": result.title,
-                    "type": result.type,
-                    "format": result.format,
-                    "totalUnits": result.total_units,
-                    "importStatus": result.import_status,
-                    "duplicate": result.duplicate,
-                    "merged": result.merged,
-                    "mergeReason": result.merge_reason,
-                }
-            )
-        except Exception as exc:
-            failed_task = _row(db, "SELECT * FROM `ImportTask` WHERE `sourcePath` = :source_path ORDER BY `createdAt` DESC LIMIT 1", {"source_path": str(target)}) if _has_table(db, "ImportTask") else None
-            if failed_task:
-                tasks.append(failed_task)
-            _record_system_event(db, level="error", source="import", actor_type="admin", actor_id=user.id, action="failed", target_type="importTask", target_id=(failed_task or {}).get("id"), message=f"手动导入失败：{file_name}", metadata={"file": file_name, "error": str(exc)})
-            return fail("导入失败", status_code=400, details={"file": file_name, "message": str(exc), "tasks": tasks})
+        task = _insert(
+            db,
+            "ImportTask",
+            {
+                "id": f"py_{time_ns()}",
+                "origin": "MANUAL",
+                "status": "PENDING",
+                "originalName": file_name,
+                "sourcePath": str(target),
+                "progress": 0,
+                "duplicate": False,
+                "duration": 0,
+                "message": "已保存到监控文件夹，等待自动识别",
+                "createdAt": _now(),
+                "updatedAt": _now(),
+            },
+        ) if _has_table(db, "ImportTask") else {"id": None, "sourcePath": str(target)}
+        tasks.append(task)
+        _record_system_event(
+            db,
+            level="info",
+            source="import",
+            actor_type="admin",
+            actor_id=user.id,
+            action="uploaded",
+            target_type="importTask",
+            target_id=task.get("id"),
+            message=f"上传到监控目录：{file_name}",
+            metadata={"file": file_name, "sourcePath": str(target)},
+        )
+        results.append(
+            {
+                "sourcePath": str(target),
+                "file": file_name,
+                "importStatus": "pending",
+                "message": "已保存到监控文件夹，监控服务会自动识别入库",
+            }
+        )
 
-    return ok({"tasks": tasks, "results": results, "queued": len(files), "imported": len(results)})
+    return ok({"tasks": tasks, "results": results, "queued": len(files), "imported": 0})
 
 
 @router.get("/monitor-folders")
@@ -1400,7 +1427,11 @@ def list_monitor_folders(request: Request, db: Session = Depends(get_db), settin
     if auth_error:
         return auth_error
     folders = _rows(db, "SELECT * FROM `MonitorFolder` ORDER BY `createdAt` DESC") if _has_table(db, "MonitorFolder") else []
-    return ok({"folders": folders})
+    return ok({
+        "folders": folders,
+        "defaultUploadFolderId": _system_setting_value(db, "library.defaultUploadFolderId"),
+        "defaultDownloadFolderId": _system_setting_value(db, "library.defaultDownloadFolderId"),
+    })
 
 
 @router.post("/monitor-folders")
@@ -1414,10 +1445,6 @@ async def create_monitor_folder(request: Request, db: Session = Depends(get_db),
         return fail("请填写监控文件夹路径", status_code=400)
     if _monitor_folder_by_root_path(db, root_path):
         return fail("监控文件夹路径已存在", status_code=409, details={"rootPath": root_path})
-    import_mode = str(payload.get("importMode") or "COPY").upper()
-    move_error = _monitor_move_writable_error(root_path, import_mode)
-    if move_error:
-        return move_error
     try:
         folder = _insert(
             db,
@@ -1427,7 +1454,6 @@ async def create_monitor_folder(request: Request, db: Session = Depends(get_db),
                 "name": payload.get("name") or Path(root_path).name or "监控文件夹",
                 "rootPath": root_path,
                 "enabled": bool(payload.get("enabled", True)),
-                "importMode": import_mode,
                 "ignorePatterns": payload.get("ignorePatterns"),
                 "ignoreHidden": bool(payload.get("ignoreHidden", True)),
                 "minFileSizeBytes": int(payload.get("minFileSizeBytes") or 10240),
@@ -1439,7 +1465,7 @@ async def create_monitor_folder(request: Request, db: Session = Depends(get_db),
     except IntegrityError:
         db.rollback()
         return fail("监控文件夹路径已存在", status_code=409, details={"rootPath": root_path})
-    _record_system_event(db, level="info", source="folder", actor_type="admin", actor_id=user.id, action="created", target_type="monitorFolder", target_id=folder.get("id"), message=f"新增来源目录：{folder.get('name')}", metadata={"rootPath": root_path, "importMode": import_mode})
+    _record_system_event(db, level="info", source="folder", actor_type="admin", actor_id=user.id, action="created", target_type="monitorFolder", target_id=folder.get("id"), message=f"新增来源目录：{folder.get('name')}", metadata={"rootPath": root_path})
     return ok({"folder": folder}, status_code=201)
 
 
@@ -1450,7 +1476,7 @@ async def update_monitor_folder(folder_id: str, request: Request, db: Session = 
     if auth_error:
         return auth_error
     payload = await request.json()
-    mapping = {"rootPath": "rootPath", "importMode": "importMode", "minFileSizeBytes": "minFileSizeBytes", "ignorePatterns": "ignorePatterns", "ignoreHidden": "ignoreHidden", "enabled": "enabled", "name": "name", "description": "description"}
+    mapping = {"rootPath": "rootPath", "minFileSizeBytes": "minFileSizeBytes", "ignorePatterns": "ignorePatterns", "ignoreHidden": "ignoreHidden", "enabled": "enabled", "name": "name", "description": "description"}
     values = {mapping[key]: value for key, value in payload.items() if key in mapping}
     existing = _row(db, "SELECT * FROM `MonitorFolder` WHERE `id` = :id", {"id": folder_id}) if _has_table(db, "MonitorFolder") else None
     if not existing:
@@ -1462,13 +1488,6 @@ async def update_monitor_folder(folder_id: str, request: Request, db: Session = 
         if _monitor_folder_by_root_path(db, root_path, exclude_id=folder_id):
             return fail("监控文件夹路径已存在", status_code=409, details={"rootPath": root_path})
         values["rootPath"] = root_path
-    if "importMode" in values:
-        values["importMode"] = str(values["importMode"] or "COPY").upper()
-    next_root_path = str(values.get("rootPath") or existing.get("rootPath") or "")
-    next_import_mode = str(values.get("importMode") or existing.get("importMode") or "COPY").upper()
-    move_error = _monitor_move_writable_error(next_root_path, next_import_mode)
-    if move_error:
-        return move_error
     if values:
         values["updatedAt"] = _now()
     try:
@@ -2426,7 +2445,6 @@ def _import_task_view(db: Session, task: dict[str, Any], log_limit: int = 20) ->
     view.update(
         {
             "sourcePath": _display_path_name(task.get("sourcePath")),
-            "managedFilePath": _display_path_name(task.get("managedFilePath")) if task.get("managedFilePath") else None,
             "progress": task.get("progress") or 0,
             "duplicate": bool(task.get("duplicate")),
             "friendlyError": _friendly_import_error(task.get("errorSummary")),
@@ -2707,6 +2725,10 @@ def create_download_from_record(record_id: str, request: Request, db: Session = 
         if record.get("status") != "download_created":
             record = _update(db, "SourceSearchRecord", record_id, {"status": "download_created", "updatedAt": _now()}) or record
         return ok({"task": existing, "record": record, "alreadyQueued": True})
+    try:
+        save_path = str(default_monitor_folder_path(db, "library.defaultDownloadFolderId"))
+    except ValueError as exc:
+        return fail(str(exc), status_code=400)
     remote_ref = create_remote_ref_from_search_record(record)
     task_type = infer_download_task_type(record.get("providerType") or "", record.get("downloadMeta"))
     task = (
@@ -2721,7 +2743,7 @@ def create_download_from_record(record_id: str, request: Request, db: Session = 
                 "status": "queued",
                 "displayName": record.get("title") or "下载任务",
                 "remoteRef": _json_text(remote_ref),
-                "savePath": str(settings.resolved_download_inbox_path),
+                "savePath": save_path,
                 "progress": 0,
                 "createdAt": _now(),
                 "updatedAt": _now(),
@@ -2754,7 +2776,11 @@ async def create_download_task(request: Request, db: Session = Depends(get_db), 
     if auth_error:
         return auth_error
     payload = await request.json()
-    task = _insert(db, "DownloadTask", {"id": f"py_{time_ns()}", "sourceId": payload.get("sourceId"), "searchRecordId": payload.get("searchRecordId"), "bookId": payload.get("bookId"), "type": payload.get("type") or "manual", "status": payload.get("status") or "queued", "displayName": payload.get("displayName") or payload.get("name") or "下载任务", "remoteRef": _json_text(payload.get("remoteRef", {})), "savePath": payload.get("savePath") or str(settings.resolved_download_inbox_path), "filePath": payload.get("filePath"), "errorMessage": payload.get("errorMessage"), "progress": payload.get("progress") if payload.get("progress") is not None else 0, "createdAt": _now(), "updatedAt": _now()}) if _has_table(db, "DownloadTask") else {"id": None}
+    try:
+        save_path = str(default_monitor_folder_path(db, "library.defaultDownloadFolderId"))
+    except ValueError as exc:
+        return fail(str(exc), status_code=400)
+    task = _insert(db, "DownloadTask", {"id": f"py_{time_ns()}", "sourceId": payload.get("sourceId"), "searchRecordId": payload.get("searchRecordId"), "bookId": payload.get("bookId"), "type": payload.get("type") or "manual", "status": payload.get("status") or "queued", "displayName": payload.get("displayName") or payload.get("name") or "下载任务", "remoteRef": _json_text(payload.get("remoteRef", {})), "savePath": save_path, "filePath": payload.get("filePath"), "errorMessage": payload.get("errorMessage"), "progress": payload.get("progress") if payload.get("progress") is not None else 0, "createdAt": _now(), "updatedAt": _now()}) if _has_table(db, "DownloadTask") else {"id": None}
     _record_system_event(db, level="info", source="download", actor_type="admin", actor_id=user.id, action="created", target_type="downloadTask", target_id=task.get("id"), message=f"创建下载任务：{task.get('displayName')}", metadata={"status": task.get("status"), "type": task.get("type")})
     return ok({"task": task}, status_code=201)
 
@@ -2827,26 +2853,7 @@ def mutate_download_task(task_id: str, request: Request, db: Session = Depends(g
         task = _update(db, "DownloadTask", task_id, {"status": "cancelled", "updatedAt": _now()})
         _record_system_event(db, level="warning", source="download", actor_type="admin", actor_id=user.id, action="cancelled", target_type="downloadTask", target_id=task_id, message=f"取消下载任务：{task.get('displayName')}", metadata={"status": task.get("status")})
         return ok({"task": task, "action": action})
-    try:
-        result = import_download_task(db, settings, task_id)
-    except ValueError as exc:
-        _record_system_event(db, level="error", source="download", actor_type="admin", actor_id=user.id, action="import.failed", target_type="downloadTask", target_id=task_id, message=f"下载导入失败：{task.get('displayName')}", metadata={"error": str(exc)})
-        return fail(str(exc), status_code=400)
-    payload = {"task": result.task, "action": action}
-    if result.import_result:
-        payload["importResult"] = {
-            "bookId": result.import_result.book_id,
-            "workId": result.import_result.work_id,
-            "editionId": result.import_result.edition_id,
-            "volumeId": result.import_result.volume_id,
-            "title": result.import_result.title,
-            "type": result.import_result.type,
-            "format": result.import_result.format,
-            "totalUnits": result.import_result.total_units,
-            "importStatus": result.import_result.import_status,
-        }
-    _record_system_event(db, level="error" if result.task.get("status") == "failed" else "info", source="download", actor_type="admin", actor_id=user.id, action="imported", target_type="downloadTask", target_id=task_id, message=f"下载文件导入书库：{result.task.get('displayName')}", metadata={"status": result.task.get("status"), "workId": getattr(result.import_result, "work_id", None) if result.import_result else None, "errorMessage": result.task.get("errorMessage")})
-    return ok(payload, status_code=400 if result.task.get("status") == "failed" else 200)
+    return fail("下载文件会由监控文件夹自动识别入库，无需手动导入", status_code=400)
 
 
 @router.get("/import-tasks")

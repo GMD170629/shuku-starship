@@ -12,7 +12,6 @@ class Settings(BaseSettings):
     session_secret: str | None = None
     monitor_root: str | None = "/monitor"
     storage_root: str = "/app/storage"
-    download_inbox_path: str = "/app/storage/downloads/inbox"
     demo_mode: bool = False
     next_public_demo_mode: bool = False
     admin_email: str = "admin@example.com"
@@ -43,10 +42,6 @@ class Settings(BaseSettings):
     @property
     def resolved_storage_root(self) -> Path:
         return Path(self.storage_root).expanduser().resolve()
-
-    @property
-    def resolved_download_inbox_path(self) -> Path:
-        return Path(self.download_inbox_path).expanduser().resolve()
 
     @property
     def resolved_monitor_root(self) -> Path | None:

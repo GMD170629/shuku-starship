@@ -6,7 +6,7 @@ from threading import Thread
 
 from sqlalchemy import text
 
-from app.worker.importer import ImportOptions, _work_merge_key, import_managed_book, parse_comic_volume_from_name, parse_epub_metadata, parse_pdf_metadata, parse_series_volume_info, stage_managed_import_file
+from app.worker.importer import ImportOptions, _work_merge_key, import_managed_book, parse_comic_volume_from_name, parse_epub_metadata, parse_pdf_metadata, parse_series_volume_info
 from app.worker.path_security import PathSecurityError, PathSecurityService, normalize_configured_path
 from app.worker.watcher import MonitorFolderConfig, should_ignore_file
 
@@ -46,7 +46,7 @@ def create_worker_tables(db):
         )""",
         """CREATE TABLE ImportTask (
             id TEXT PRIMARY KEY, monitorFolderId TEXT, workId TEXT, editionId TEXT, volumeId TEXT, origin TEXT,
-            status TEXT, originalName TEXT, sourcePath TEXT, managedFilePath TEXT, contentHash TEXT,
+            status TEXT, originalName TEXT, sourcePath TEXT, contentHash TEXT,
             progress INTEGER, duplicate BOOLEAN, duration INTEGER, errorSummary TEXT, message TEXT,
             startedAt TEXT, finishedAt TEXT, createdAt TEXT, updatedAt TEXT
         )""",
@@ -327,46 +327,6 @@ def test_path_security_accepts_monitor_root_child(test_settings):
 def test_normalize_configured_path_uses_workspace_root():
     assert normalize_configured_path("books").endswith("/shuku-starship/books")
 
-
-def test_stage_managed_import_file_copy_and_move(tmp_path):
-    source = tmp_path / "source.epub"
-    copied = tmp_path / "copied.epub"
-    moved = tmp_path / "moved.epub"
-    source.write_text("copy me", encoding="utf-8")
-    stage_managed_import_file(source, copied, "COPY")
-    assert source.exists()
-    assert copied.read_text(encoding="utf-8") == "copy me"
-
-    stage_managed_import_file(source, moved, "MOVE")
-    assert not source.exists()
-    assert moved.read_text(encoding="utf-8") == "copy me"
-
-
-def test_stage_managed_import_file_move_reports_read_only_source(tmp_path, monkeypatch):
-    source = tmp_path / "source.epub"
-    managed = tmp_path / "managed.epub"
-    source.write_text("copy me", encoding="utf-8")
-    original_unlink = Path.unlink
-
-    def fail_rename(self, target):
-        raise OSError("cross-device move")
-
-    def maybe_fail_unlink(self, *args, **kwargs):
-        if self == source:
-            raise OSError("Read-only file system")
-        return original_unlink(self, *args, **kwargs)
-
-    monkeypatch.setattr(Path, "rename", fail_rename)
-    monkeypatch.setattr(Path, "unlink", maybe_fail_unlink)
-
-    try:
-        stage_managed_import_file(source, managed, "MOVE")
-    except RuntimeError as exc:
-        assert "移动模式需要删除监控目录中的源文件" in str(exc)
-    else:
-        raise AssertionError("MOVE should fail when source cannot be deleted")
-    assert source.exists()
-    assert not managed.exists()
 
 
 def test_work_merge_key_uses_title_author_and_media_type():

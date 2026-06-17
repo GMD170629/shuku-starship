@@ -58,11 +58,6 @@ enum BookOrigin {
   WATCH
 }
 
-enum MonitorImportMode {
-  COPY
-  MOVE
-}
-
 enum OrganizeJobStatus {
   PENDING
   REVIEWING
@@ -111,7 +106,6 @@ model MonitorFolder {
   name             String
   rootPath         String            @unique
   enabled          Boolean           @default(true)
-  importMode       MonitorImportMode @default(COPY)
   ignorePatterns   String?           @db.Text
   ignoreHidden     Boolean           @default(true)
   minFileSizeBytes Int               @default(10240)
@@ -362,7 +356,6 @@ model ImportTask {
   status          BookImportStatus @default(PENDING)
   originalName    String?
   sourcePath      String
-  managedFilePath String?
   contentHash     String?
   progress        Int              @default(0)
   duplicate       Boolean          @default(false)

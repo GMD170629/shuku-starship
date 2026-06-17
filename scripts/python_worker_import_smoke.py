@@ -31,10 +31,10 @@ def setup_database(database_url: str, monitor_root: Path) -> None:
         db.execute(
             text(
                 """INSERT INTO MonitorFolder (
-                    id, name, rootPath, enabled, importMode, ignoreHidden, minFileSizeBytes,
+                    id, name, rootPath, enabled, ignoreHidden, minFileSizeBytes,
                     createdAt, updatedAt
                 ) VALUES (
-                    'monitor-smoke', 'Smoke Monitor', :root_path, 1, 'COPY', 1, 1,
+                    'monitor-smoke', 'Smoke Monitor', :root_path, 1, 1, 1,
                     CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
                 )"""
             ),
@@ -83,9 +83,8 @@ def main() -> None:
     try:
         monitor_root = root / "monitor"
         storage_root = root / "storage"
-        inbox = root / "downloads" / "inbox"
         ready_file = root / "scan-worker-ready"
-        for path in [monitor_root, storage_root, inbox]:
+        for path in [monitor_root, storage_root]:
             path.mkdir(parents=True, exist_ok=True)
 
         database_url = f"sqlite+pysqlite:///{root / 'worker-import-smoke.sqlite'}"
@@ -96,7 +95,6 @@ def main() -> None:
             "SESSION_SECRET": "runtime-smoke-session-secret-32chars",
             "MONITOR_ROOT": str(monitor_root),
             "STORAGE_ROOT": str(storage_root),
-            "DOWNLOAD_INBOX_PATH": str(inbox),
             "SCAN_WORKER_READY_FILE": str(ready_file),
             "MONITOR_REFRESH_INTERVAL_MS": "1000",
             "MONITOR_FILE_STABLE_DELAY_MS": "100",

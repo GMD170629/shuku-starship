@@ -71,7 +71,7 @@ export function PdfReader({ editionId, title, totalPages, initialPage, zoom, the
       <div className="flex h-full min-h-0 items-center justify-center p-6 text-center">
         <div className="max-w-sm rounded-2xl bg-white/10 p-5 text-sm">
           <div className="font-medium">PDF 加载失败</div>
-          <div className="mt-2 opacity-70">请确认文件仍在系统托管目录中，或返回详情页重新导入。</div>
+          <div className="mt-2 opacity-70">请确认文件仍在监控目录中，或返回设置检查来源路径。</div>
         </div>
       </div>
     );

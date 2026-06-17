@@ -27,7 +27,6 @@ RESCAN_HANDLED_AT_KEY = "monitor.rescanHandledAt"
 class MonitorFolderConfig:
     id: str
     root_path: str
-    import_mode: str = "COPY"
     ignore_hidden: bool = True
     ignore_patterns: str | None = None
     min_file_size_bytes: int = 10240
@@ -191,13 +190,12 @@ def enabled_monitor_folders(db: Session) -> list[MonitorFolderConfig]:
         print(f"[import-worker] monitor folders unavailable, retrying later: {exc}", flush=True)
         return []
     return [
-        MonitorFolderConfig(
-            id=row["id"],
-            root_path=row["rootPath"],
-            import_mode=row.get("importMode") or "COPY",
-            ignore_hidden=bool(row.get("ignoreHidden", True)),
-            ignore_patterns=row.get("ignorePatterns"),
-            min_file_size_bytes=int(row.get("minFileSizeBytes") or 10240),
+            MonitorFolderConfig(
+                id=row["id"],
+                root_path=row["rootPath"],
+                ignore_hidden=bool(row.get("ignoreHidden", True)),
+                ignore_patterns=row.get("ignorePatterns"),
+                min_file_size_bytes=int(row.get("minFileSizeBytes") or 10240),
         )
         for row in rows
     ]
@@ -218,7 +216,7 @@ def should_ignore_file(path: Path, folder: MonitorFolderConfig) -> bool:
 
 
 def config_signature(folder: MonitorFolderConfig) -> str:
-    return "|".join([folder.root_path, folder.import_mode, str(folder.ignore_hidden), folder.ignore_patterns or "", str(folder.min_file_size_bytes)])
+    return "|".join([folder.root_path, str(folder.ignore_hidden), folder.ignore_patterns or "", str(folder.min_file_size_bytes)])
 
 
 def wait_for_stable_file(path: Path, min_file_size_bytes: int, delay_seconds: float = 2.0) -> bool:
@@ -247,7 +245,7 @@ def import_watched_file(db: Session, settings: Settings, path: Path, folder: Mon
     if existing:
         print(f"[import-worker] skipped already imported file {path}", flush=True)
         return
-    import_managed_book(db, settings, ImportOptions(source_file_path=path, original_name=path.name, origin="WATCH", monitor_folder_id=folder.id, import_mode=folder.import_mode))
+    import_managed_book(db, settings, ImportOptions(source_file_path=path, original_name=path.name, origin="WATCH", monitor_folder_id=folder.id))
 
 
 def scan_directory_for_imports(root_path: Path, folder: MonitorFolderConfig, import_queue: ImportQueue) -> None:

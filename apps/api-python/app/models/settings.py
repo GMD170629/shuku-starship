@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from enum import StrEnum
 from uuid import uuid4
 
-from sqlalchemy import Boolean, DateTime, Enum, Integer, JSON, String, Text, func
+from sqlalchemy import Boolean, DateTime, Integer, JSON, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -18,11 +17,6 @@ def db_timestamp() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
-class MonitorImportMode(StrEnum):
-    COPY = "COPY"
-    MOVE = "MOVE"
-
-
 class MonitorFolder(Base):
     __tablename__ = "MonitorFolder"
 
@@ -30,7 +24,6 @@ class MonitorFolder(Base):
     name: Mapped[str] = mapped_column(String(191), nullable=False)
     root_path: Mapped[str] = mapped_column("rootPath", String(191), unique=True, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
-    import_mode: Mapped[MonitorImportMode] = mapped_column("importMode", Enum(MonitorImportMode), nullable=False, default=MonitorImportMode.COPY)
     ignore_patterns: Mapped[str | None] = mapped_column("ignorePatterns", Text, nullable=True)
     ignore_hidden: Mapped[bool] = mapped_column("ignoreHidden", Boolean, nullable=False, default=True)
     min_file_size_bytes: Mapped[int] = mapped_column("minFileSizeBytes", Integer, nullable=False, default=10240)

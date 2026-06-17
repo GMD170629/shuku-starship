@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/GMD170629/shuku-starship/main/docke
 - `MONITOR_HOST_PATH`
 - `PUID` / `PGID`
 
-容器内监控根路径固定是 `/monitor`。`MONITOR_HOST_PATH` 是宿主机或 NAS 上的入站读物目录，默认 `./monitor`。复制模式只读取入站文件；移动模式会在导入成功后删除源文件，因此需要 `/monitor` 可写，并且 `PUID` / `PGID` 对 `MONITOR_HOST_PATH` 有写/删除权限。会话密钥由容器首次启动时生成并保存在 `STORAGE_PATH` 下。
+容器内监控根路径固定是 `/monitor`。`MONITOR_HOST_PATH` 是宿主机或 NAS 上的读物目录，默认 `./monitor`。读物原文件始终保留在监控目录中；上传和下载会写入设置页选择的监控文件夹，监控服务自动识别入库，因此 `PUID` / `PGID` 需要对 `MONITOR_HOST_PATH` 有读写权限。会话密钥由容器首次启动时生成并保存在 `STORAGE_PATH` 下。
 
 ## 迁移与初始化
 

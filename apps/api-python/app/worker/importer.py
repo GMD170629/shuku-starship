@@ -33,7 +33,6 @@ class ImportOptions:
     original_name: str | None = None
     monitor_folder_id: str | None = None
     import_task_id: str | None = None
-    import_mode: str = "COPY"
 
 
 @dataclass(frozen=True)
@@ -185,18 +184,16 @@ def _import_epub(db: Session, settings: Settings, options: ImportOptions, task_i
                     "updatedAt": _now(),
                 },
             )
-        staged = None
         cover_path = None
         try:
             sort_order = int(volume_info.series_index * 1000)
             volume = _insert(db, "LibraryVolume", {"id": _id(), "editionId": edition["id"], "title": volume_info.title, "volumeIndex": volume_info.series_index, "sortOrder": sort_order, "chapterCount": metadata["chapterCount"], "coverPath": None, "createdAt": _now(), "updatedAt": _now()})
-            managed = _managed_path_for(settings, task_id, ext)
-            staged = stage_managed_import_file(options.source_file_path, managed, options.import_mode)
-            _update(db, "ImportTask", task_id, {"managedFilePath": str(managed), "message": "正在建立 EPUB 卷册记录"})
+            source_path = options.source_file_path.resolve()
+            _update(db, "ImportTask", task_id, {"message": "正在建立 EPUB 卷册记录"})
             if metadata.get("coverPath"):
-                cover_path = _extract_epub_cover(settings, staged, work["id"], edition["id"], metadata, volume["id"])
-            managed_stat = staged.stat()
-            file = _insert(db, "LibraryFile", {"id": _id(), "editionId": edition["id"], "volumeId": volume["id"], "path": str(staged), "filePathHash": _hash_text(str(staged)), "hashStatus": "PARTIAL_PENDING", "kind": "EPUB", "mimeType": "application/epub+zip", "sizeBytes": file_size, "mtimeMs": int(managed_stat.st_mtime * 1000), "sortOrder": sort_order, "createdAt": _now(), "updatedAt": _now()})
+                cover_path = _extract_epub_cover(settings, source_path, work["id"], edition["id"], metadata, volume["id"])
+            source_stat = source_path.stat()
+            file = _insert(db, "LibraryFile", {"id": _id(), "editionId": edition["id"], "volumeId": volume["id"], "path": str(source_path), "filePathHash": _hash_text(str(source_path)), "hashStatus": "PARTIAL_PENDING", "kind": "EPUB", "mimeType": "application/epub+zip", "sizeBytes": file_size, "mtimeMs": int(source_stat.st_mtime * 1000), "sortOrder": sort_order, "createdAt": _now(), "updatedAt": _now()})
             for chapter in metadata["chapters"]:
                 _insert(db, "LibraryReadingUnit", {"id": _id(), "editionId": edition["id"], "volumeId": volume["id"], "fileId": file["id"], "unitType": "chapter", "title": chapter["title"], "href": chapter["href"], "mediaType": chapter.get("mediaType"), "sortOrder": chapter["sortOrder"], "metadataJson": json.dumps({"idref": chapter.get("idref"), "volumeIndex": volume_info.series_index}, ensure_ascii=False), "createdAt": _now(), "updatedAt": _now()})
             _insert(db, "LibraryMetadata", {"id": _id(), "editionId": edition["id"], "source": "epub_opf", "rawJson": json.dumps(metadata["rawMetadata"], ensure_ascii=False), "createdAt": _now(), "updatedAt": _now()})
@@ -209,20 +206,16 @@ def _import_epub(db: Session, settings: Settings, options: ImportOptions, task_i
         except Exception:
             if cover_path:
                 Path(cover_path).unlink(missing_ok=True)
-            if staged:
-                _rollback_staged(options.source_file_path, staged, options.import_mode)
             raise
     existing = None if created else _row(db, "SELECT * FROM `LibraryEdition` WHERE `workId` = :work_id AND `format` = 'EPUB' AND `hidden` = 0 ORDER BY `createdAt` ASC LIMIT 1", {"work_id": work["id"]})
     if existing:
         volume = _row(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC LIMIT 1", {"edition_id": existing["id"]})
         return ImportResult(work["id"], work["id"], existing["id"], (volume or {}).get("id"), work["title"], "ebook", "epub", existing.get("chapterCount") or metadata["chapterCount"], "completed", True, True, "duplicate-epub-metadata")
 
-    staged = None
     cover_path = None
     try:
-        managed = _managed_path_for(settings, task_id, ext)
-        staged = stage_managed_import_file(options.source_file_path, managed, options.import_mode)
-        _update(db, "ImportTask", task_id, {"managedFilePath": str(managed), "message": "正在建立 EPUB 记录"})
+        source_path = options.source_file_path.resolve()
+        _update(db, "ImportTask", task_id, {"message": "正在建立 EPUB 记录"})
         edition = _insert(
             db,
             "LibraryEdition",
@@ -251,10 +244,10 @@ def _import_epub(db: Session, settings: Settings, options: ImportOptions, task_i
             },
         )
         if metadata.get("coverPath"):
-            cover_path = _extract_epub_cover(settings, staged, work["id"], edition["id"], metadata)
+            cover_path = _extract_epub_cover(settings, source_path, work["id"], edition["id"], metadata)
         volume = _insert(db, "LibraryVolume", {"id": _id(), "editionId": edition["id"], "title": "正文", "sortOrder": 0, "chapterCount": metadata["chapterCount"], "coverPath": cover_path, "createdAt": _now(), "updatedAt": _now()})
-        managed_stat = staged.stat()
-        file = _insert(db, "LibraryFile", {"id": _id(), "editionId": edition["id"], "volumeId": volume["id"], "path": str(staged), "filePathHash": _hash_text(str(staged)), "hashStatus": "PARTIAL_PENDING", "kind": "EPUB", "mimeType": "application/epub+zip", "sizeBytes": file_size, "mtimeMs": int(managed_stat.st_mtime * 1000), "sortOrder": 0, "createdAt": _now(), "updatedAt": _now()})
+        source_stat = source_path.stat()
+        file = _insert(db, "LibraryFile", {"id": _id(), "editionId": edition["id"], "volumeId": volume["id"], "path": str(source_path), "filePathHash": _hash_text(str(source_path)), "hashStatus": "PARTIAL_PENDING", "kind": "EPUB", "mimeType": "application/epub+zip", "sizeBytes": file_size, "mtimeMs": int(source_stat.st_mtime * 1000), "sortOrder": 0, "createdAt": _now(), "updatedAt": _now()})
         for chapter in metadata["chapters"]:
             _insert(db, "LibraryReadingUnit", {"id": _id(), "editionId": edition["id"], "volumeId": volume["id"], "fileId": file["id"], "unitType": "chapter", "title": chapter["title"], "href": chapter["href"], "mediaType": chapter.get("mediaType"), "sortOrder": chapter["sortOrder"], "metadataJson": json.dumps({"idref": chapter.get("idref")}, ensure_ascii=False), "createdAt": _now(), "updatedAt": _now()})
         _insert(db, "LibraryMetadata", {"id": _id(), "editionId": edition["id"], "source": "epub_opf", "rawJson": json.dumps(metadata["rawMetadata"], ensure_ascii=False), "createdAt": _now(), "updatedAt": _now()})
@@ -264,8 +257,6 @@ def _import_epub(db: Session, settings: Settings, options: ImportOptions, task_i
     except Exception:
         if cover_path:
             Path(cover_path).unlink(missing_ok=True)
-        if staged:
-            _rollback_staged(options.source_file_path, staged, options.import_mode)
         raise
 
 
@@ -290,12 +281,10 @@ def _import_pdf(db: Session, settings: Settings, options: ImportOptions, task_id
         volume = _row(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC LIMIT 1", {"edition_id": existing["id"]})
         return ImportResult(work["id"], work["id"], existing["id"], (volume or {}).get("id"), work["title"], "ebook", "pdf", existing.get("pageCount") or metadata["pageCount"], "completed", True, True, "duplicate-pdf-metadata")
 
-    staged = None
     cover_path = None
     try:
-        managed = _managed_path_for(settings, task_id, ext)
-        staged = stage_managed_import_file(options.source_file_path, managed, options.import_mode)
-        _update(db, "ImportTask", task_id, {"managedFilePath": str(managed), "message": "正在建立 PDF 记录"})
+        source_path = options.source_file_path.resolve()
+        _update(db, "ImportTask", task_id, {"message": "正在建立 PDF 记录"})
         edition = _insert(
             db,
             "LibraryEdition",
@@ -318,11 +307,11 @@ def _import_pdf(db: Session, settings: Settings, options: ImportOptions, task_id
                 "updatedAt": _now(),
             },
         )
-        cover_path = _extract_pdf_cover(settings, staged, work["id"], edition["id"], metadata)
+        cover_path = _extract_pdf_cover(settings, source_path, work["id"], edition["id"], metadata)
         volume = _insert(db, "LibraryVolume", {"id": _id(), "editionId": edition["id"], "title": "PDF", "sortOrder": 0, "pageCount": metadata["pageCount"], "coverPath": cover_path, "createdAt": _now(), "updatedAt": _now()})
-        file = _insert(db, "LibraryFile", {"id": _id(), "editionId": edition["id"], "volumeId": volume["id"], "path": str(staged), "filePathHash": _hash_text(str(staged)), "hashStatus": "PARTIAL_PENDING", "kind": "PDF", "mimeType": "application/pdf", "sizeBytes": file_size, "mtimeMs": int(staged.stat().st_mtime * 1000), "sortOrder": 0, "createdAt": _now(), "updatedAt": _now()})
+        file = _insert(db, "LibraryFile", {"id": _id(), "editionId": edition["id"], "volumeId": volume["id"], "path": str(source_path), "filePathHash": _hash_text(str(source_path)), "hashStatus": "PARTIAL_PENDING", "kind": "PDF", "mimeType": "application/pdf", "sizeBytes": file_size, "mtimeMs": int(source_path.stat().st_mtime * 1000), "sortOrder": 0, "createdAt": _now(), "updatedAt": _now()})
         for index in range(1, max(1, metadata["pageCount"]) + 1):
-            _insert(db, "LibraryReadingUnit", {"id": _id(), "editionId": edition["id"], "volumeId": volume["id"], "fileId": file["id"], "unitType": "page", "title": f"第 {index} 页", "href": str(staged), "mediaType": "application/pdf", "sortOrder": index, "metadataJson": json.dumps({"pageNumber": index, "sourceFileName": options.original_name or options.source_file_path.name}, ensure_ascii=False), "createdAt": _now(), "updatedAt": _now()})
+            _insert(db, "LibraryReadingUnit", {"id": _id(), "editionId": edition["id"], "volumeId": volume["id"], "fileId": file["id"], "unitType": "page", "title": f"第 {index} 页", "href": str(source_path), "mediaType": "application/pdf", "sortOrder": index, "metadataJson": json.dumps({"pageNumber": index, "sourceFileName": options.original_name or options.source_file_path.name}, ensure_ascii=False), "createdAt": _now(), "updatedAt": _now()})
         _insert(db, "LibraryMetadata", {"id": _id(), "editionId": edition["id"], "source": "pdf", "rawJson": json.dumps(metadata["rawMetadata"], ensure_ascii=False), "createdAt": _now(), "updatedAt": _now()})
         _update(db, "LibraryEdition", edition["id"], {"coverPath": cover_path, "coverStatus": "READY" if cover_path else "PENDING", "importStatus": "COMPLETED", "updatedAt": _now()})
         _finalize_work_primary(db, work["id"], edition["id"], cover_path)
@@ -330,8 +319,6 @@ def _import_pdf(db: Session, settings: Settings, options: ImportOptions, task_id
     except Exception:
         if cover_path:
             Path(cover_path).unlink(missing_ok=True)
-        if staged:
-            _rollback_staged(options.source_file_path, staged, options.import_mode)
         raise
 
 
@@ -353,17 +340,15 @@ def _import_comic(db: Session, settings: Settings, options: ImportOptions, task_
     if not edition:
         created_edition = True
         edition = _insert(db, "LibraryEdition", {"id": _id(), "workId": work["id"], "monitorFolderId": options.monitor_folder_id, "origin": options.origin, "format": "COMIC", "versionName": _next_edition_name(db, work["id"], "漫画版本"), "versionKey": f"comic:{source_key}", "sourceGroupKey": source_key, "description": parsed.get("description"), "publisher": (parsed.get("comicInfo") or {}).get("publisher"), "coverStatus": "PENDING", "importStatus": "PARSING", "primary": not bool(work.get("primaryEditionId")), "hidden": False, "createdAt": _now(), "updatedAt": _now()})
-    staged = None
     cover_path = None
     try:
         sort_order = int(volume_index * 1000) if volume_index is not None else _table_count(db, "LibraryVolume", "`editionId` = :edition_id", {"edition_id": edition["id"]})
         volume = _insert(db, "LibraryVolume", {"id": _id(), "editionId": edition["id"], "title": volume_title, "volumeIndex": volume_index, "sortOrder": sort_order, "pageCount": parsed["pageCount"], "coverPath": None, "createdAt": _now(), "updatedAt": _now()})
-        managed = _managed_path_for(settings, task_id, ext)
-        staged = stage_managed_import_file(options.source_file_path, managed, options.import_mode)
-        _update(db, "ImportTask", task_id, {"managedFilePath": str(managed), "message": "正在建立漫画记录"})
-        file = _insert(db, "LibraryFile", {"id": _id(), "editionId": edition["id"], "volumeId": volume["id"], "path": str(staged), "filePathHash": _hash_text(str(staged)), "hashStatus": "PARTIAL_PENDING", "kind": "COMIC", "mimeType": "application/vnd.comicbook+zip" if parsed["format"] == "cbz" else "application/zip", "sizeBytes": file_size, "mtimeMs": int(staged.stat().st_mtime * 1000), "sortOrder": sort_order, "createdAt": _now(), "updatedAt": _now()})
+        source_path = options.source_file_path.resolve()
+        _update(db, "ImportTask", task_id, {"message": "正在建立漫画记录"})
+        file = _insert(db, "LibraryFile", {"id": _id(), "editionId": edition["id"], "volumeId": volume["id"], "path": str(source_path), "filePathHash": _hash_text(str(source_path)), "hashStatus": "PARTIAL_PENDING", "kind": "COMIC", "mimeType": "application/vnd.comicbook+zip" if parsed["format"] == "cbz" else "application/zip", "sizeBytes": file_size, "mtimeMs": int(source_path.stat().st_mtime * 1000), "sortOrder": sort_order, "createdAt": _now(), "updatedAt": _now()})
         try:
-            cover_path = _extract_comic_cover(settings, staged, work["id"], edition["id"], volume["id"], parsed["coverEntryPath"])
+            cover_path = _extract_comic_cover(settings, source_path, work["id"], edition["id"], volume["id"], parsed["coverEntryPath"])
         except Exception as exc:
             cover_path = None
             _log_import(db, task_id, "warning", f"comic cover extraction skipped: {exc}")
@@ -377,8 +362,6 @@ def _import_comic(db: Session, settings: Settings, options: ImportOptions, task_
     except Exception:
         if cover_path:
             Path(cover_path).unlink(missing_ok=True)
-        if staged:
-            _rollback_staged(options.source_file_path, staged, options.import_mode)
         raise
 
 
@@ -632,35 +615,14 @@ def parse_comic_volume_info(parsed: dict[str, Any], path: Path, original_name: s
     return parse_comic_volume_from_name(path, original_name)
 
 
-def stage_managed_import_file(source: Path, managed: Path, import_mode: str = "COPY") -> Path:
-    managed.parent.mkdir(parents=True, exist_ok=True)
-    if import_mode == "MOVE":
-        try:
-            source.rename(managed)
-        except OSError:
-            shutil.copy2(source, managed)
-            try:
-                source.unlink()
-            except OSError as exc:
-                managed.unlink(missing_ok=True)
-                raise RuntimeError("移动模式需要删除监控目录中的源文件，但当前监控目录不可写或以只读方式挂载；请改用复制模式，或将 /monitor 挂载为可写。") from exc
-    else:
-        shutil.copy2(source, managed)
-    return managed
-
-
-def _rollback_staged(source: Path, managed: Path, import_mode: str) -> None:
-    if import_mode == "MOVE" and managed.exists() and not source.exists():
-        try:
-            managed.rename(source)
-        except OSError:
-            shutil.copy2(managed, source)
-            managed.unlink()
-    elif import_mode != "MOVE":
-        managed.unlink(missing_ok=True)
-
-
 def _ensure_import_task(db: Session, options: ImportOptions) -> str:
+    existing = _row(
+        db,
+        "SELECT `id` FROM `ImportTask` WHERE `sourcePath` = :source_path AND `status` = 'PENDING' ORDER BY `createdAt` ASC LIMIT 1",
+        {"source_path": str(options.source_file_path)},
+    )
+    if existing:
+        return existing["id"]
     row = _insert(db, "ImportTask", {"id": _id(), "monitorFolderId": options.monitor_folder_id, "origin": options.origin, "status": "PENDING", "originalName": options.original_name or options.source_file_path.name, "sourcePath": str(options.source_file_path), "progress": 0, "duplicate": False, "duration": 0, "message": "等待导入", "createdAt": _now(), "updatedAt": _now()})
     return row["id"]
 
@@ -799,12 +761,6 @@ def _content_hash(path: Path) -> str:
 
 def _hash_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
-
-
-def _managed_path_for(settings: Settings, task_id: str, ext: str) -> Path:
-    directory = settings.resolved_storage_root / "library" / task_id[:2]
-    directory.mkdir(parents=True, exist_ok=True)
-    return directory / f"{task_id}-{time.time_ns()}{ext}"
 
 
 def _log_import(db: Session, task_id: str | None, level: str, message: str) -> None:

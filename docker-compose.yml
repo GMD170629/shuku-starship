@@ -37,7 +37,6 @@ services:
       DEMO_MODE: ${DEMO_MODE:-false}
       NEXT_PUBLIC_DEMO_MODE: ${NEXT_PUBLIC_DEMO_MODE:-false}
       STORAGE_ROOT: /app/storage
-      DOWNLOAD_INBOX_PATH: /app/storage/downloads/inbox
       PORT: 3000
       HOSTNAME: 0.0.0.0
       ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@example.com}

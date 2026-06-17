@@ -15,7 +15,6 @@ type ImportTask = {
   status: 'PENDING' | 'PARSING' | 'COMPLETED' | 'FAILED';
   originalName?: string | null;
   sourcePath: string;
-  managedFilePath?: string | null;
   contentHash?: string | null;
   progress: number;
   duplicate: boolean;
@@ -194,7 +193,6 @@ export function ImportTasksPage() {
                   <Badge>{task.origin === 'WATCH' ? '监控导入' : '手动上传'}</Badge>
                 </div>
                 <div className="mt-2 break-words text-sm text-slate-500">{task.monitorFolder?.name ? `${task.monitorFolder.name} · ` : ''}{task.sourcePath}</div>
-                {task.managedFilePath ? <div className="mt-1 break-words text-xs text-slate-400">托管文件：{task.managedFilePath}</div> : null}
                 {task.errorSummary ? (
                   <div className="mt-3 space-y-2 rounded-2xl bg-red-50 px-4 py-3 text-sm text-red-700">
                     <div className="flex gap-2"><AlertTriangle size={16} />{task.errorSummary}</div>
