@@ -1,4 +1,4 @@
-const VERSION = 'shuku-pwa-v0.4.5';
+const VERSION = 'shuku-pwa-v0.4.6';
 const SHELL_CACHE = `${VERSION}-app-shell`;
 const STATIC_CACHE = `${VERSION}-static`;
 const PRIVATE_COVER_CACHE = `${VERSION}-private-cover`;
@@ -17,11 +17,6 @@ const SHELL_URLS = [
   '/favicon-16x16.png',
   '/favicon-32x32.png',
   '/apple-touch-icon.png',
-  '/apple-touch-icon-120x120.png',
-  '/apple-touch-icon-152x152.png',
-  '/apple-touch-icon-167x167.png',
-  '/apple-touch-icon-180x180.png',
-  '/apple-touch-icon-precomposed.png',
   '/icons/icon-192.png',
   '/icons/icon-512.png',
   '/icons/maskable-512.png'
@@ -68,7 +63,7 @@ function isStaticAsset(pathname) {
   return pathname.startsWith('/_next/static/')
     || pathname.startsWith('/icons/')
     || pathname === '/manifest.webmanifest'
-    || /\.(css|js|woff2?|ttf|otf|svg|ico|png)$/i.test(pathname);
+    || /\.(css|js|woff2?|ttf|otf|svg)$/i.test(pathname);
 }
 
 function isCoverRequest(pathname) {
