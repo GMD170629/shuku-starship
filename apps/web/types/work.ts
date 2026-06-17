@@ -16,6 +16,11 @@ export type WorkView = {
   format: string;
   size: string;
   progress: number;
+  progressExtra?: Record<string, unknown>;
+  currentHref?: string | null;
+  currentSectionIndex?: number | null;
+  currentChapterTitle?: string | null;
+  currentChapterSortOrder?: number | null;
   statusValue: ReadingStatus;
   status: string;
   publicationStatusValue: PublicationStatus;
@@ -75,9 +80,14 @@ export type WorkView = {
     chapterCount: number | null;
     coverUrl: string;
     progress?: number;
+    progressExtra?: Record<string, unknown>;
     lastReadAt?: string | null;
     position?: string | null;
     currentPage?: number | null;
+    currentHref?: string | null;
+    currentSectionIndex?: number | null;
+    currentChapterTitle?: string | null;
+    currentChapterSortOrder?: number | null;
   }>;
   editions: Array<{
     id: string;

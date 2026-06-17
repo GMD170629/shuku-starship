@@ -42,6 +42,11 @@ type EpubBookWithReadiness = Book & {
   ready?: Promise<unknown>;
   opened?: Promise<unknown>;
   displayOptions?: unknown;
+  spine?: {
+    items?: unknown[];
+    spineItems?: unknown[];
+    length?: number;
+  };
   package?: {
     metadata?: {
       direction?: string;
@@ -308,6 +313,29 @@ function currentRenditionLocation(rendition: Rendition | null) {
 function hrefFromLocation(location: Location) {
   const start = location.start as { href?: unknown } | undefined;
   return typeof start?.href === 'string' ? start.href : '';
+}
+
+function spineSectionCount(book: EpubBookWithReadiness) {
+  const items = book.spine?.items ?? book.spine?.spineItems;
+  if (Array.isArray(items) && items.length > 0) return items.length;
+  return typeof book.spine?.length === 'number' && Number.isFinite(book.spine.length) ? Math.max(0, Math.round(book.spine.length)) : 0;
+}
+
+function fallbackPercentFromLocation(location: Location, sectionIndex: number, displayedPage: number | null, displayedTotal: number | null, sectionCount: number) {
+  const rawPercentage = typeof location.start?.percentage === 'number' && Number.isFinite(location.start.percentage)
+    ? location.start.percentage
+    : 0;
+  if (rawPercentage > 0) return clampPercent(rawPercentage * 100);
+  if (sectionCount > 1) {
+    const pageOffset = displayedPage && displayedTotal && displayedTotal > 1
+      ? Math.max(0, Math.min(displayedTotal - 1, displayedPage - 1)) / displayedTotal
+      : 0;
+    return clampPercent(((sectionIndex + pageOffset) / sectionCount) * 100);
+  }
+  if (displayedPage && displayedTotal && displayedTotal > 1) {
+    return clampPercent(((displayedPage - 1) / (displayedTotal - 1)) * 100);
+  }
+  return 0;
 }
 
 export function EbookReader({
@@ -639,7 +667,7 @@ export function EbookReader({
           const fixedTotal = locationTotal || null;
           const percent = fixedTotal && fixedTotal > 1
             ? clampPercent(((fixedPage - 1) / (fixedTotal - 1)) * 100)
-            : clampPercent((location.start?.percentage ?? 0) * 100);
+            : fallbackPercentFromLocation(location, sectionIndex, displayedPage, displayedTotal, spineSectionCount(book as EpubBookWithReadiness));
           const scrollTop = ebookFlow === 'scrolled' ? scrollTopFromView(currentViewRef.current) : 0;
           onProgressRef.current({
             page: fixedPage,
@@ -748,6 +776,10 @@ export function EbookReader({
           const fallbackPercentage = initialPercentageRef.current;
           const fallbackCfi = fallbackPercentage > 0 && locations.length() > 0 ? locations.cfiFromPercentage(normalizedPercentage(fallbackPercentage)) : '';
           await rendition.display(fallbackCfi || undefined);
+        });
+
+        void ensureLocationsReady().then(() => {
+          if (!canceled && !destroyRequested) emitCurrentLocation?.();
         });
 
         if (ebookFlow === 'scrolled' && initialScrollTopRef.current > 0) {

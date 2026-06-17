@@ -403,6 +403,72 @@ def _display_progress_percent(edition: dict[str, Any] | None, progress: dict[str
     return _raw_progress_percent(progress)
 
 
+def _normalize_reader_href(value: Any) -> str:
+    if not isinstance(value, str) or not value:
+        return ""
+    return value.split("#", 1)[0].lstrip("./").replace("\\", "/").lower()
+
+
+def _number_or_none(value: Any) -> int | None:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _progress_extra(progress: dict[str, Any] | None) -> dict[str, Any]:
+    if not progress:
+        return {}
+    parsed = _parse_json(progress.get("extra"), {})
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _progress_navigation(progress: dict[str, Any] | None, units: list[dict[str, Any]]) -> dict[str, Any]:
+    extra = _progress_extra(progress)
+    current_href = extra.get("chapterHref") or extra.get("currentHref")
+    section_index = _number_or_none(extra.get("chapterSectionIndex") if extra.get("chapterSectionIndex") is not None else extra.get("sectionIndex") if extra.get("sectionIndex") is not None else extra.get("chapterIndex"))
+    sort_order = _number_or_none(extra.get("chapterSortOrder"))
+    normalized_href = _normalize_reader_href(current_href)
+    unit = None
+    if normalized_href:
+        unit = next((item for item in units if _normalize_reader_href(item.get("href")) == normalized_href), None)
+    if unit is None and sort_order is not None:
+        unit = next((item for item in units if _number_or_none(item.get("sortOrder")) == sort_order), None)
+    if unit is None and section_index is not None and 0 <= section_index < len(units):
+        unit = units[section_index]
+    return {
+        "progressExtra": extra,
+        "currentHref": unit.get("href") if unit else (current_href if isinstance(current_href, str) else None),
+        "currentSectionIndex": section_index,
+        "currentChapterTitle": (unit.get("title") if unit else None) or (extra.get("chapterTitle") if isinstance(extra.get("chapterTitle"), str) else None),
+        "currentChapterSortOrder": _number_or_none(unit.get("sortOrder")) if unit else sort_order,
+    }
+
+
+def _progress_percent_with_navigation(progress: dict[str, Any] | None, units: list[dict[str, Any]]) -> int:
+    raw_percent = _raw_progress_percent(progress)
+    if raw_percent > 0 or not progress or not units:
+        return raw_percent
+    extra = _progress_extra(progress)
+    current_href = extra.get("chapterHref") or extra.get("currentHref")
+    normalized_href = _normalize_reader_href(current_href)
+    sort_order = _number_or_none(extra.get("chapterSortOrder"))
+    section_index = _number_or_none(extra.get("chapterSectionIndex") if extra.get("chapterSectionIndex") is not None else extra.get("sectionIndex") if extra.get("sectionIndex") is not None else extra.get("chapterIndex"))
+    unit_index = None
+    if normalized_href:
+        unit_index = next((index for index, unit in enumerate(units) if _normalize_reader_href(unit.get("href")) == normalized_href), None)
+    if unit_index is None and sort_order is not None:
+        unit_index = next((index for index, unit in enumerate(units) if _number_or_none(unit.get("sortOrder")) == sort_order), None)
+    if unit_index is None and section_index is not None and 0 <= section_index < len(units):
+        unit_index = section_index
+    if unit_index is None:
+        return raw_percent
+    section_page = _number_or_none(extra.get("sectionPage"))
+    section_total = _number_or_none(extra.get("sectionTotalPages"))
+    section_offset = (max(0, min(section_total - 1, section_page - 1)) / section_total) if section_page and section_total and section_total > 1 else 0
+    return max(0, min(100, round(((unit_index + section_offset) / len(units)) * 100)))
+
+
 def _latest_progress(progresses: list[dict[str, Any]]) -> dict[str, Any] | None:
     return next(iter(sorted(progresses, key=lambda item: _dt(item.get("updatedAt")) or "", reverse=True)), None)
 
@@ -423,6 +489,12 @@ def _choose_continue_volume(volumes: list[dict[str, Any]], progresses: list[dict
         percent = progress_by_volume.get(volume["id"], 0)
         if 0 < percent < 100:
             return volume
+    if not any(percent > 0 for percent in progress_by_volume.values()):
+        latest_volume_progress = next((item for item in sorted(progresses, key=lambda row: _dt(row.get("updatedAt")) or "", reverse=True) if item.get("volumeId")), None)
+        if latest_volume_progress:
+            latest_volume = next((volume for volume in volumes if volume.get("id") == latest_volume_progress.get("volumeId")), None)
+            if latest_volume:
+                return latest_volume
     for volume in volumes:
         if progress_by_volume.get(volume["id"], 0) <= 0:
             return volume
@@ -443,12 +515,15 @@ def _continue_progress_for_edition(edition: dict[str, Any] | None, progresses: l
     return _latest_progress(progresses)
 
 
-def _progress_chapter_label(progress: dict[str, Any] | None, volumes: list[dict[str, Any]]) -> str:
+def _progress_chapter_label(progress: dict[str, Any] | None, volumes: list[dict[str, Any]], units: list[dict[str, Any]] | None = None) -> str:
     if not progress or not progress.get("page"):
         return "未开始"
+    navigation = _progress_navigation(progress, units or [])
     volume_id = progress.get("volumeId")
     volume = next((item for item in volumes if item.get("id") == volume_id), None) if volume_id else None
     prefix = f"{volume.get('title') or '未命名卷'} · " if volume and len(volumes) > 1 else ""
+    if navigation.get("currentChapterTitle"):
+        return f"{prefix}{navigation['currentChapterTitle']} · 第 {progress.get('page')} 页"
     return f"{prefix}第 {progress.get('page')} 页"
 
 
@@ -508,12 +583,31 @@ def _work_view(db: Session, work: dict[str, Any], user_id: str | None = None) ->
     progress = recent[0] if recent else (progress_by_edition.get(display["id"]) if display else None)
     progress_edition = next((item for item in editions if progress and item["id"] == progress.get("editionId")), None) or display
     progress_volumes = volumes_by_edition.get(progress_edition["id"], []) if progress_edition else []
-    percent = _display_progress_percent(progress_edition, progress, progress_volumes)
+    progress_units = (
+        _rows(
+            db,
+            "SELECT * FROM `LibraryReadingUnit` WHERE `editionId` = :edition_id AND (:volume_id IS NULL OR `volumeId` = :volume_id) ORDER BY `sortOrder` ASC",
+            {"edition_id": progress_edition["id"], "volume_id": progress.get("volumeId") if progress else None},
+        )
+        if progress_edition and _has_table(db, "LibraryReadingUnit")
+        else []
+    )
+    progress_navigation = _progress_navigation(progress, progress_units)
+    percent = _progress_percent_with_navigation(progress, progress_units) if progress_edition and progress_edition.get("format") == "EPUB" else _display_progress_percent(progress_edition, progress, progress_volumes)
     labels = _labels()
     total_size = sum(int(file.get("sizeBytes") or 0) for files in files_by_edition.values() for file in files)
 
     def volume_view(volume: dict[str, Any], progress_rows: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         volume_progress = _progress_for_volume(progress_rows or [], volume["id"])
+        volume_units = (
+            _rows(
+                db,
+                "SELECT * FROM `LibraryReadingUnit` WHERE `editionId` = :edition_id AND `volumeId` = :volume_id ORDER BY `sortOrder` ASC",
+                {"edition_id": volume["editionId"], "volume_id": volume["id"]},
+            )
+            if volume_progress and _has_table(db, "LibraryReadingUnit")
+            else []
+        )
         return {
             "id": volume["id"],
             "editionId": volume["editionId"],
@@ -523,10 +617,11 @@ def _work_view(db: Session, work: dict[str, Any], user_id: str | None = None) ->
             "pageCount": volume.get("pageCount"),
             "chapterCount": volume.get("chapterCount"),
             "coverUrl": _cover_url("volumes", volume["id"], volume, workId=work["id"]),
-            "progress": _raw_progress_percent(volume_progress),
+            "progress": _progress_percent_with_navigation(volume_progress, volume_units),
             "lastReadAt": _dt(volume_progress.get("updatedAt")) if volume_progress else None,
             "position": volume_progress.get("position") if volume_progress else None,
             "currentPage": volume_progress.get("page") if volume_progress else None,
+            **_progress_navigation(volume_progress, volume_units),
         }
 
     def file_view(file: dict[str, Any]) -> dict[str, Any]:
@@ -583,6 +678,7 @@ def _work_view(db: Session, work: dict[str, Any], user_id: str | None = None) ->
         "format": labels["format"].get(display.get("format") if display else work_type, "未知"),
         "size": _format_bytes(total_size or (display.get("sizeBytes") if display else 0)),
         "progress": percent,
+        **progress_navigation,
         "statusValue": work.get("status") or "WANT",
         "status": labels["status"].get(work.get("status"), "想读"),
         "publicationStatusValue": work.get("publicationStatus") or "UNKNOWN",
@@ -604,7 +700,7 @@ def _work_view(db: Session, work: dict[str, Any], user_id: str | None = None) ->
         "added": (_dt(work.get("createdAt")) or "")[:10],
         "lastRead": (_dt(progress.get("updatedAt")) or "")[:10] if progress else "尚未阅读",
         "lastReadAt": _dt(progress.get("updatedAt")) if progress else None,
-        "chapter": _progress_chapter_label(progress, progress_volumes if progress_edition and progress_edition.get("format") == "COMIC" else []),
+        "chapter": _progress_chapter_label(progress, progress_volumes, progress_units),
         "chapterCount": display.get("chapterCount") if display else None,
         "pageCount": display.get("pageCount") if display else None,
         "desc": work.get("description") or (display.get("description") if display else None) or "暂无简介，可在详情页补充元数据。",
@@ -1582,7 +1678,7 @@ def _reading_unit_view(unit: dict[str, Any]) -> dict[str, Any]:
     return {**unit, "metadataJson": _parse_json(unit.get("metadataJson"), {})}
 
 
-def _volume_section_view(volume: dict[str, Any], fmt: str, count_override: int | None = None, progress: dict[str, Any] | None = None) -> dict[str, Any]:
+def _volume_section_view(volume: dict[str, Any], fmt: str, count_override: int | None = None, progress: dict[str, Any] | None = None, units: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     count_key = "pageCount" if fmt in {"COMIC", "PDF"} else "chapterCount"
     return {
         "id": volume["id"],
@@ -1591,10 +1687,11 @@ def _volume_section_view(volume: dict[str, Any], fmt: str, count_override: int |
         "fileId": volume.get("fileId") or volume["id"],
         "pageCount": count_override if count_override is not None else (volume.get(count_key) or 0),
         "coverUrl": _cover_url("volumes", volume["id"], volume, editionId=volume.get("editionId")),
-        "progress": _raw_progress_percent(progress),
+        "progress": _progress_percent_with_navigation(progress, units or []),
         "lastReadAt": _dt(progress.get("updatedAt")) if progress else None,
         "position": progress.get("position") if progress else None,
         "currentPage": progress.get("page") if progress else None,
+        **_progress_navigation(progress, units or []),
     }
 
 
@@ -1622,9 +1719,13 @@ def _work_detail_navigation(db: Session, edition_id: str | None, user_id: str | 
         selected_volume = next((item for item in volumes if item["id"] == requested_volume_id), None) if requested_volume_id else None
         selected_volume = selected_volume or _choose_continue_volume(volumes, progresses) or volumes[0]
         units = _rows(db, "SELECT * FROM `LibraryReadingUnit` WHERE `editionId` = :edition_id AND `volumeId` = :volume_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id, "volume_id": selected_volume["id"]}) if _has_table(db, "LibraryReadingUnit") else []
+        units_by_volume = {
+            volume["id"]: _rows(db, "SELECT * FROM `LibraryReadingUnit` WHERE `editionId` = :edition_id AND `volumeId` = :volume_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id, "volume_id": volume["id"]})
+            for volume in volumes
+        } if _has_table(db, "LibraryReadingUnit") else {}
         return {
             "readingUnits": [_reading_unit_view(unit) for unit in units],
-            "volumeSections": [_volume_section_view(volume, "EPUB", progress=_progress_for_volume(progresses, volume["id"])) for volume in volumes],
+            "volumeSections": [_volume_section_view(volume, "EPUB", progress=_progress_for_volume(progresses, volume["id"]), units=units_by_volume.get(volume["id"], [])) for volume in volumes],
         }
     units = _rows(db, "SELECT * FROM `LibraryReadingUnit` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryReadingUnit") else []
     return {"readingUnits": [_reading_unit_view(unit) for unit in units], "volumeSections": []}

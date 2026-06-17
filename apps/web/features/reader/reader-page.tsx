@@ -265,6 +265,44 @@ function navigationItemsFromReadingUnits(units: ReadingUnit[] | undefined) {
   }));
 }
 
+function normalizeReaderHref(value: unknown) {
+  if (typeof value !== 'string') return '';
+  try {
+    return decodeURIComponent(value).split('#')[0].replace(/^\.?\//, '').replace(/\\/g, '/').toLowerCase();
+  } catch {
+    return value.split('#')[0].replace(/^\.?\//, '').replace(/\\/g, '/').toLowerCase();
+  }
+}
+
+function numberFromExtra(value: unknown) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function activeNavigationItemFromExtra(extra: Record<string, unknown>, items: ReaderNavigationItem[]) {
+  const currentHref = normalizeReaderHref(extra.currentHref);
+  if (currentHref) {
+    const hrefItem = items.find((item) => item.href && normalizeReaderHref(item.href) === currentHref);
+    if (hrefItem) return hrefItem;
+  }
+  const sectionIndex = numberFromExtra(extra.sectionIndex ?? extra.chapterIndex);
+  if (sectionIndex !== null) {
+    return items.find((item) => item.sectionIndex === sectionIndex || item.index === sectionIndex + 1) ?? null;
+  }
+  return null;
+}
+
+function enrichProgressExtra(extra: Record<string, unknown>, items: ReaderNavigationItem[]) {
+  const activeItem = activeNavigationItemFromExtra(extra, items);
+  if (!activeItem) return extra;
+  return {
+    ...extra,
+    chapterTitle: activeItem.title,
+    chapterHref: activeItem.href ?? extra.currentHref,
+    chapterSortOrder: activeItem.index,
+    chapterSectionIndex: activeItem.sectionIndex
+  };
+}
+
 export function ReaderPage({ editionId }: { editionId: string }) {
   const router = useRouter();
   const [openingContext] = useState<ReaderOpeningContext | null>(() => safeOpeningContext(editionId));
@@ -296,6 +334,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
   const lastProgressPayloadRef = useRef('');
   const lastSettingsPayloadRef = useRef('');
   const requestedHrefRef = useRef<string | null>(null);
+  const navigationItemsRef = useRef<ReaderNavigationItem[]>([]);
 
   const readerType = useMemo(() => readerTypeForBook(book), [book]);
   const preferenceType = preferenceTypeForReader(readerType);
@@ -307,7 +346,8 @@ export function ReaderPage({ editionId }: { editionId: string }) {
     progressRef.current = progress;
     progressExtraRef.current = progressExtra;
     preferenceTypeRef.current = preferenceType;
-  }, [book, preferenceType, progress, progressExtra, readerType, settings]);
+    navigationItemsRef.current = navigationItems;
+  }, [book, navigationItems, preferenceType, progress, progressExtra, readerType, settings]);
 
   useEffect(() => {
     setReaderReady(false);
@@ -582,7 +622,8 @@ export function ReaderPage({ editionId }: { editionId: string }) {
   const handleProgress = useCallback((nextProgress: ReaderProgress, nextExtra?: Record<string, unknown>) => {
     const currentProgress = progressRef.current;
     const currentExtra = progressExtraRef.current;
-    const mergedExtra = nextExtra ? mergeChangedExtra(currentExtra, nextExtra) : currentExtra;
+    const enrichedExtra = nextExtra ? enrichProgressExtra(nextExtra, navigationItemsRef.current) : undefined;
+    const mergedExtra = enrichedExtra ? mergeChangedExtra(currentExtra, enrichedExtra) : currentExtra;
     const progressChanged = !sameProgress(currentProgress, nextProgress);
     const extraChanged = mergedExtra !== currentExtra;
     if (!progressChanged && !extraChanged) return;

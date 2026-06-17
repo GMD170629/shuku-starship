@@ -27,7 +27,7 @@ type BooksPayload = { ok: boolean; data?: { books: WorkView[]; total: number }; 
 type ImportPayload = { ok: boolean; data?: { title: string; duplicate?: boolean }; error?: { message: string } };
 type ContinueItem = { book: WorkView; progress: number; lastReadAt: string; chapter: string | null } | null;
 type ReadingUnitView = { id: string; unitType: string; title: string; href?: string | null; sortOrder: number; volumeId?: string | null; mediaType?: string | null; size?: string | number | null };
-type VolumeSectionView = { id: string; title: string; index: number; fileId: string; pageCount: number; coverUrl: string; progress?: number; lastReadAt?: string | null; position?: string | null; currentPage?: number | null };
+type VolumeSectionView = { id: string; title: string; index: number; fileId: string; pageCount: number; coverUrl: string; progress?: number; lastReadAt?: string | null; position?: string | null; currentPage?: number | null; currentHref?: string | null; currentSectionIndex?: number | null; currentChapterTitle?: string | null; currentChapterSortOrder?: number | null };
 type WorkDetailPayload = { ok: boolean; data?: { book: WorkView; readingUnits?: ReadingUnitView[]; volumeSections?: VolumeSectionView[] }; error?: { message: string } };
 type Summary = { totalBooks: number; latestSyncAt: string | null };
 type UserInfo = { email: string; name: string; role: string };
@@ -302,7 +302,11 @@ export function MobileReaderApp() {
       progress: volume.progress,
       lastReadAt: volume.lastReadAt,
       position: volume.position,
-      currentPage: volume.currentPage
+      currentPage: volume.currentPage,
+      currentHref: volume.currentHref,
+      currentSectionIndex: volume.currentSectionIndex,
+      currentChapterTitle: volume.currentChapterTitle,
+      currentChapterSortOrder: volume.currentChapterSortOrder
     }));
     setDetailVolumeSections(seededVolumes);
     setDetailSelectedVolumeId(book.recentVolumeId ?? seededVolumes[0]?.id ?? null);
@@ -960,7 +964,11 @@ function MobileBookDetailView({
     progress: volume.progress,
     lastReadAt: volume.lastReadAt,
     position: volume.position,
-    currentPage: volume.currentPage
+    currentPage: volume.currentPage,
+    currentHref: volume.currentHref,
+    currentSectionIndex: volume.currentSectionIndex,
+    currentChapterTitle: volume.currentChapterTitle,
+    currentChapterSortOrder: volume.currentChapterSortOrder
   }));
   const activeVolumeId = selectedVolumeId ?? book.recentVolumeId ?? visibleVolumes[0]?.id ?? null;
   const activeVolume = visibleVolumes.find((volume) => volume.id === activeVolumeId) ?? null;
@@ -1167,11 +1175,29 @@ function remainingEstimate(book: WorkView) {
   return `约 ${remaining} 小时`;
 }
 
+function normalizeReaderHref(value: unknown) {
+  if (typeof value !== 'string') return '';
+  try {
+    return decodeURIComponent(value).split('#')[0].replace(/^\.?\//, '').replace(/\\/g, '/').toLowerCase();
+  } catch {
+    return value.split('#')[0].replace(/^\.?\//, '').replace(/\\/g, '/').toLowerCase();
+  }
+}
+
 function detailChapterRows(book: WorkView, readingUnits: ReadingUnitView[], activeVolume: VolumeSectionView | null) {
   const progress = activeVolume?.progress ?? book.progress;
   const hasReadingPosition = Boolean(activeVolume?.lastReadAt || book.lastReadAt || (book.chapter && book.chapter !== '未开始'));
   if (readingUnits.length > 0) {
-    const currentIndex = Math.max(0, Math.min(readingUnits.length - 1, Math.round((progress / 100) * Math.max(0, readingUnits.length - 1))));
+    const savedHref = normalizeReaderHref(activeVolume?.currentHref ?? book.currentHref);
+    const savedSortOrder = activeVolume?.currentChapterSortOrder ?? book.currentChapterSortOrder;
+    const savedSectionIndex = activeVolume?.currentSectionIndex ?? book.currentSectionIndex;
+    const exactIndex = readingUnits.findIndex((unit, index) => {
+      if (savedHref && unit.href && normalizeReaderHref(unit.href) === savedHref) return true;
+      if (typeof savedSortOrder === 'number' && unit.sortOrder === savedSortOrder) return true;
+      if (typeof savedSectionIndex === 'number' && index === savedSectionIndex) return true;
+      return false;
+    });
+    const currentIndex = exactIndex >= 0 ? exactIndex : Math.max(0, Math.min(readingUnits.length - 1, Math.round((progress / 100) * Math.max(0, readingUnits.length - 1))));
     return readingUnits.map((unit, absoluteIndex) => {
       const current = absoluteIndex === currentIndex && hasReadingPosition && progress < 100;
       return {
