@@ -529,7 +529,7 @@ def _progress_chapter_label(progress: dict[str, Any] | None, volumes: list[dict[
 
 def _labels() -> dict[str, dict[str, str]]:
     return {
-        "format": {"EPUB": "EPUB", "COMIC": "漫画"},
+        "format": {"EPUB": "EPUB", "COMIC": "漫画", "PDF": "PDF"},
         "status": {"WANT": "想读", "READING": "在读", "FINISHED": "已读"},
         "publication": {"UNKNOWN": "未知", "ONGOING": "连载中", "COMPLETED": "已完结", "HIATUS": "休刊", "CANCELLED": "已取消"},
         "tracking": {"NOT_TRACKING": "未追踪", "TRACKING": "追踪中", "PAUSED": "已暂停", "IGNORED": "已忽略"},
@@ -760,6 +760,18 @@ def _update(db: Session, table: str, row_id: str, values: dict[str, Any], id_col
     return _row(db, f"SELECT * FROM `{table}` WHERE `{id_column}` = :row_id", {"row_id": row_id})
 
 
+def _update_where(db: Session, table: str, where_sql: str, params: dict[str, Any], values: dict[str, Any]) -> int:
+    columns = _set_columns(db, table)
+    values = {key: value for key, value in values.items() if key in columns}
+    if not values:
+        return 0
+    assignments = ", ".join(f"`{key}` = :set_{key}" for key in values)
+    update_params = {**params, **{f"set_{key}": value for key, value in values.items()}}
+    result = db.execute(text(f"UPDATE `{table}` SET {assignments} WHERE {where_sql}"), update_params)
+    db.commit()
+    return int(result.rowcount or 0)
+
+
 def _delete(db: Session, table: str, row_id: str, id_column: str = "id") -> bool:
     if not _has_table(db, table):
         return False
@@ -882,6 +894,80 @@ def _source_folder_preview(root_path: str) -> dict[str, Any]:
         except OSError:
             readable = False
     return {"readable": readable, "writable": writable, "children": children}
+
+
+def _is_inside_path(root: Path, target: Path) -> bool:
+    try:
+        target.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def _monitor_directory_tree_node(settings: Settings, requested_path: str | None) -> tuple[dict[str, Any] | None, str | None, int]:
+    monitor_root = settings.resolved_monitor_root
+    if monitor_root is None:
+        return None, "监控根目录未配置", 400
+
+    try:
+        real_monitor_root = monitor_root.resolve()
+    except OSError:
+        return None, "监控根目录不存在或不可读", 400
+
+    if not real_monitor_root.exists() or not real_monitor_root.is_dir():
+        return None, "监控根目录不存在或不可读", 400
+
+    raw_path = str(requested_path or "").strip()
+    if raw_path:
+        target = Path(raw_path).expanduser()
+        if not target.is_absolute():
+            return None, "请输入监控根目录下的绝对路径", 400
+    else:
+        target = real_monitor_root
+
+    if not target.exists():
+        return None, "路径不存在或不可读", 404
+
+    try:
+        real_target = target.resolve()
+    except OSError:
+        return None, "路径不存在或不可读", 404
+
+    if not _is_inside_path(real_monitor_root, real_target):
+        return None, "路径真实位置不在监控根目录内", 403
+    if not real_target.is_dir():
+        return None, "监控文件夹路径必须是目录", 400
+
+    children: list[dict[str, Any]] = []
+    readable = os.access(real_target, os.R_OK)
+    error: str | None = None
+    if readable:
+        try:
+            for child in sorted(real_target.iterdir(), key=lambda item: item.name.lower()):
+                try:
+                    real_child = child.resolve()
+                except OSError:
+                    continue
+                if not _is_inside_path(real_monitor_root, real_child) or not real_child.is_dir():
+                    continue
+                children.append({
+                    "name": child.name,
+                    "path": str(real_child),
+                    "readable": os.access(real_child, os.R_OK),
+                })
+        except OSError:
+            readable = False
+            error = "目录不可读取"
+    else:
+        error = "目录不可读取"
+
+    return {
+        "name": real_target.name or str(real_target),
+        "path": str(real_target),
+        "readable": readable,
+        "error": error,
+        "children": children[:200],
+    }, None, 200
 
 
 def _serialize_system_event(event: dict[str, Any]) -> dict[str, Any]:
@@ -1429,9 +1515,21 @@ def list_monitor_folders(request: Request, db: Session = Depends(get_db), settin
     folders = _rows(db, "SELECT * FROM `MonitorFolder` ORDER BY `createdAt` DESC") if _has_table(db, "MonitorFolder") else []
     return ok({
         "folders": folders,
+        "monitorRoot": str(settings.resolved_monitor_root.resolve()) if settings.resolved_monitor_root else None,
         "defaultUploadFolderId": _system_setting_value(db, "library.defaultUploadFolderId"),
         "defaultDownloadFolderId": _system_setting_value(db, "library.defaultDownloadFolderId"),
     })
+
+
+@router.get("/monitor-folders/tree")
+def monitor_folder_tree(request: Request, path: str | None = None, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+    _user, auth_error = _auth(db, request, settings)
+    if auth_error:
+        return auth_error
+    node, error, status_code = _monitor_directory_tree_node(settings, path)
+    if error:
+        return fail(error, status_code=status_code)
+    return ok({"node": node, "monitorRoot": str(settings.resolved_monitor_root.resolve()) if settings.resolved_monitor_root else None})
 
 
 @router.post("/monitor-folders")
@@ -1701,6 +1799,7 @@ def _volume_section_view(volume: dict[str, Any], fmt: str, count_override: int |
     count_key = "pageCount" if fmt in {"COMIC", "PDF"} else "chapterCount"
     return {
         "id": volume["id"],
+        "editionId": volume.get("editionId"),
         "title": volume.get("title") or "未命名卷",
         "index": volume.get("volumeIndex") or volume.get("sortOrder") or 0,
         "fileId": volume.get("fileId") or volume["id"],
@@ -3291,6 +3390,7 @@ async def metadata_search(work_id: str, request: Request, db: Session = Depends(
 @router.post("/works/{work_id}/metadata/refresh")
 @router.post("/works/{work_id}/editions/{edition_id}/primary")
 @router.post("/works/{work_id}/editions/{edition_id}/split")
+@router.post("/works/{work_id}/volumes/{volume_id}/move-to")
 @router.post("/works/{work_id}/volumes/{volume_id}/move")
 async def compatible_work_action(work_id: str, request: Request, edition_id: str | None = None, volume_id: str | None = None, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
     user, auth_error = _auth(db, request, settings)
@@ -3343,6 +3443,101 @@ async def compatible_work_action(work_id: str, request: Request, edition_id: str
     if request.url.path.endswith("/primary") and edition_id:
         _update(db, "LibraryWork", work_id, {"primaryEditionId": edition_id})
         _update(db, "LibraryEdition", edition_id, {"primary": True})
+    if request.url.path.endswith("/move-to") and volume_id:
+        payload = await request.json()
+        target_edition_id = str(payload.get("targetEditionId") or "").strip()
+        if not target_edition_id:
+            return fail("请选择目标版本", status_code=400)
+        source = _row(
+            db,
+            """
+            SELECT v.*, e.`workId` AS sourceWorkId, e.`format` AS sourceFormat
+            FROM `LibraryVolume` v
+            JOIN `LibraryEdition` e ON e.`id` = v.`editionId`
+            WHERE v.`id` = :volume_id AND e.`workId` = :work_id AND COALESCE(e.`hidden`, 0) = 0
+            """,
+            {"volume_id": volume_id, "work_id": work_id},
+        ) if _has_table(db, "LibraryVolume") and _has_table(db, "LibraryEdition") else None
+        if not source:
+            return fail("卷册不存在或不属于该作品", status_code=404)
+        target = _row(
+            db,
+            """
+            SELECT e.*, w.`title` AS targetWorkTitle
+            FROM `LibraryEdition` e
+            JOIN `LibraryWork` w ON w.`id` = e.`workId`
+            WHERE e.`id` = :edition_id AND COALESCE(e.`hidden`, 0) = 0
+            """,
+            {"edition_id": target_edition_id},
+        ) if _has_table(db, "LibraryEdition") and _has_table(db, "LibraryWork") else None
+        if not target:
+            return fail("目标版本不存在", status_code=404)
+        target_work_id = target.get("workId")
+        if target_work_id == work_id and target_edition_id == source.get("editionId"):
+            return fail("请选择不同的目标版本", status_code=400)
+        if source.get("sourceFormat") != target.get("format"):
+            return fail("只能移动到相同格式的版本", status_code=400)
+        now = _now()
+        previous_edition_id = source.get("editionId")
+        _update(db, "LibraryVolume", volume_id, {"editionId": target_edition_id, "updatedAt": now})
+        _update_where(db, "LibraryFile", "`volumeId` = :volume_id", {"volume_id": volume_id}, {"editionId": target_edition_id, "updatedAt": now})
+        _update_where(db, "LibraryReadingUnit", "`volumeId` = :volume_id", {"volume_id": volume_id}, {"editionId": target_edition_id, "updatedAt": now})
+        _update_where(db, "LibraryReadingProgress", "`volumeId` = :volume_id", {"volume_id": volume_id}, {"workId": target_work_id, "editionId": target_edition_id, "updatedAt": now})
+        _update_where(db, "ImportTask", "`volumeId` = :volume_id", {"volume_id": volume_id}, {"workId": target_work_id, "editionId": target_edition_id, "updatedAt": now})
+        if previous_edition_id and _has_table(db, "LibraryEdition"):
+            previous_counts = _row(
+                db,
+                "SELECT COALESCE(SUM(`pageCount`), 0) AS pages, COALESCE(SUM(`chapterCount`), 0) AS chapters FROM `LibraryVolume` WHERE `editionId` = :edition_id",
+                {"edition_id": previous_edition_id},
+            ) or {}
+            _update(db, "LibraryEdition", previous_edition_id, {"pageCount": int(previous_counts.get("pages") or 0), "chapterCount": int(previous_counts.get("chapters") or 0), "updatedAt": now})
+        target_volumes = _rows(
+            db,
+            """
+            SELECT * FROM `LibraryVolume`
+            WHERE `editionId` = :edition_id
+            ORDER BY
+                CASE WHEN `volumeIndex` IS NULL THEN 1 ELSE 0 END ASC,
+                `volumeIndex` ASC,
+                `sortOrder` ASC,
+                `createdAt` ASC,
+                `id` ASC
+            """,
+            {"edition_id": target_edition_id},
+        )
+        for index, volume in enumerate(target_volumes):
+            _update(db, "LibraryVolume", volume["id"], {"sortOrder": (index + 1) * 1000, "updatedAt": now})
+        target_counts = _row(
+            db,
+            "SELECT COALESCE(SUM(`pageCount`), 0) AS pages, COALESCE(SUM(`chapterCount`), 0) AS chapters FROM `LibraryVolume` WHERE `editionId` = :edition_id",
+            {"edition_id": target_edition_id},
+        ) or {}
+        _update(db, "LibraryEdition", target_edition_id, {"pageCount": int(target_counts.get("pages") or 0), "chapterCount": int(target_counts.get("chapters") or 0), "updatedAt": now})
+        _update(db, "LibraryWork", work_id, {"updatedAt": now})
+        if target_work_id:
+            _update(db, "LibraryWork", target_work_id, {"updatedAt": now})
+        _record_system_event(
+            db,
+            level="info",
+            source="library",
+            actor_type="admin",
+            actor_id=user.id,
+            action="volume.moved",
+            target_type="volume",
+            target_id=volume_id,
+            message=f"移动卷册到《{target.get('targetWorkTitle') or target_work_id}》",
+            metadata={"sourceWorkId": work_id, "targetWorkId": target_work_id, "sourceEditionId": previous_edition_id, "targetEditionId": target_edition_id},
+        )
+        source_work = _get_work(db, work_id)
+        target_work = _get_work(db, target_work_id) if target_work_id else None
+        return ok({
+            "book": _work_view(db, source_work, user.id) if source_work else None,
+            "targetBook": _work_view(db, target_work, user.id) if target_work else None,
+            "workId": work_id,
+            "targetWorkId": target_work_id,
+            "volumeId": volume_id,
+            "targetEditionId": target_edition_id,
+        })
     if request.url.path.endswith("/move") and volume_id:
         payload = await request.json()
         direction = str(payload.get("direction") or "").lower()

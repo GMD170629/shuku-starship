@@ -1,6 +1,6 @@
 'use client';
 
-import { AlertCircle, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Database, Download, Edit3, EyeOff, RefreshCw, Save, Trash2, UploadCloud, X } from 'lucide-react';
+import { AlertCircle, BookOpen, ChevronDown, ChevronLeft, ChevronRight, Database, Download, Edit3, EyeOff, MoveRight, RefreshCw, Save, Search, Trash2, UploadCloud, X } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Cover } from '../../components/book/cover';
@@ -80,7 +80,8 @@ function readableEditionId(book: WorkView | null) {
 
 type ReadingUnitView = { id: string; unitType: string; title: string; href: string; mediaType?: string | null; sortOrder: number; size?: string | number | null };
 type DetailMetadata = { language?: string | null; publisher?: string | null; publishedAt?: string | null; isbn?: string | null; items?: Array<{ source: string; metadataJson: unknown }> };
-type VolumeSectionView = { id: string; title: string; index: number; fileId: string; pageCount: number; coverUrl: string };
+type VolumeSectionView = { id: string; editionId?: string | null; title: string; index: number; fileId: string; pageCount: number; coverUrl: string };
+type WorksResponse = { ok: boolean; data?: { books: WorkView[] }; error?: { message: string } };
 
 function readerUrlForBook(book: WorkView, volumeSections: VolumeSectionView[]) {
   const editionId = readableEditionId(book);
@@ -124,6 +125,13 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   const [busyAction, setBusyAction] = useState('');
   const [metadataLookupOpen, setMetadataLookupOpen] = useState(false);
   const [dangerActionOpen, setDangerActionOpen] = useState(false);
+  const [moveTargetOpen, setMoveTargetOpen] = useState(false);
+  const [movingVolume, setMovingVolume] = useState<VolumeSectionView | null>(null);
+  const [targetSearch, setTargetSearch] = useState('');
+  const [targetBooks, setTargetBooks] = useState<WorkView[]>([]);
+  const [targetBooksLoading, setTargetBooksLoading] = useState(false);
+  const [targetBookId, setTargetBookId] = useState('');
+  const [targetEditionId, setTargetEditionId] = useState('');
   const [coverBust, setCoverBust] = useState(0);
   const [form, setForm] = useState({
     title: '',
@@ -181,6 +189,33 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   useEffect(() => {
     loadBook();
   }, [loadBook]);
+
+  useEffect(() => {
+    if (!moveTargetOpen) return;
+    let active = true;
+    const timer = window.setTimeout(() => {
+      setTargetBooksLoading(true);
+      const params = new URLSearchParams({ visibility: 'active', pageSize: '12', page: '1' });
+      if (targetSearch.trim()) params.set('search', targetSearch.trim());
+      fetch(`/api/works?${params.toString()}`)
+        .then((response) => response.json() as Promise<WorksResponse>)
+        .then((payload) => {
+          if (!active) return;
+          if (!payload.ok) throw new Error(payload.error?.message ?? '搜索目标读物失败');
+          setTargetBooks((payload.data?.books ?? []).filter((item) => item.id !== bookId));
+        })
+        .catch((reason) => {
+          if (!active) return;
+          setTargetBooks([]);
+          toast.error('搜索目标读物失败', reason instanceof Error ? reason.message : '请稍后重试');
+        })
+        .finally(() => active && setTargetBooksLoading(false));
+    }, 250);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [bookId, moveTargetOpen, targetSearch, toast]);
 
   const displayBook = useMemo(() => {
     if (!book || coverBust === 0) return book;
@@ -275,6 +310,44 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
       const nextError = reason instanceof Error ? reason.message : '卷册顺序更新失败';
       setError(nextError);
       toast.error('卷册顺序更新失败', nextError);
+    } finally {
+      setSaving(false);
+      setBusyAction('');
+    }
+  }
+
+  function openMoveTarget(volume: VolumeSectionView) {
+    setMovingVolume(volume);
+    setMoveTargetOpen(true);
+    setTargetSearch('');
+    setTargetBooks([]);
+    setTargetBookId('');
+    setTargetEditionId('');
+  }
+
+  async function moveVolumeToTarget() {
+    if (!movingVolume || !targetEditionId) return;
+    setSaving(true);
+    setBusyAction(`move-to:${movingVolume.id}`);
+    setError('');
+    setMessage('');
+    try {
+      const response = await fetch(`/api/works/${bookId}/volumes/${movingVolume.id}/move-to`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetEditionId })
+      });
+      const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
+      if (!payload.ok) throw new Error(payload.error?.message ?? '移动卷册失败');
+      setMoveTargetOpen(false);
+      setMovingVolume(null);
+      await loadBook();
+      setMessage('卷册已移动到目标版本');
+      toast.success('卷册已移动到目标版本');
+    } catch (reason) {
+      const nextError = reason instanceof Error ? reason.message : '移动卷册失败';
+      setError(nextError);
+      toast.error('移动卷册失败', nextError);
     } finally {
       setSaving(false);
       setBusyAction('');
@@ -382,6 +455,12 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   const navigationTitle = hasVolumeSections ? '卷册' : '章节';
   const navigationSummary = hasVolumeSections ? `${volumeSections.length} 个卷册` : readingUnits.length > 0 ? `${readingUnits.length} 章` : '未解析章节';
   const hasDescription = Boolean(book.desc && book.desc !== DEFAULT_DESCRIPTION);
+  const movingVolumeRecord = movingVolume ? book.volumes.find((volume) => volume.id === movingVolume.id) : null;
+  const movingEdition = movingVolumeRecord ? book.editions.find((edition) => edition.id === movingVolumeRecord.editionId) : null;
+  const movingFormat = movingEdition?.formatValue ?? book.formatValue;
+  const selectedTargetBook = targetBooks.find((item) => item.id === targetBookId) ?? null;
+  const targetEditionOptions = selectedTargetBook?.editions ?? [];
+  const selectedTargetEdition = targetEditionOptions.find((edition) => edition.id === targetEditionId) ?? null;
 
   return (
     <div className="space-y-5">
@@ -580,6 +659,9 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
                       <button type="button" disabled={saving && busyAction !== `move:${volume.id}:down`} onClick={() => moveVolume(volume.id, 'down')} className="flex h-8 w-8 items-center justify-center border-l border-slate-100 text-slate-500 transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50" aria-label={`后移 ${volume.title}`}>
                         <ChevronRight size={15} />
                       </button>
+                      <button type="button" disabled={saving} onClick={() => openMoveTarget(volume)} className="flex h-8 w-8 items-center justify-center border-l border-slate-100 text-slate-500 transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50" aria-label={`移动 ${volume.title} 到其他读物`}>
+                        <MoveRight size={15} />
+                      </button>
                     </div>
                   </div>
                 ))}
@@ -692,6 +774,80 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
           toast.success('元数据已应用');
         }}
       />
+      {moveTargetOpen && movingVolume ? (
+        <div className="fixed inset-0 z-[90] flex items-end justify-center bg-slate-950/40 p-0 backdrop-blur-sm md:items-center md:p-6" role="dialog" aria-modal="true" aria-label="移动卷册">
+          <div className="w-full max-w-2xl rounded-t-[28px] border border-slate-200 bg-white p-5 shadow-2xl shadow-slate-950/20 md:rounded-[28px]">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-950">移动卷册</h2>
+                <p className="mt-2 text-sm leading-6 text-slate-600">将「{movingVolume.title}」移动到另一读物的同格式版本下，移动后目标版本会按卷号重排。</p>
+              </div>
+              <button type="button" onClick={() => setMoveTargetOpen(false)} className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl text-slate-500 hover:bg-slate-100" aria-label="关闭">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="mt-5 grid gap-4 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+              <section>
+                <label className="text-sm font-medium text-slate-700">目标读物</label>
+                <div className="mt-2 flex h-11 items-center gap-2 rounded-2xl border border-slate-200 px-3">
+                  <Search size={16} className="text-slate-400" />
+                  <input value={targetSearch} onChange={(event) => setTargetSearch(event.target.value)} placeholder="搜索标题、作者、标签" className="w-full bg-transparent text-sm outline-none" />
+                </div>
+                <div className="mt-3 max-h-72 space-y-2 overflow-auto pr-1">
+                  {targetBooks.map((targetBook) => (
+                    <button
+                      key={targetBook.id}
+                      type="button"
+                      onClick={() => {
+                        setTargetBookId(targetBook.id);
+                        setTargetEditionId('');
+                      }}
+                      className={cn('w-full rounded-2xl border p-3 text-left transition', targetBook.id === targetBookId ? 'border-blue-200 bg-blue-50' : 'border-slate-100 bg-slate-50 hover:bg-slate-100')}
+                    >
+                      <span className="block truncate text-sm font-medium text-slate-950">《{targetBook.title}》</span>
+                      <span className="mt-1 block truncate text-xs text-slate-500">{targetBook.author} · {targetBook.versionCount} 版 · {targetBook.volumeCount} 卷</span>
+                    </button>
+                  ))}
+                  {targetBooksLoading ? <div className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-500">正在搜索...</div> : null}
+                  {!targetBooksLoading && targetBooks.length === 0 ? <div className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-500">没有找到可选目标读物。</div> : null}
+                </div>
+              </section>
+              <section>
+                <div className="text-sm font-medium text-slate-700">目标版本</div>
+                <div className="mt-2 rounded-2xl bg-slate-50 p-3 text-xs leading-5 text-slate-500">
+                  源格式：{movingEdition?.format ?? book.format}。只能移动到相同格式版本，卷号缺失或重复也允许移动。
+                </div>
+                <div className="mt-3 max-h-72 space-y-2 overflow-auto pr-1">
+                  {targetEditionOptions.map((edition) => {
+                    const compatible = edition.formatValue === movingFormat;
+                    return (
+                      <button
+                        key={edition.id}
+                        type="button"
+                        disabled={!compatible}
+                        onClick={() => setTargetEditionId(edition.id)}
+                        className={cn('w-full rounded-2xl border p-3 text-left transition disabled:cursor-not-allowed disabled:opacity-45', edition.id === targetEditionId ? 'border-blue-200 bg-blue-50' : 'border-slate-100 bg-white hover:bg-slate-50')}
+                      >
+                        <span className="block truncate text-sm font-medium text-slate-950">{edition.versionName}</span>
+                        <span className="mt-1 block text-xs text-slate-500">{edition.format} · {edition.volumes.length} 卷{compatible ? '' : ' · 格式不一致'}</span>
+                      </button>
+                    );
+                  })}
+                  {selectedTargetBook && targetEditionOptions.length === 0 ? <div className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-500">目标读物暂无可用版本。</div> : null}
+                  {!selectedTargetBook ? <div className="rounded-2xl bg-slate-50 p-3 text-sm text-slate-500">先选择一本目标读物。</div> : null}
+                </div>
+              </section>
+            </div>
+            <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+              <div className="text-sm text-slate-500">{selectedTargetEdition ? `将移动到「${selectedTargetEdition.versionName}」` : '请选择目标读物和版本'}</div>
+              <div className="flex gap-2">
+                <Button variant="secondary" onClick={() => setMoveTargetOpen(false)}>取消</Button>
+                <Button loading={busyAction === `move-to:${movingVolume.id}`} loadingText="移动中" disabled={!targetEditionId || saving} icon={MoveRight} onClick={() => void moveVolumeToTarget()}>确认移动</Button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {dangerActionOpen ? (
         <div className="fixed inset-0 z-[90] flex items-end justify-center bg-slate-950/40 p-0 backdrop-blur-sm md:items-center md:p-6" role="dialog" aria-modal="true" aria-label="忽略或删除读物">
           <div className="w-full max-w-lg rounded-t-[28px] border border-slate-200 bg-white p-5 shadow-2xl shadow-slate-950/20 md:rounded-[28px]">

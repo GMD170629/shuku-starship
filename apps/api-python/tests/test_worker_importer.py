@@ -386,6 +386,18 @@ def test_parse_series_volume_info_from_real_watch_layout():
     assert parsed.title == "第 10 卷"
 
 
+def test_parse_series_volume_info_from_bracketed_folder_and_volume_filename():
+    path = Path("/books/comic/[DRAWING 最強漫畫家利用繪畫技能在異世界開無雙 ！][金光铉]/Vol.09.epub")
+
+    parsed = parse_series_volume_info(path, path.name, "WATCH")
+
+    assert parsed is not None
+    assert parsed.series_name == "DRAWING 最強漫畫家利用繪畫技能在異世界開無雙 ！"
+    assert parsed.author == "金光铉"
+    assert parsed.series_index == 9
+    assert parsed.title == "第 9 卷"
+
+
 def test_watch_epub_import_merges_series_volumes_from_folder_layout(db_session, test_settings, tmp_path):
     create_worker_tables(db_session)
     test_settings.resolved_storage_root.mkdir(parents=True)
@@ -419,6 +431,29 @@ def test_watch_epub_import_merges_series_volumes_from_folder_layout(db_session, 
         {"title": "第 1 卷", "volumeIndex": 1, "sortOrder": 1000, "chapterCount": 1},
         {"title": "第 10 卷", "volumeIndex": 10, "sortOrder": 10000, "chapterCount": 1},
     ]
+
+
+def test_watch_epub_import_uses_bracketed_folder_for_volume_filename(db_session, test_settings, tmp_path):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    series_dir = tmp_path / "[DRAWING 最強漫畫家利用繪畫技能在異世界開無雙 ！][金光铉]"
+    series_dir.mkdir()
+    epub = series_dir / "Vol.09.epub"
+    write_epub_metadata_fixture(epub, "Vol.09", "封面作者")
+
+    result = import_managed_book(db_session, test_settings, ImportOptions(source_file_path=epub, origin="WATCH", original_name=epub.name, monitor_folder_id="folder-1"))
+
+    assert result.duplicate is False
+    assert result.volume_id is not None
+    work = db_session.execute(text("SELECT title, author FROM LibraryWork")).mappings().first()
+    assert work["title"] == "DRAWING 最強漫畫家利用繪畫技能在異世界開無雙 ！"
+    assert work["author"] == "金光铉"
+    volume = db_session.execute(text("SELECT title, volumeIndex, sortOrder FROM LibraryVolume")).mappings().first()
+    assert dict(volume) == {"title": "第 9 卷", "volumeIndex": 9, "sortOrder": 9000}
+    raw = json.loads(db_session.execute(text("SELECT rawJson FROM LibraryMetadata")).scalar())
+    assert raw["sourceSeriesTitle"] == "DRAWING 最強漫畫家利用繪畫技能在異世界開無雙 ！"
+    assert raw["sourceSeriesAuthor"] == "金光铉"
+    assert raw["sourceVolumeIndex"] == 9
 
 
 def test_import_epub_merges_same_title_author_despite_different_identifiers(db_session, test_settings, tmp_path):

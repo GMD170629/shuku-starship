@@ -1162,7 +1162,7 @@ def _clean_title_part(value: str) -> str:
 
 def _bracketed_folder_metadata(value: str) -> dict[str, str] | None:
     parts = [_clean_title_part(match.group(1)) for match in re.finditer(r"\[([^\]]+)\]", value)]
-    if len(parts) == 2 and "".join(parts) and "".join(parts) == value.replace(" ", "").replace("[", "").replace("]", ""):
+    if len(parts) == 2 and "".join(parts) and _is_exact_bracket_sequence(value, 2):
         return {"title": parts[0], "author": parts[1]}
     return None
 
@@ -1170,11 +1170,16 @@ def _bracketed_folder_metadata(value: str) -> dict[str, str] | None:
 def _series_folder_metadata(value: str) -> dict[str, str] | None:
     raw_parts = [match.group(1) for match in re.finditer(r"\[([^\]]+)\]", value)]
     parts = [_clean_title_part(part) for part in raw_parts]
-    if len(parts) >= 3 and parts[0] and parts[1] and _volume_range_part(raw_parts[2]):
+    if len(parts) >= 3 and parts[0] and parts[1] and _volume_range_part(raw_parts[2]) and _is_exact_bracket_sequence(value):
         return {"title": parts[0], "author": parts[1]}
-    if len(parts) == 2 and "".join(parts) and "".join(parts) == value.replace(" ", "").replace("[", "").replace("]", ""):
+    if len(parts) == 2 and "".join(parts) and _is_exact_bracket_sequence(value, 2):
         return {"title": parts[0], "author": parts[1]}
     return None
+
+
+def _is_exact_bracket_sequence(value: str, count: int | None = None) -> bool:
+    repeat = f"{{{count}}}" if count is not None else "+"
+    return bool(re.fullmatch(rf"\s*(?:\[[^\]]+\]\s*){repeat}", value))
 
 
 def _volume_range_part(value: str) -> bool:

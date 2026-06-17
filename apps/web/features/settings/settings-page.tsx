@@ -1,8 +1,8 @@
 'use client';
 
-import { CheckCircle2, ChevronRight, Database, Download, FolderOpen, RotateCcw, Save, Trash2 } from 'lucide-react';
+import { CheckCircle2, ChevronDown, ChevronRight, Database, Download, FolderOpen, RotateCcw, Save, Trash2 } from 'lucide-react';
 import Link from 'next/link';
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
 import { useConfirm, useToast } from '../../components/ui/feedback';
@@ -38,6 +38,23 @@ type BackupItem = {
     readingProgresses: number;
     monitorFolders: number;
   };
+};
+
+type DirectoryNode = {
+  name: string;
+  path: string;
+  readable: boolean;
+  error?: string | null;
+  children: Array<{
+    name: string;
+    path: string;
+    readable: boolean;
+  }>;
+};
+
+type DirectoryTreePayload = {
+  node: DirectoryNode;
+  monitorRoot?: string | null;
 };
 
 type AppSettings = {
@@ -108,7 +125,7 @@ function settingsForSave(settings: AppSettings) {
 }
 
 export function SettingsPage() {
-  const groups = ['基础设置', '监控文件夹', '监控规则', '备份与恢复', '元数据', '下载设置', '源管理'];
+  const groups = ['基础设置', '监控文件夹', '备份与恢复', '元数据', '下载设置', '源管理'];
   const [active, setActive] = useState('基础设置');
   const [folders, setFolders] = useState<MonitorFolder[]>([]);
   const [backups, setBackups] = useState<BackupItem[]>([]);
@@ -146,6 +163,7 @@ export function SettingsPage() {
   const [settingsBusy, setSettingsBusy] = useState(false);
   const [pathBusy, setPathBusy] = useState('');
   const [ruleBusy, setRuleBusy] = useState('');
+  const [expandedRules, setExpandedRules] = useState<Record<string, boolean>>({});
   const confirm = useConfirm();
   const toast = useToast();
 
@@ -171,6 +189,10 @@ export function SettingsPage() {
     if (payload.ok) setBackups(payload.data?.backups ?? []);
     else setError(payload.error?.message ?? '读取备份列表失败');
   }
+
+  useEffect(() => {
+    if (active === '监控规则') setActive('监控文件夹');
+  }, [active]);
 
   useEffect(() => {
     loadPaths();
@@ -412,10 +434,10 @@ export function SettingsPage() {
                   <span className="text-sm font-medium text-slate-700">名称</span>
                   <input value={name} onChange={(event) => setName(event.target.value)} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
                 </label>
-                <label className="md:col-span-9">
+                <div className="md:col-span-9">
                   <span className="text-sm font-medium text-slate-700">监控文件夹路径</span>
-                  <input value={rootPath} onChange={(event) => setRootPath(event.target.value)} className="mt-2 h-11 w-full rounded-2xl border border-slate-200 px-4 text-sm outline-none" />
-                </label>
+                  <DirectoryPathPicker value={rootPath} onChange={setRootPath} />
+                </div>
                 <label className="md:col-span-9">
                   <span className="text-sm font-medium text-slate-700">自定义忽略规则</span>
                   <textarea
@@ -441,19 +463,35 @@ export function SettingsPage() {
               </form>
               <div className="space-y-3">
                 {folders.map((path) => (
-                  <div key={path.id} className="flex flex-col gap-4 rounded-3xl border border-slate-200 bg-white p-5 md:flex-row md:items-center">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-blue-50 text-blue-700">
-                      <FolderOpen size={18} />
+                  <div key={path.id} className="rounded-3xl border border-slate-200 bg-white p-5">
+                    <div className="flex flex-col gap-4 md:flex-row md:items-center">
+                      <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-blue-50 text-blue-700">
+                        <FolderOpen size={18} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="font-semibold">{path.name}</div>
+                        <div className="break-words text-sm text-slate-500">{path.rootPath}</div>
+                        <div className="mt-2 text-xs text-slate-500">引用原文件 · {path.ignoreHidden ? '忽略隐藏文件' : '包含隐藏文件'} · 小于 {Math.round((path.minFileSizeBytes ?? 0) / 1024)} KB 跳过 · {path.ignorePatterns?.trim() ? '已配置自定义忽略规则' : '仅默认忽略规则'}</div>
+                      </div>
+                      <button disabled={pathBusy === `toggle:${path.id}`} onClick={() => togglePath(path)} className={cn('h-7 w-12 rounded-full p-1 transition disabled:cursor-not-allowed disabled:opacity-60', path.enabled ? 'bg-blue-600' : 'bg-slate-300')} aria-label="启用监控文件夹">
+                        <span className={cn('block h-5 w-5 rounded-full bg-white transition', path.enabled && 'translate-x-5')} />
+                      </button>
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        icon={ChevronDown}
+                        onClick={() => setExpandedRules((current) => ({ ...current, [path.id]: !current[path.id] }))}
+                        aria-expanded={Boolean(expandedRules[path.id])}
+                      >
+                        规则
+                      </Button>
+                      <Button variant="danger" icon={Trash2} loading={pathBusy === `delete:${path.id}`} loadingText="删除中" onClick={() => deletePath(path)}>删除</Button>
                     </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="font-semibold">{path.name}</div>
-                      <div className="break-words text-sm text-slate-500">{path.rootPath}</div>
-                      <div className="mt-2 text-xs text-slate-500">引用原文件 · {path.ignoreHidden ? '忽略隐藏文件' : '包含隐藏文件'} · 小于 {Math.round((path.minFileSizeBytes ?? 0) / 1024)} KB 跳过 · {path.ignorePatterns?.trim() ? '已配置自定义忽略规则' : '仅默认忽略规则'}</div>
-                    </div>
-                    <button disabled={pathBusy === `toggle:${path.id}`} onClick={() => togglePath(path)} className={cn('h-7 w-12 rounded-full p-1 transition disabled:cursor-not-allowed disabled:opacity-60', path.enabled ? 'bg-blue-600' : 'bg-slate-300')} aria-label="启用监控文件夹">
-                      <span className={cn('block h-5 w-5 rounded-full bg-white transition', path.enabled && 'translate-x-5')} />
-                    </button>
-                    <Button variant="danger" icon={Trash2} loading={pathBusy === `delete:${path.id}`} loadingText="删除中" onClick={() => deletePath(path)}>删除</Button>
+                    {expandedRules[path.id] ? (
+                      <div className="mt-4 border-t border-slate-100 pt-4">
+                        <ScanRuleEditor path={path} saving={ruleBusy === path.id} onSave={saveScanRules} compact />
+                      </div>
+                    ) : null}
                   </div>
                 ))}
                 {folders.length === 0 ? <div className="rounded-3xl bg-slate-50 p-6 text-sm text-slate-500">尚未保存监控文件夹。</div> : null}
@@ -484,13 +522,6 @@ export function SettingsPage() {
                   </label>
                 </div>
               </section>
-            </div>
-          ) : active === '监控规则' ? (
-            <div className="mt-6 space-y-4">
-              {folders.map((path) => (
-                <ScanRuleEditor key={path.id} path={path} saving={ruleBusy === path.id} onSave={saveScanRules} />
-              ))}
-              {folders.length === 0 ? <div className="rounded-3xl bg-slate-50 p-6 text-sm text-slate-500">请先添加监控文件夹。</div> : null}
             </div>
           ) : active === '备份与恢复' ? (
             <div className="mt-6 space-y-5">
@@ -691,7 +722,188 @@ export function SettingsPage() {
   );
 }
 
-function ScanRuleEditor({ path, saving, onSave }: { path: MonitorFolder; saving: boolean; onSave: (path: MonitorFolder, updates: Pick<MonitorFolder, 'ignorePatterns' | 'ignoreHidden' | 'minFileSizeBytes'>) => Promise<void> }) {
+function DirectoryPathPicker({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [monitorRoot, setMonitorRoot] = useState('');
+  const [nodes, setNodes] = useState<Record<string, DirectoryNode>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [loadingPath, setLoadingPath] = useState('');
+  const [treeError, setTreeError] = useState('');
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  async function loadNode(path?: string) {
+    setLoadingPath(path || '__root__');
+    setTreeError('');
+    try {
+      const query = path ? `?path=${encodeURIComponent(path)}` : '';
+      const response = await fetch(`/api/monitor-folders/tree${query}`);
+      const payload = (await response.json()) as { ok: boolean; data?: DirectoryTreePayload; error?: { message: string } };
+      if (!payload.ok || !payload.data?.node) {
+        setTreeError(payload.error?.message ?? '读取目录树失败');
+        return null;
+      }
+      const node = payload.data.node;
+      setMonitorRoot(payload.data.monitorRoot || node.path);
+      setNodes((current) => ({ ...current, [node.path]: node }));
+      return node;
+    } catch {
+      setTreeError('读取目录树失败');
+      return null;
+    } finally {
+      setLoadingPath('');
+    }
+  }
+
+  useEffect(() => {
+    loadNode();
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    function closeOnOutside(event: MouseEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+    document.addEventListener('mousedown', closeOnOutside);
+    return () => document.removeEventListener('mousedown', closeOnOutside);
+  }, [open]);
+
+  async function toggleDirectory(path: string) {
+    const nextExpanded = !expanded[path];
+    setExpanded((current) => ({ ...current, [path]: nextExpanded }));
+    if (nextExpanded && !nodes[path]) await loadNode(path);
+  }
+
+  function selectPath(path: string) {
+    onChange(path);
+    setOpen(false);
+  }
+
+  const rootNode = monitorRoot ? nodes[monitorRoot] : Object.values(nodes)[0];
+
+  return (
+    <div ref={rootRef} className="relative mt-2">
+      <div className="flex gap-2">
+        <input
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          className="h-11 min-w-0 flex-1 rounded-2xl border border-slate-200 bg-white px-4 text-sm outline-none focus:border-blue-300 focus:ring-4 focus:ring-blue-100"
+        />
+        <button
+          type="button"
+          onClick={() => setOpen((current) => !current)}
+          className="inline-flex h-11 shrink-0 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-700 shadow-sm hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+          aria-expanded={open}
+        >
+          <FolderOpen size={16} />
+          选择
+          <ChevronDown size={16} className={cn('transition', open && 'rotate-180')} />
+        </button>
+      </div>
+      {open ? (
+        <div className="absolute left-0 right-0 top-full z-50 mt-2 rounded-2xl border border-slate-200 bg-white p-3 text-sm text-slate-700 shadow-xl shadow-slate-200/60">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <div className="font-medium text-slate-950">监控根目录</div>
+              <div className="truncate text-xs text-slate-500">{monitorRoot || '读取中'}</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => loadNode(value || monitorRoot || undefined)}
+              className="inline-flex h-9 items-center gap-2 rounded-xl border border-slate-200 px-3 text-xs font-medium text-slate-600 hover:bg-slate-50"
+            >
+              <RotateCcw size={14} />
+              刷新
+            </button>
+          </div>
+          <div className="max-h-72 overflow-auto rounded-xl bg-slate-50 p-2">
+            {rootNode ? (
+              <DirectoryNodeRow
+                node={rootNode}
+                level={0}
+                selectedPath={value}
+                nodes={nodes}
+                expanded={expanded}
+                loadingPath={loadingPath}
+                onSelect={selectPath}
+                onToggle={toggleDirectory}
+              />
+            ) : (
+              <div className="px-3 py-2 text-slate-500">{loadingPath ? '正在读取目录...' : '暂无可选目录'}</div>
+            )}
+          </div>
+          {treeError ? <div className="mt-2 rounded-xl bg-red-50 px-3 py-2 text-xs text-red-700">{treeError}</div> : null}
+          <div className="mt-2 text-xs leading-5 text-slate-500">只能浏览监控根目录内的目录；也可以直接粘贴路径。</div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function DirectoryNodeRow({
+  node,
+  level,
+  selectedPath,
+  nodes,
+  expanded,
+  loadingPath,
+  onSelect,
+  onToggle
+}: {
+  node: DirectoryNode;
+  level: number;
+  selectedPath: string;
+  nodes: Record<string, DirectoryNode>;
+  expanded: Record<string, boolean>;
+  loadingPath: string;
+  onSelect: (path: string) => void;
+  onToggle: (path: string) => void;
+}) {
+  const isExpanded = Boolean(expanded[node.path]);
+  const isSelected = selectedPath === node.path;
+  const children = node.children ?? [];
+
+  return (
+    <div>
+      <div className={cn('flex items-center gap-1 rounded-xl px-2 py-1.5', isSelected ? 'bg-blue-50 text-blue-700' : 'text-slate-700 hover:bg-white')} style={{ paddingLeft: `${8 + level * 18}px` }}>
+        <button
+          type="button"
+          onClick={() => onToggle(node.path)}
+          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100"
+          aria-label={isExpanded ? '收起目录' : '展开目录'}
+        >
+          <ChevronRight size={15} className={cn('transition', isExpanded && 'rotate-90')} />
+        </button>
+        <button type="button" onClick={() => onSelect(node.path)} className="flex min-w-0 flex-1 items-center gap-2 text-left">
+          <FolderOpen size={15} className="shrink-0" />
+          <span className="truncate">{node.name || node.path}</span>
+        </button>
+        {loadingPath === node.path ? <span className="text-xs text-slate-400">读取中</span> : null}
+      </div>
+      {isExpanded ? (
+        <div>
+          {children.length > 0 ? children.map((child) => {
+            const childNode = nodes[child.path] ?? { ...child, children: [] };
+            return (
+              <DirectoryNodeRow
+                key={child.path}
+                node={childNode}
+                level={level + 1}
+                selectedPath={selectedPath}
+                nodes={nodes}
+                expanded={expanded}
+                loadingPath={loadingPath}
+                onSelect={onSelect}
+                onToggle={onToggle}
+              />
+            );
+          }) : <div className="px-3 py-1.5 text-xs text-slate-400" style={{ paddingLeft: `${42 + level * 18}px` }}>没有子目录</div>}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ScanRuleEditor({ path, saving, onSave, compact = false }: { path: MonitorFolder; saving: boolean; onSave: (path: MonitorFolder, updates: Pick<MonitorFolder, 'ignorePatterns' | 'ignoreHidden' | 'minFileSizeBytes'>) => Promise<void>; compact?: boolean }) {
   const [patterns, setPatterns] = useState(path.ignorePatterns ?? '');
   const [hidden, setHidden] = useState(path.ignoreHidden);
   const [minSizeKb, setMinSizeKb] = useState(String(Math.round((path.minFileSizeBytes ?? 0) / 1024)));
@@ -703,7 +915,7 @@ function ScanRuleEditor({ path, saving, onSave }: { path: MonitorFolder; saving:
   }, [path]);
 
   return (
-    <div className="rounded-3xl border border-slate-200 bg-slate-50 p-5">
+    <div className={cn(!compact && 'rounded-3xl border border-slate-200 bg-slate-50 p-5')}>
       <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <div>
           <div className="font-semibold">{path.name}</div>

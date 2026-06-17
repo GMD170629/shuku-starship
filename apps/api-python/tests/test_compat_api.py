@@ -997,6 +997,136 @@ def test_regenerate_cover_uses_primary_edition_first_volume(client, db_session):
     assert after_cover_url != before_cover_url
 
 
+def test_move_volume_to_matching_target_edition_reassigns_and_reorders(client, db_session):
+    create_worker_tables(db_session)
+    _login(client, db_session)
+    user_id = db_session.query(User).filter(User.email == "admin@example.com").one().id
+    db_session.execute(
+        text(
+            """CREATE TABLE LibraryReadingProgress (
+                id TEXT PRIMARY KEY, userId TEXT, workId TEXT, editionId TEXT, volumeId TEXT, readerType TEXT,
+                position TEXT, page INTEGER, percent REAL, extra TEXT, createdAt TEXT, updatedAt TEXT
+            )"""
+        )
+    )
+    for work_id, title, work_type, edition_id, fmt in [
+        ("source-work", "Source Book", "EPUB", "source-edition", "EPUB"),
+        ("target-work", "Target Book", "EPUB", "target-edition", "EPUB"),
+        ("comic-work", "Comic Book", "COMIC", "comic-edition", "COMIC"),
+    ]:
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryWork (
+                    id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                    trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                    primaryEditionId, mergeKey, createdAt, updatedAt
+                ) VALUES (
+                    :work_id, :title, :normalized_title, 'Author', 'author', :work_type, 'WANT', 'UNKNOWN',
+                    'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', 0, 0,
+                    :edition_id, :merge_key, '2026-06-12T00:00:00', '2026-06-12T00:00:00'
+                )"""
+            ),
+            {
+                "work_id": work_id,
+                "title": title,
+                "normalized_title": title.lower().replace(" ", ""),
+                "work_type": work_type,
+                "edition_id": edition_id,
+                "merge_key": f"{fmt.lower()}:{work_id}:author",
+            },
+        )
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryEdition (
+                    id, workId, origin, format, versionName, versionKey, importStatus, sizeBytes,
+                    pageCount, chapterCount, coverStatus, "primary", hidden, createdAt, updatedAt
+                ) VALUES (
+                    :edition_id, :work_id, 'MANUAL', :fmt, 'Default', :edition_id,
+                    'COMPLETED', 0, 0, 0, 'PENDING', 1, 0, '2026-06-12T00:00:00', '2026-06-12T00:00:00'
+                )"""
+            ),
+            {"edition_id": edition_id, "work_id": work_id, "fmt": fmt},
+        )
+    for volume_id, edition_id, title, volume_index, sort_order in [
+        ("source-volume", "source-edition", "第 2 卷", 2, 2000),
+        ("target-volume-3", "target-edition", "第 3 卷", 3, 1000),
+        ("target-volume-1", "target-edition", "第 1 卷", 1, 3000),
+    ]:
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryVolume (
+                    id, editionId, title, volumeIndex, sortOrder, pageCount, chapterCount, coverPath, createdAt, updatedAt
+                ) VALUES (
+                    :volume_id, :edition_id, :title, :volume_index, :sort_order, NULL, 2, NULL,
+                    '2026-06-12T00:00:00', '2026-06-12T00:00:00'
+                )"""
+            ),
+            {"volume_id": volume_id, "edition_id": edition_id, "title": title, "volume_index": volume_index, "sort_order": sort_order},
+        )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryFile (
+                id, editionId, volumeId, path, filePathHash, fingerprint, fullHash, hashStatus, mtimeMs,
+                kind, mimeType, sizeBytes, sortOrder, createdAt, updatedAt
+            ) VALUES (
+                'source-file', 'source-edition', 'source-volume', '/books/source.epub', 'source-path',
+                'source-fingerprint', 'source-full', 'FAILED', 0, 'EPUB', 'application/epub+zip',
+                10, 0, '2026-06-12T00:00:00', '2026-06-12T00:00:00'
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryReadingUnit (
+                id, editionId, volumeId, fileId, unitType, title, href, mediaType, sortOrder, metadataJson, createdAt, updatedAt
+            ) VALUES (
+                'source-unit', 'source-edition', 'source-volume', 'source-file', 'chapter', '第一章',
+                'one.xhtml', 'application/xhtml+xml', 0, '{}', '2026-06-12T00:00:00', '2026-06-12T00:00:00'
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryReadingProgress (
+                id, userId, workId, editionId, volumeId, readerType, position, page, percent, extra, createdAt, updatedAt
+            ) VALUES (
+                'source-progress', :user_id, 'source-work', 'source-edition', 'source-volume', 'EPUB',
+                'cfi', 1, 50, '{}', '2026-06-12T00:00:00', '2026-06-12T00:00:00'
+            )"""
+        ),
+        {"user_id": user_id},
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO ImportTask (
+                id, workId, editionId, volumeId, origin, status, sourcePath, progress, duplicate, duration, createdAt, updatedAt
+            ) VALUES (
+                'source-import', 'source-work', 'source-edition', 'source-volume', 'MANUAL', 'COMPLETED',
+                '/books/source.epub', 100, 0, 0, '2026-06-12T00:00:00', '2026-06-12T00:00:00'
+            )"""
+        )
+    )
+    db_session.commit()
+
+    mismatch = client.post("/api/works/source-work/volumes/source-volume/move-to", json={"targetEditionId": "comic-edition"})
+    assert mismatch.status_code == 400
+    assert "相同格式" in mismatch.json()["error"]["message"]
+
+    response = client.post("/api/works/source-work/volumes/source-volume/move-to", json={"targetEditionId": "target-edition"})
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert db_session.execute(text("SELECT editionId FROM LibraryVolume WHERE id = 'source-volume'")).scalar() == "target-edition"
+    assert db_session.execute(text("SELECT editionId FROM LibraryFile WHERE id = 'source-file'")).scalar() == "target-edition"
+    assert db_session.execute(text("SELECT editionId FROM LibraryReadingUnit WHERE id = 'source-unit'")).scalar() == "target-edition"
+    progress = db_session.execute(text("SELECT workId, editionId FROM LibraryReadingProgress WHERE id = 'source-progress'")).mappings().one()
+    assert dict(progress) == {"workId": "target-work", "editionId": "target-edition"}
+    import_task = db_session.execute(text("SELECT workId, editionId FROM ImportTask WHERE id = 'source-import'")).mappings().one()
+    assert dict(import_task) == {"workId": "target-work", "editionId": "target-edition"}
+    order = db_session.execute(text("SELECT id FROM LibraryVolume WHERE editionId = 'target-edition' ORDER BY sortOrder ASC")).scalars().all()
+    assert order == ["target-volume-1", "source-volume", "target-volume-3"]
+
+
 def test_organize_jobs_return_frontend_contract(client, db_session):
     create_worker_tables(db_session)
     create_organize_detail_tables(db_session)
@@ -1141,9 +1271,36 @@ def test_import_tasks_return_logs_summary_and_rescan_contract(client, db_session
 
 def test_monitor_folder_and_system_settings_mutations(client, db_session, test_settings):
     test_settings.resolved_monitor_root.mkdir(parents=True)
+    (test_settings.resolved_monitor_root / "zeta").mkdir()
+    (test_settings.resolved_monitor_root / "alpha").mkdir()
+    (test_settings.resolved_monitor_root / "book.epub").write_text("demo", encoding="utf-8")
+    (test_settings.resolved_monitor_root / "alpha" / "nested").mkdir()
     second_root = test_settings.resolved_monitor_root.parent / "second-inbox"
     second_root.mkdir(parents=True)
     _login(client, db_session)
+
+    tree = client.get("/api/monitor-folders/tree")
+    assert tree.status_code == 200
+    tree_data = tree.json()["data"]
+    assert tree_data["monitorRoot"] == str(test_settings.resolved_monitor_root.resolve())
+    assert tree_data["node"]["path"] == str(test_settings.resolved_monitor_root.resolve())
+    assert [child["name"] for child in tree_data["node"]["children"]] == ["alpha", "zeta"]
+
+    child_tree = client.get("/api/monitor-folders/tree", params={"path": str(test_settings.resolved_monitor_root / "alpha")})
+    assert child_tree.status_code == 200
+    assert child_tree.json()["data"]["node"]["children"][0]["name"] == "nested"
+
+    outside_tree = client.get("/api/monitor-folders/tree", params={"path": str(second_root)})
+    assert outside_tree.status_code == 403
+    assert outside_tree.json()["ok"] is False
+
+    missing_tree = client.get("/api/monitor-folders/tree", params={"path": str(test_settings.resolved_monitor_root / "missing")})
+    assert missing_tree.status_code == 404
+    assert missing_tree.json()["ok"] is False
+
+    file_tree = client.get("/api/monitor-folders/tree", params={"path": str(test_settings.resolved_monitor_root / "book.epub")})
+    assert file_tree.status_code == 400
+    assert file_tree.json()["ok"] is False
 
     created = client.post(
         "/api/monitor-folders",
