@@ -33,6 +33,7 @@ COPY --from=builder /app/scripts/require-env.sh ./scripts/require-env.sh
 COPY --from=builder /app/scripts/start-unified-app.sh ./scripts/start-unified-app.sh
 COPY --from=builder /app/apps/web/.next/standalone ./
 COPY --from=builder /app/apps/web/.next/static ./apps/web/.next/static
+COPY --from=builder /app/apps/web/public ./apps/web/public
 COPY --from=builder /app/apps/api-python/app ./apps/api-python/app
 COPY --from=builder /app/apps/api-python/alembic ./apps/api-python/alembic
 COPY --from=builder /app/apps/api-python/alembic.ini ./apps/api-python/alembic.ini
