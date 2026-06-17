@@ -2,6 +2,8 @@
 
 import {
   Bell,
+  BookOpen,
+  ChevronLeft,
   ChevronRight,
   Cloud,
   Filter,
@@ -24,6 +26,9 @@ type ShelfFilter = 'all' | 'reading' | 'unread' | 'finished';
 type BooksPayload = { ok: boolean; data?: { books: WorkView[]; total: number }; error?: { message: string } };
 type ImportPayload = { ok: boolean; data?: { title: string; duplicate?: boolean }; error?: { message: string } };
 type ContinueItem = { book: WorkView; progress: number; lastReadAt: string; chapter: string | null } | null;
+type ReadingUnitView = { id: string; unitType: string; title: string; href: string; sortOrder: number; mediaType?: string | null; size?: string | number | null };
+type VolumeSectionView = { id: string; title: string; index: number; fileId: string; pageCount: number; coverUrl: string };
+type WorkDetailPayload = { ok: boolean; data?: { book: WorkView; readingUnits?: ReadingUnitView[]; volumeSections?: VolumeSectionView[] }; error?: { message: string } };
 type Summary = { totalBooks: number; latestSyncAt: string | null };
 type UserInfo = { email: string; name: string; role: string };
 type SystemStatus = {
@@ -31,6 +36,7 @@ type SystemStatus = {
   latestImportTask: { status: string; progress: number; finishedAt?: string | null } | null;
 };
 type OpenBookHandler = (book: WorkView, sourceElement?: HTMLElement | null) => void;
+type OpenReaderHandler = (book: WorkView, sourceElement?: HTMLElement | null, volumeId?: string | null) => void;
 const displayFont = '"Songti SC", "STSong", "Noto Serif CJK SC", serif';
 type MobileScaleStyle = CSSProperties & { '--mobile-scale'?: string };
 const mobileDesignWidth = 426.5;
@@ -107,11 +113,12 @@ function readableEditionId(book: WorkView) {
   return book.recentEditionId ?? book.editionId ?? book.primaryEditionId ?? book.editions.find((edition) => !edition.hidden)?.id ?? null;
 }
 
-function readerUrlForBook(book: WorkView, tab: MobileTab) {
+function readerUrlForBook(book: WorkView, tab: MobileTab, volumeId?: string | null) {
   const editionId = readableEditionId(book);
   if (!editionId) return null;
   const params = new URLSearchParams({ from: 'mobile', tab });
-  if (book.recentVolumeId) params.set('volume', book.recentVolumeId);
+  const targetVolumeId = volumeId ?? book.recentVolumeId;
+  if (targetVolumeId) params.set('volume', targetVolumeId);
   return `/reader/${editionId}?${params.toString()}`;
 }
 
@@ -155,12 +162,19 @@ export function MobileReaderApp() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  const [detailBookId, setDetailBookId] = useState('');
+  const [detailBook, setDetailBook] = useState<WorkView | null>(null);
+  const [detailReadingUnits, setDetailReadingUnits] = useState<ReadingUnitView[]>([]);
+  const [detailVolumeSections, setDetailVolumeSections] = useState<VolumeSectionView[]>([]);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState('');
 
   useEffect(() => {
     setTab(readSavedTab());
   }, []);
 
   function selectTab(nextTab: MobileTab) {
+    setDetailBookId('');
     setTab(nextTab);
     window.localStorage.setItem('shuku.mobile.tab', nextTab);
   }
@@ -221,6 +235,30 @@ export function MobileReaderApp() {
     return () => window.clearTimeout(timer);
   }, [searchText]);
 
+  useEffect(() => {
+    if (!detailBookId) return;
+    let active = true;
+    setDetailLoading(true);
+    setDetailError('');
+    fetch(`/api/works/${detailBookId}`)
+      .then((response) => readMobilePayload<WorkDetailPayload>(response, '读取图书详情失败'))
+      .then((payload) => {
+        if (!active) return;
+        if (payload.data?.book) setDetailBook(payload.data.book);
+        setDetailReadingUnits(payload.data?.readingUnits ?? []);
+        setDetailVolumeSections(payload.data?.volumeSections ?? []);
+      })
+      .catch((reason) => {
+        if (active) setDetailError(reason instanceof Error ? reason.message : '读取图书详情失败');
+      })
+      .finally(() => {
+        if (active) setDetailLoading(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [detailBookId]);
+
   const baseShelfBooks = searchText.trim() ? searchBooks : books;
   const shelfBooks = useMemo(() => baseShelfBooks.filter((book) => shelfFilterMatches(book, shelfFilter)), [baseShelfBooks, shelfFilter]);
   const readingBooks = useMemo(
@@ -236,8 +274,27 @@ export function MobileReaderApp() {
     });
   }, [books, readingBooks]);
 
-  function openReader(book: WorkView, sourceElement?: HTMLElement | null) {
-    const url = readerUrlForBook(book, tab);
+  function openBookDetail(book: WorkView) {
+    setDetailBook(book);
+    setDetailReadingUnits([]);
+    setDetailVolumeSections(book.volumes.map((volume) => ({
+      id: volume.id,
+      title: volume.title,
+      index: volume.volumeIndex ?? volume.sortOrder ?? 0,
+      fileId: volume.id,
+      pageCount: volume.pageCount ?? volume.chapterCount ?? 0,
+      coverUrl: volume.coverUrl
+    })));
+    setDetailBookId(book.id);
+  }
+
+  function closeBookDetail() {
+    setDetailBookId('');
+    setDetailError('');
+  }
+
+  function openReader(book: WorkView, sourceElement?: HTMLElement | null, volumeId?: string | null) {
+    const url = readerUrlForBook(book, tab, volumeId);
     if (!url) return;
     storeReaderOpeningContext(book, sourceElement);
     router.push(url);
@@ -289,7 +346,19 @@ export function MobileReaderApp() {
             padding: `${sv(25)} ${sv(27.5)} calc(${sv(88)} + env(safe-area-inset-bottom))`
           }}
         >
-          {tab === 'home' ? (
+          {detailBookId && detailBook ? (
+            <MobileBookDetailView
+              book={detailBook}
+              error={detailError}
+              loading={detailLoading}
+              readingUnits={detailReadingUnits}
+              volumeSections={detailVolumeSections}
+              onBack={closeBookDetail}
+              onOpenReader={openReader}
+            />
+          ) : null}
+
+          {!detailBookId && tab === 'home' ? (
             <HomeView
               books={books}
               continueItem={continueItem}
@@ -302,12 +371,13 @@ export function MobileReaderApp() {
               onGoMe={() => selectTab('me')}
               onGoShelf={() => selectTab('shelf')}
               onGoShelfSearch={goShelfSearch}
-              onOpenBook={openReader}
+              onOpenBook={openBookDetail}
+              onOpenReader={openReader}
               onUpload={() => uploadInputRef.current?.click()}
             />
           ) : null}
 
-          {tab === 'shelf' ? (
+          {!detailBookId && tab === 'shelf' ? (
             <ShelfView
               books={shelfBooks}
               allBooks={books}
@@ -319,13 +389,13 @@ export function MobileReaderApp() {
               searchLoading={searchLoading}
               searchText={searchText}
               onFilterChange={setShelfFilter}
-              onOpenBook={openReader}
+              onOpenBook={openBookDetail}
               onSearchTextChange={setSearchText}
               onUpload={() => uploadInputRef.current?.click()}
             />
           ) : null}
 
-          {tab === 'me' ? (
+          {!detailBookId && tab === 'me' ? (
             <MeView
               user={user}
               summary={summary}
@@ -485,6 +555,7 @@ function HomeView({
   onGoShelf,
   onGoShelfSearch,
   onOpenBook,
+  onOpenReader,
   onUpload
 }: {
   books: WorkView[];
@@ -499,6 +570,7 @@ function HomeView({
   onGoShelf: () => void;
   onGoShelfSearch: () => void;
   onOpenBook: OpenBookHandler;
+  onOpenReader: OpenReaderHandler;
   onUpload: () => void;
 }) {
   return (
@@ -521,7 +593,7 @@ function HomeView({
       {error ? <Notice tone="error">{error}</Notice> : null}
       {loading ? <LoadingBlock label="正在读取书架..." /> : null}
 
-      {!loading && continueItem ? <div style={{ marginTop: sv(10) }}><ContinueCard item={continueItem} onOpenBook={onOpenBook} /></div> : null}
+      {!loading && continueItem ? <div style={{ marginTop: sv(10) }}><ContinueCard item={continueItem} onOpenBook={onOpenBook} onOpenReader={onOpenReader} /></div> : null}
       {!loading && !continueItem && books.length === 0 ? <EmptyLibrary onUpload={onUpload} /> : null}
 
       {!loading && recentBooks.length > 0 ? (
@@ -584,7 +656,7 @@ function ShelfOverviewHeader({ onAction }: { onAction: () => void }) {
   );
 }
 
-function ContinueCard({ item, onOpenBook }: { item: NonNullable<ContinueItem>; onOpenBook: OpenBookHandler }) {
+function ContinueCard({ item, onOpenBook, onOpenReader }: { item: NonNullable<ContinueItem>; onOpenBook: OpenBookHandler; onOpenReader: OpenReaderHandler }) {
   const entryRef = useRef<HTMLElement>(null);
   const progressLabel = `${Math.round(item.progress)}%`;
 
@@ -600,7 +672,7 @@ function ContinueCard({ item, onOpenBook }: { item: NonNullable<ContinueItem>; o
         onClick={() => onOpenBook(item.book, entryRef.current)}
         className="h-full shrink-0 transition active:scale-[0.99]"
         style={{ width: sv(120) }}
-        aria-label={`继续阅读 ${item.book.title}`}
+        aria-label={`打开 ${item.book.title} 详情`}
       >
         <Cover book={item.book} size="medium" className="h-full w-full rounded-none shadow-none" />
       </button>
@@ -612,12 +684,19 @@ function ContinueCard({ item, onOpenBook }: { item: NonNullable<ContinueItem>; o
           >
             {isComic(item.book) ? '漫画' : item.book.format}
           </span>
-          <h2
-            className="line-clamp-2 overflow-hidden break-words font-medium tracking-normal text-[#211C17]"
-            style={{ marginTop: sv(7), fontFamily: displayFont, fontSize: sv(16.5), lineHeight: sv(20) }}
+          <button
+            type="button"
+            onClick={() => onOpenBook(item.book, entryRef.current)}
+            className="block w-full text-left"
+            aria-label={`打开 ${item.book.title} 详情`}
           >
-            {item.book.title}
-          </h2>
+            <h2
+              className="line-clamp-2 overflow-hidden break-words font-medium tracking-normal text-[#211C17]"
+              style={{ marginTop: sv(7), fontFamily: displayFont, fontSize: sv(16.5), lineHeight: sv(20) }}
+            >
+              {item.book.title}
+            </h2>
+          </button>
           <div className="truncate text-[#4D443C]" style={{ marginTop: sv(5), fontSize: sv(11), lineHeight: sv(13) }}>{bookMeta(item.book)}</div>
         </div>
         <div className="shrink-0" style={{ marginTop: sv(8) }}>
@@ -632,7 +711,7 @@ function ContinueCard({ item, onOpenBook }: { item: NonNullable<ContinueItem>; o
           <div className="flex" style={{ marginTop: sv(9), gap: sv(12) }}>
             <button
               type="button"
-              onClick={() => onOpenBook(item.book, entryRef.current)}
+              onClick={() => onOpenReader(item.book, entryRef.current)}
               className="inline-flex flex-1 items-center justify-center bg-[#C76E08] font-semibold text-white shadow-sm transition active:scale-[0.98]"
               style={{ minHeight: `max(44px, ${sv(30)})`, borderRadius: sv(4), paddingLeft: sv(20), paddingRight: sv(20), fontSize: sv(13) }}
             >
@@ -640,10 +719,10 @@ function ContinueCard({ item, onOpenBook }: { item: NonNullable<ContinueItem>; o
             </button>
             <button
               type="button"
-              onClick={(event) => event.stopPropagation()}
+              onClick={() => onOpenBook(item.book, entryRef.current)}
               className="flex shrink-0 items-center justify-center border border-[#DCD1BF] bg-[#FBF8F1] text-[#4D443C] transition active:scale-[0.98]"
               style={{ height: `max(44px, ${sv(30)})`, width: `max(44px, ${sv(30)})`, borderRadius: sv(5) }}
-              aria-label="更多"
+              aria-label="打开详情"
             >
               <MoreHorizontal size={sv(18)} />
             </button>
@@ -810,6 +889,247 @@ function CompactBookTile({ book, onOpen, preview }: { book: WorkView; onOpen: Op
       </div>
     </button>
   );
+}
+
+function MobileBookDetailView({
+  book,
+  error,
+  loading,
+  readingUnits,
+  volumeSections,
+  onBack,
+  onOpenReader
+}: {
+  book: WorkView;
+  error: string;
+  loading: boolean;
+  readingUnits: ReadingUnitView[];
+  volumeSections: VolumeSectionView[];
+  onBack: () => void;
+  onOpenReader: OpenReaderHandler;
+}) {
+  const coverRef = useRef<HTMLDivElement>(null);
+  const currentPosition = readingPositionLabel(book);
+  const contentStats = contentStatsLabel(book, readingUnits, volumeSections);
+  const visibleVolumes = volumeSections.length > 0 ? volumeSections : book.volumes.map((volume) => ({
+    id: volume.id,
+    title: volume.title,
+    index: volume.volumeIndex ?? volume.sortOrder ?? 0,
+    fileId: volume.id,
+    pageCount: volume.pageCount ?? volume.chapterCount ?? 0,
+    coverUrl: volume.coverUrl
+  }));
+  const selectedVolumeId = book.recentVolumeId ?? visibleVolumes[0]?.id ?? null;
+  const chapterRows = detailChapterRows(book, readingUnits, visibleVolumes);
+
+  return (
+    <div className="space-y-3">
+      <header className="grid grid-cols-[44px_minmax(0,1fr)_44px] items-center" style={{ minHeight: `max(44px, ${sv(36)})`, gap: sv(8) }}>
+        <HeaderIconButton label="返回" onClick={onBack}>
+          <ChevronLeft size={sv(22)} strokeWidth={2.3} />
+        </HeaderIconButton>
+        <div className="truncate text-center font-semibold text-[#302922]" style={{ fontSize: sv(14), lineHeight: sv(18) }}>图书详情</div>
+        <div aria-hidden="true" />
+      </header>
+
+      {error ? <Notice tone="error">{error}</Notice> : null}
+      {loading ? <LoadingBlock label="正在更新目录..." /> : null}
+
+      <section className="flex items-center" style={{ gap: sv(16), paddingTop: sv(2), paddingBottom: sv(4) }}>
+        <div ref={coverRef} className="shrink-0" style={{ width: sv(116) }}>
+          <Cover
+            book={book}
+            size="large"
+            className="aspect-[0.68] w-full"
+            style={{ borderRadius: sv(7), boxShadow: `0 ${sv(12)} ${sv(26)} rgba(55,35,18,0.18)` }}
+          />
+        </div>
+        <div className="min-w-0 flex-1 text-left">
+          <h1
+            className="line-clamp-3 font-medium tracking-normal text-[#211C17]"
+            style={{ fontFamily: displayFont, fontSize: sv(20), lineHeight: sv(25) }}
+          >
+            {book.title}
+          </h1>
+          <div className="mt-1 line-clamp-2 text-[#6B6259]" style={{ fontSize: sv(11.5), lineHeight: sv(16) }}>
+            {book.author} · {book.format} · {contentStats}
+          </div>
+          <div className="mt-3">
+            <div className="flex items-end justify-between text-[#5E5349]" style={{ gap: sv(10), fontSize: sv(11.5), lineHeight: sv(15) }}>
+              <span className="min-w-0 truncate">{currentPosition}</span>
+              <span className="shrink-0 font-semibold text-[#211C17]">{Math.round(book.progress)}%</span>
+            </div>
+            <BookProgress value={book.progress} style={{ height: sv(4), marginTop: sv(7) }} />
+          </div>
+          <button
+            type="button"
+            onClick={() => onOpenReader(book, coverRef.current)}
+            className="mt-3 inline-flex w-full items-center justify-center bg-[#B7660B] font-semibold text-white shadow-[0_6px_14px_rgba(183,102,11,0.16)] transition active:scale-[0.99]"
+            style={{ minHeight: `max(44px, ${sv(38)})`, borderRadius: sv(7), gap: sv(7), fontSize: sv(13.5) }}
+          >
+            <BookOpen size={sv(17)} strokeWidth={2.4} />
+            继续阅读
+          </button>
+        </div>
+      </section>
+
+      <section className="grid grid-cols-3 border-y border-[#E1D8CB]" style={{ paddingTop: sv(11), paddingBottom: sv(11), gap: sv(10) }}>
+        <ReadingMetric label="上次阅读" value={formatCompactDate(book.lastReadAt)} />
+        <ReadingMetric label="当前位置" value={shortPositionLabel(book)} />
+        <ReadingMetric label="阅读剩余" value={remainingEstimate(book)} />
+      </section>
+
+      {visibleVolumes.length > 1 ? (
+        <section>
+          <SectionTitle title="卷册" meta={`${visibleVolumes.length} 卷`} />
+          <div
+            data-pwa-scroll-x="true"
+            className="-mx-1 flex overflow-x-auto px-1"
+            style={{ gap: sv(8), paddingBottom: sv(6), scrollbarWidth: 'none' }}
+          >
+            {visibleVolumes.map((volume, index) => {
+              const selected = volume.id === selectedVolumeId;
+              return (
+                <button
+                  key={volume.id}
+                  type="button"
+                  onClick={() => onOpenReader(book, coverRef.current, volume.id)}
+                  className={cn(
+                    'shrink-0 border font-medium transition active:scale-[0.98]',
+                    selected ? 'border-[#B7660B] bg-[#FFF5E7] text-[#8D4E07]' : 'border-[#DED5C7] bg-[#FBF8F1] text-[#5E5349]'
+                  )}
+                  style={{ minHeight: `max(44px, ${sv(36)})`, borderRadius: sv(999), paddingLeft: sv(14), paddingRight: sv(14), fontSize: sv(12) }}
+                >
+                  {volume.title || `第 ${index + 1} 卷`}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
+
+      <section>
+        <SectionTitle title="章节" meta={chapterRows.length > 0 ? `${chapterRows.length} 项` : '目录'} />
+        <div className="overflow-hidden border-y border-[#E1D8CB]">
+          {chapterRows.length > 0 ? chapterRows.map((row) => (
+            <button
+              key={row.key}
+              type="button"
+              onClick={() => onOpenReader(book, coverRef.current, row.volumeId)}
+              className={cn('flex w-full items-center text-left transition active:bg-[#EFE4D6]', row.current ? 'bg-[#FFF7EA] text-[#211C17]' : row.read ? 'text-[#92877B]' : 'text-[#4D443C]')}
+              style={{ minHeight: `max(44px, ${sv(40)})`, gap: sv(11), borderBottom: '1px solid #E8DED1', fontSize: sv(13) }}
+            >
+              <span
+                className={cn('flex shrink-0 items-center justify-center rounded-full font-semibold', row.current ? 'bg-[#B7660B] text-white' : row.read ? 'bg-[#EAE1D3] text-[#8B8177]' : 'bg-transparent text-[#8B8177]')}
+                style={{ height: sv(22), width: sv(22), fontSize: sv(10) }}
+              >
+                {row.current ? '读' : row.read ? '✓' : row.indexLabel}
+              </span>
+              <span className={cn('min-w-0 flex-1 truncate', row.current ? 'font-semibold' : 'font-medium')}>{row.title}</span>
+              {row.current ? <span className="shrink-0 text-[#A65B08]" style={{ fontSize: sv(11) }}>当前</span> : null}
+            </button>
+          )) : (
+            <button
+              type="button"
+              onClick={() => onOpenReader(book, coverRef.current)}
+              className="flex w-full items-center justify-between text-left text-[#4D443C]"
+              style={{ minHeight: `max(50px, ${sv(46)})`, fontSize: sv(13) }}
+            >
+              <span>{book.formatValue === 'EPUB' ? '全文阅读' : '暂无章节信息'}</span>
+              <ChevronRight size={sv(16)} />
+            </button>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ReadingMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[#8B8177]" style={{ fontSize: sv(10.5), lineHeight: sv(14) }}>{label}</div>
+      <div className="mt-1 truncate font-semibold text-[#211C17]" style={{ fontSize: sv(12), lineHeight: sv(16) }}>{value}</div>
+    </div>
+  );
+}
+
+function SectionTitle({ title, meta }: { title: string; meta: string }) {
+  return (
+    <div className="flex items-center justify-between" style={{ marginBottom: sv(9), minHeight: sv(24), gap: sv(12) }}>
+      <h2 className="font-medium text-[#211C17]" style={{ fontFamily: displayFont, fontSize: sv(18), lineHeight: sv(23) }}>{title}</h2>
+      <span className="text-[#8B8177]" style={{ fontSize: sv(11), lineHeight: sv(15) }}>{meta}</span>
+    </div>
+  );
+}
+
+function contentStatsLabel(book: WorkView, readingUnits: ReadingUnitView[], volumeSections: VolumeSectionView[]) {
+  const volumeCount = volumeSections.length || book.volumeCount || book.volumes.length;
+  const chapterCount = readingUnits.length || book.chapterCount || book.totalUnits;
+  const parts = [
+    volumeCount > 0 ? `${volumeCount} 卷` : '',
+    chapterCount > 0 ? `${chapterCount} ${isComic(book) ? '页' : '章'}` : ''
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(' · ') : book.size;
+}
+
+function readingPositionLabel(book: WorkView) {
+  if (book.chapter && book.chapter !== '未开始') return `阅读至 ${book.chapter}`;
+  if (book.progress > 0) return '阅读至上次停下的位置';
+  return '还未开始阅读';
+}
+
+function shortPositionLabel(book: WorkView) {
+  if (book.chapter && book.chapter !== '未开始') return book.chapter.replace(/^阅读至\s*/, '');
+  if (book.progress > 0) return `${Math.round(book.progress)}%`;
+  return '未开始';
+}
+
+function formatCompactDate(value: string | null | undefined) {
+  if (!value) return '暂无';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '暂无';
+  return date.toLocaleString(undefined, { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function remainingEstimate(book: WorkView) {
+  if (book.progress >= 100) return '已读完';
+  if (book.progress <= 0) return '待开始';
+  const remaining = Math.max(1, Math.round((100 - book.progress) / 12));
+  return `约 ${remaining} 小时`;
+}
+
+function detailChapterRows(book: WorkView, readingUnits: ReadingUnitView[], volumes: VolumeSectionView[]) {
+  const hasReadingPosition = Boolean(book.lastReadAt || (book.chapter && book.chapter !== '未开始'));
+  if (readingUnits.length > 0) {
+    const currentIndex = Math.max(0, Math.min(readingUnits.length - 1, Math.round((book.progress / 100) * Math.max(0, readingUnits.length - 1))));
+    return readingUnits.map((unit, absoluteIndex) => {
+      const current = absoluteIndex === currentIndex && hasReadingPosition && book.progress < 100;
+      return {
+        key: unit.id,
+        title: unit.title || `第 ${unit.sortOrder || absoluteIndex + 1} 章`,
+        indexLabel: String((unit.sortOrder || absoluteIndex + 1) % 100).padStart(2, '0'),
+        read: !current && (absoluteIndex < currentIndex || book.progress >= 100),
+        current,
+        volumeId: null
+      };
+    });
+  }
+  if (volumes.length > 0) {
+    const currentIndex = Math.max(0, volumes.findIndex((volume) => volume.id === book.recentVolumeId));
+    return volumes.map((volume, absoluteIndex) => {
+      const current = (volume.id === book.recentVolumeId || (!book.recentVolumeId && absoluteIndex === 0)) && hasReadingPosition && book.progress < 100;
+      return {
+        key: volume.id,
+        title: volume.title || `第 ${absoluteIndex + 1} 卷`,
+        indexLabel: String(absoluteIndex + 1).padStart(2, '0'),
+        read: !current && (absoluteIndex < currentIndex || book.progress >= 100),
+        current,
+        volumeId: volume.id
+      };
+    });
+  }
+  return [];
 }
 
 function MeView({
