@@ -1,4 +1,4 @@
-const VERSION = 'shuku-pwa-v0.4.6';
+const VERSION = 'shuku-pwa-v0.4.7';
 const SHELL_CACHE = `${VERSION}-app-shell`;
 const STATIC_CACHE = `${VERSION}-static`;
 const PRIVATE_COVER_CACHE = `${VERSION}-private-cover`;

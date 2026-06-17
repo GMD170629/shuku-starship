@@ -6,7 +6,6 @@ import { FeedbackProvider } from '../components/ui/feedback';
 export const metadata: Metadata = {
   title: '书库星舰',
   description: '自托管 NAS 读物管理与移动阅读系统',
-  manifest: '/manifest.webmanifest',
   appleWebApp: {
     capable: true,
     statusBarStyle: 'black-translucent',
@@ -40,6 +39,9 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="zh-CN">
+      <head>
+        <link rel="manifest" href="/manifest.webmanifest" />
+      </head>
       <body>
         <FeedbackProvider>
           <AppShell>{children}</AppShell>

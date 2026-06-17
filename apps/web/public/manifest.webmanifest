@@ -2,6 +2,7 @@
   "name": "书库星舰",
   "short_name": "书库星舰",
   "description": "自托管 NAS 读物管理与移动阅读系统",
+  "id": "/",
   "start_url": "/mobile?source=pwa",
   "scope": "/",
   "display": "standalone",
