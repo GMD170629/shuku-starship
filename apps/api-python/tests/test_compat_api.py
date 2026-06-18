@@ -747,6 +747,165 @@ def test_works_series_filter_is_exact_and_accepts_unicode_names(client, db_sessi
     assert [book["id"] for book in payload["data"]["books"]] == ["exact-2", "exact-1"]
 
 
+def test_works_library_filters_cover_type_status_tags_and_import_state(client, db_session):
+    create_worker_tables(db_session)
+    _login(client, db_session)
+    fixtures = [
+        ("comic-ready", "漫画成品", "COMIC", "READING", "ONGOING", "TRACKING", '["侦探", "漫画"]', "READY", "covers/comic.jpg", 1, "APPLIED", "2026-06-10T10:00:00"),
+        ("comic-new", "漫画新导入", "COMIC", "WANT", "UNKNOWN", "NOT_TRACKING", '["新导入"]', "PENDING", None, 0, "REVIEWING", "2026-06-11T10:00:00"),
+        ("epub-ready", "电子书", "EPUB", "FINISHED", "COMPLETED", "PAUSED", '["侦探"]', "READY", "covers/epub.jpg", 1, "APPLIED", "2026-06-09T10:00:00"),
+        ("pdf-ready", "PDF 手册", "PDF", "WANT", "UNKNOWN", "NOT_TRACKING", '[]', "READY", "covers/pdf.jpg", 1, "APPLIED", "2026-06-08T10:00:00"),
+    ]
+    for work_id, title, work_type, status, publication_status, tracking_status, tags, cover_status, cover_path, organized, organize_status, created_at in fixtures:
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryWork (
+                    id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                    trackingStatus, tags, metadataQuality, organizeStatus, coverPath, coverStatus, hidden, organized,
+                    mergeKey, createdAt, updatedAt
+                ) VALUES (
+                    :id, :title, :normalized_title, 'Author', 'author', :work_type, :status, :publication_status,
+                    :tracking_status, :tags, 0, :organize_status, :cover_path, :cover_status, 0, :organized,
+                    :merge_key, :created_at, :created_at
+                )"""
+            ),
+            {
+                "id": work_id,
+                "title": title,
+                "normalized_title": title.lower().replace(" ", ""),
+                "work_type": work_type,
+                "status": status,
+                "publication_status": publication_status,
+                "tracking_status": tracking_status,
+                "tags": tags,
+                "cover_status": cover_status,
+                "cover_path": cover_path,
+                "organized": organized,
+                "organize_status": organize_status,
+                "merge_key": f"{work_type.lower()}:{work_id}:author",
+                "created_at": created_at,
+            },
+        )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryEdition (
+                id, workId, origin, format, importStatus, sizeBytes, "primary", hidden, createdAt, updatedAt
+            ) VALUES
+                ('comic-ready-edition', 'comic-ready', 'MANUAL', 'COMIC', 'IMPORTED', 10, 1, 0, 'now', 'now'),
+                ('comic-new-edition', 'comic-new', 'MANUAL', 'COMIC', 'IMPORTED', 10, 1, 0, 'now', 'now'),
+                ('epub-ready-edition', 'epub-ready', 'MANUAL', 'EPUB', 'IMPORTED', 10, 1, 0, 'now', 'now'),
+                ('pdf-ready-edition', 'pdf-ready', 'MANUAL', 'PDF', 'IMPORTED', 10, 1, 0, 'now', 'now')
+            """
+        )
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryFile (
+                id, editionId, path, kind, mimeType, sizeBytes, sortOrder, createdAt, updatedAt
+            ) VALUES
+                ('comic-ready-file', 'comic-ready-edition', '/books/comic-ready.cbz', 'COMIC', 'application/zip', 10, 0, 'now', 'now'),
+                ('comic-new-file', 'comic-new-edition', '/books/comic-new.zip', 'COMIC', 'application/zip', 10, 0, 'now', 'now')
+            """
+        )
+    )
+    db_session.commit()
+
+    cases = [
+        ({"type": "COMIC"}, ["comic-new", "comic-ready"]),
+        ({"type": "ebook"}, ["epub-ready", "pdf-ready"]),
+        ({"type": "ZIP"}, ["comic-new"]),
+        ({"status": "READING"}, ["comic-ready"]),
+        ({"publicationStatus": "ONGOING"}, ["comic-ready"]),
+        ({"trackingStatus": "TRACKING"}, ["comic-ready"]),
+        ({"tag": "侦探"}, ["comic-ready", "epub-ready"]),
+        ({"missingCover": "true"}, ["comic-new"]),
+        ({"newImport": "true"}, ["comic-new"]),
+    ]
+    for params, expected_ids in cases:
+        response = client.get("/api/works", params={**params, "sort": "recent_import"})
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["ok"] is True
+        assert [book["id"] for book in payload["data"]["books"]] == expected_ids
+
+
+def test_works_recent_read_sort_uses_latest_user_progress_across_pages(client, db_session):
+    create_worker_tables(db_session)
+    _login(client, db_session)
+    user_id = db_session.query(User).filter(User.email == "admin@example.com").one().id
+    db_session.execute(
+        text(
+            """
+            CREATE TABLE IF NOT EXISTS LibraryReadingProgress (
+                id TEXT PRIMARY KEY, userId TEXT, workId TEXT, editionId TEXT, volumeId TEXT,
+                readerType TEXT, position TEXT, page INTEGER, percent REAL, extra TEXT,
+                createdAt TEXT, updatedAt TEXT
+            )
+            """
+        )
+    )
+    fixtures = [
+        ("work-old", "较早阅读", "2026-06-12T10:00:00"),
+        ("work-new", "最近阅读", "2026-06-10T10:00:00"),
+        ("work-unread", "尚未阅读", "2026-06-18T10:00:00"),
+    ]
+    for work_id, title, updated_at in fixtures:
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryWork (
+                    id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                    trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                    mergeKey, createdAt, updatedAt
+                ) VALUES (
+                    :id, :title, :normalized_title, 'Author', 'author', 'EPUB', 'WANT', 'UNKNOWN',
+                    'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', 0, 0,
+                    :merge_key, '2026-06-01T10:00:00', :updated_at
+                )"""
+            ),
+            {
+                "id": work_id,
+                "title": title,
+                "normalized_title": title.lower().replace(" ", ""),
+                "merge_key": f"epub:{work_id}:author",
+                "updated_at": updated_at,
+            },
+        )
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryEdition (
+                    id, workId, origin, format, importStatus, sizeBytes, "primary", hidden, createdAt, updatedAt
+                ) VALUES (:id, :work_id, 'MANUAL', 'EPUB', 'IMPORTED', 10, 1, 0, 'now', 'now')"""
+            ),
+            {"id": f"{work_id}-edition", "work_id": work_id},
+        )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryReadingProgress (
+                id, userId, workId, editionId, volumeId, readerType, position, page, percent, extra, createdAt, updatedAt
+            ) VALUES
+                ('progress-old', :user_id, 'work-old', 'work-old-edition', NULL, 'epub', 'cfi-old', 1, 20, '{}', '2026-06-15T08:00:00', '2026-06-15T08:00:00'),
+                ('progress-new', :user_id, 'work-new', 'work-new-edition', NULL, 'epub', 'cfi-new', 2, 40, '{}', '2026-06-17T09:00:00', '2026-06-17T09:00:00')
+            """
+        ),
+        {"user_id": user_id},
+    )
+    db_session.commit()
+
+    response = client.get("/api/works", params={"sort": "recent_read", "pageSize": 3})
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    books = payload["data"]["books"]
+    assert [book["id"] for book in books] == ["work-new", "work-old", "work-unread"]
+    assert books[0]["lastRead"] == "2026-06-17"
+    assert books[0]["lastReadAt"] == "2026-06-17T09:00:00"
+    assert books[2]["lastRead"] == "尚未阅读"
+    assert books[2]["lastReadAt"] is None
+
+    second_page = client.get("/api/works", params={"sort": "recent_read", "pageSize": 1, "page": 2}).json()
+    assert second_page["data"]["books"][0]["id"] == "work-old"
+
+
 def test_update_work_accepts_empty_numeric_metadata_from_forms(client, db_session):
     create_worker_tables(db_session)
     work_columns = {row[1] for row in db_session.execute(text("PRAGMA table_info(LibraryWork)")).all()}

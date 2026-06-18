@@ -37,7 +37,7 @@ const sortOptions = [
 const formatOptions = [
   { value: '全部', label: '全部' },
   { value: 'ebook', label: '电子书' },
-  { value: 'comic', label: '漫画' }
+  { value: 'COMIC', label: '漫画' }
 ];
 
 const bulkFormatOptions = [

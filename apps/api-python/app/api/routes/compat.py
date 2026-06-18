@@ -1332,14 +1332,84 @@ def list_works(request: Request, page: int = 1, pageSize: int = 24, visibility: 
             search_fields.append("`seriesName` LIKE :term")
         where.append(f"({' OR '.join(search_fields)})")
         params["term"] = f"%{term}%"
+    type_filter = (request.query_params.get("type") or request.query_params.get("format") or "").strip()
+    normalized_type = type_filter.upper()
+    if type_filter.lower() == "ebook":
+        where.append("`workType` IN ('EPUB', 'PDF')")
+    elif normalized_type in {"COMIC", "EPUB", "PDF"}:
+        where.append("`workType` = :work_type")
+        params["work_type"] = normalized_type
+    elif normalized_type in {"CBZ", "ZIP"} and _has_table(db, "LibraryFile"):
+        where.append(
+            """EXISTS (
+                SELECT 1 FROM `LibraryEdition` le
+                JOIN `LibraryFile` lf ON lf.`editionId` = le.`id`
+                WHERE le.`workId` = `LibraryWork`.`id`
+                AND LOWER(lf.`path`) LIKE :file_extension
+            )"""
+        )
+        params["file_extension"] = f"%.{normalized_type.lower()}"
+    status = (request.query_params.get("status") or "").strip().upper()
+    if status in {"WANT", "READING", "FINISHED"}:
+        where.append("`status` = :status")
+        params["status"] = status
+    publication_status = (request.query_params.get("publicationStatus") or "").strip().upper()
+    if publication_status in {"UNKNOWN", "ONGOING", "COMPLETED", "HIATUS", "CANCELLED"}:
+        where.append("`publicationStatus` = :publication_status")
+        params["publication_status"] = publication_status
+    tracking_status = (request.query_params.get("trackingStatus") or "").strip().upper()
+    if tracking_status in {"NOT_TRACKING", "TRACKING", "PAUSED", "IGNORED"}:
+        where.append("`trackingStatus` = :tracking_status")
+        params["tracking_status"] = tracking_status
+    tag = (request.query_params.get("tag") or "").strip()
+    if tag:
+        where.append("`tags` LIKE :tag")
+        params["tag"] = f"%{tag}%"
+    if (request.query_params.get("missingCover") or "").lower() == "true" and _has_column(db, "LibraryWork", "coverPath"):
+        where.append("(`coverPath` IS NULL OR TRIM(`coverPath`) = '' OR `coverStatus` != 'READY')")
+    if (request.query_params.get("newImport") or "").lower() == "true":
+        where.append("(`organized` = 0 OR `organizeStatus` IN ('PENDING', 'REVIEWING'))")
     series_name = (seriesName or "").strip()
     if series_name and _has_column(db, "LibraryWork", "seriesName"):
         where.append("TRIM(`seriesName`) = :series_name")
         params["series_name"] = series_name
     where_sql = " AND ".join(where) if where else "1 = 1"
-    order = "CASE WHEN `seriesIndex` IS NULL THEN 1 ELSE 0 END ASC, `seriesIndex` ASC, `title` ASC" if sort == "series_index" and _has_column(db, "LibraryWork", "seriesIndex") else "`title` ASC" if sort == "title" else "`author` ASC" if sort == "author" else "`updatedAt` DESC"
+    order = (
+        "CASE WHEN `seriesIndex` IS NULL THEN 1 ELSE 0 END ASC, `seriesIndex` ASC, `title` ASC"
+        if sort == "series_index" and _has_column(db, "LibraryWork", "seriesIndex")
+        else "`title` ASC"
+        if sort == "title"
+        else "`author` ASC"
+        if sort == "author"
+        else "`createdAt` DESC"
+        if sort == "recent_import"
+        else "`updatedAt` DESC"
+    )
     total = _table_count(db, "LibraryWork", where_sql, params)
-    works = _rows(db, f"SELECT * FROM `LibraryWork` WHERE {where_sql} ORDER BY {order} LIMIT :limit OFFSET :offset", params)
+    if sort == "recent_read" and _has_table(db, "LibraryReadingProgress"):
+        params["recent_user_id"] = user.id
+        works = _rows(
+            db,
+            f"""
+            SELECT `LibraryWork`.*
+            FROM `LibraryWork`
+            LEFT JOIN (
+                SELECT `workId`, MAX(`updatedAt`) AS `latestReadAt`
+                FROM `LibraryReadingProgress`
+                WHERE `userId` = :recent_user_id
+                GROUP BY `workId`
+            ) recent_progress ON recent_progress.`workId` = `LibraryWork`.`id`
+            WHERE {where_sql}
+            ORDER BY
+                CASE WHEN recent_progress.`latestReadAt` IS NULL THEN 1 ELSE 0 END ASC,
+                recent_progress.`latestReadAt` DESC,
+                `LibraryWork`.`updatedAt` DESC
+            LIMIT :limit OFFSET :offset
+            """,
+            params,
+        )
+    else:
+        works = _rows(db, f"SELECT * FROM `LibraryWork` WHERE {where_sql} ORDER BY {order} LIMIT :limit OFFSET :offset", params)
     return ok({"books": [_work_view(db, work, user.id) for work in works], "page": page, "pageSize": page_size, "total": total, "totalPages": max(1, (total + page_size - 1) // page_size)})
 
 

@@ -16,14 +16,14 @@ import {
   User,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type CSSProperties, type ReactNode } from 'react';
 import type { WorkView } from '../../types/work';
 import { Cover } from '../book/cover';
 import { cn } from '../ui/cn';
 
 type MobileTab = 'home' | 'shelf' | 'me';
 type ShelfFilter = 'all' | 'reading' | 'unread' | 'finished';
-type BooksPayload = { ok: boolean; data?: { books: WorkView[]; total: number }; error?: { message: string } };
+type BooksPayload = { ok: boolean; data?: { books: WorkView[]; total: number; page: number; pageSize: number; totalPages: number }; error?: { message: string } };
 type ImportPayload = { ok: boolean; data?: { title: string; duplicate?: boolean }; error?: { message: string } };
 type ContinueItem = { book: WorkView; progress: number; lastReadAt: string; chapter: string | null } | null;
 type ReadingUnitView = { id: string; unitType: string; title: string; href?: string | null; sortOrder: number; volumeId?: string | null; mediaType?: string | null; size?: string | number | null };
@@ -37,10 +37,13 @@ type SystemStatus = {
 };
 type OpenBookHandler = (book: WorkView, sourceElement?: HTMLElement | null) => void;
 type OpenReaderHandler = (book: WorkView, sourceElement?: HTMLElement | null, volumeId?: string | null, href?: string | null) => void;
+type PageMeta = { page: number; pageSize: number; total: number; totalPages: number };
 const displayFont = '"Songti SC", "STSong", "Noto Serif CJK SC", serif';
 type MobileScaleStyle = CSSProperties & { '--mobile-scale'?: string };
 const mobileDesignWidth = 426.5;
 const sv = (value: number) => `calc(${value}px * var(--mobile-scale))`;
+const MOBILE_SHELF_PAGE_SIZE = 24;
+const emptyPageMeta: PageMeta = { page: 0, pageSize: MOBILE_SHELF_PAGE_SIZE, total: 0, totalPages: 1 };
 
 const tabs: Array<{ key: MobileTab; label: string; icon: typeof Library }> = [
   { key: 'home', label: '首页', icon: Home },
@@ -113,6 +116,22 @@ function readableEditionId(book: WorkView) {
   return book.recentEditionId ?? book.editionId ?? book.primaryEditionId ?? book.editions.find((edition) => !edition.hidden)?.id ?? null;
 }
 
+function mergeBooks(current: WorkView[], next: WorkView[]) {
+  const byId = new Map(current.map((book) => [book.id, book]));
+  next.forEach((book) => byId.set(book.id, book));
+  return Array.from(byId.values());
+}
+
+function pageMetaFromPayload(payload: BooksPayload): PageMeta {
+  const data = payload.data;
+  return {
+    page: data?.page ?? 1,
+    pageSize: data?.pageSize ?? MOBILE_SHELF_PAGE_SIZE,
+    total: data?.total ?? 0,
+    totalPages: data?.totalPages ?? 1
+  };
+}
+
 function readerUrlForBook(book: WorkView, tab: MobileTab, volumeId?: string | null, href?: string | null) {
   const editionId = readableEditionId(book);
   if (!editionId) return null;
@@ -147,9 +166,12 @@ function storeReaderOpeningContext(book: WorkView, sourceElement?: HTMLElement |
 export function MobileReaderApp() {
   const router = useRouter();
   const uploadInputRef = useRef<HTMLInputElement>(null);
+  const scrollSectionRef = useRef<HTMLElement>(null);
   const [tab, setTab] = useState<MobileTab>('home');
   const [books, setBooks] = useState<WorkView[]>([]);
   const [searchBooks, setSearchBooks] = useState<WorkView[]>([]);
+  const [booksMeta, setBooksMeta] = useState<PageMeta>(emptyPageMeta);
+  const [searchMeta, setSearchMeta] = useState<PageMeta>(emptyPageMeta);
   const [continueItem, setContinueItem] = useState<ContinueItem>(null);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [user, setUser] = useState<UserInfo | null>(null);
@@ -159,9 +181,12 @@ export function MobileReaderApp() {
   const [searchFocusSignal, setSearchFocusSignal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [searchLoadingMore, setSearchLoadingMore] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+  const [loadMoreError, setLoadMoreError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
   const [detailBookId, setDetailBookId] = useState('');
   const [detailBook, setDetailBook] = useState<WorkView | null>(null);
@@ -187,21 +212,67 @@ export function MobileReaderApp() {
     setSearchFocusSignal((value) => value + 1);
   }
 
+  const loadBooksPage = useCallback(async (pageNumber: number, append = false) => {
+    if (append) setLoadingMore(true);
+    else setLoading(true);
+    setLoadMoreError('');
+    if (!append) setError('');
+    try {
+      const params = new URLSearchParams({
+        page: String(pageNumber),
+        pageSize: String(MOBILE_SHELF_PAGE_SIZE),
+        visibility: 'active',
+        sort: 'recent_read'
+      });
+      const payload = await fetch(`/api/works?${params.toString()}`).then((response) => readMobilePayload<BooksPayload>(response, '读取书架失败'));
+      setBooks((current) => (append ? mergeBooks(current, payload.data?.books ?? []) : payload.data?.books ?? []));
+      setBooksMeta(pageMetaFromPayload(payload));
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : '读取书架失败，请检查网络或服务器状态。';
+      if (append) setLoadMoreError(message);
+      else setError(message);
+    } finally {
+      if (append) setLoadingMore(false);
+      else setLoading(false);
+    }
+  }, []);
+
+  const loadSearchPage = useCallback(async (search: string, pageNumber: number, append = false) => {
+    if (append) setSearchLoadingMore(true);
+    else setSearchLoading(true);
+    setLoadMoreError('');
+    if (!append) setError('');
+    try {
+      const params = new URLSearchParams({
+        page: String(pageNumber),
+        pageSize: String(MOBILE_SHELF_PAGE_SIZE),
+        visibility: 'active',
+        sort: 'recent_read',
+        search
+      });
+      const payload = await fetch(`/api/works?${params.toString()}`).then((response) => readMobilePayload<BooksPayload>(response, '搜索失败'));
+      setSearchBooks((current) => (append ? mergeBooks(current, payload.data?.books ?? []) : payload.data?.books ?? []));
+      setSearchMeta(pageMetaFromPayload(payload));
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : '搜索失败，请稍后重试。';
+      if (append) setLoadMoreError(message);
+      else setError(message);
+    } finally {
+      if (append) setSearchLoadingMore(false);
+      else setSearchLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     let active = true;
-    setLoading(true);
-    setError('');
     Promise.all([
-      fetch('/api/works?pageSize=40&visibility=active&sort=recent_read').then((response) => readMobilePayload<BooksPayload>(response, '读取书架失败')),
       fetch('/api/dashboard/continue-reading').then((response) => response.json()).catch(() => null),
       fetch('/api/dashboard/summary').then((response) => response.json()).catch(() => null),
       fetch('/api/auth/me').then((response) => response.json()).catch(() => null),
       fetch('/api/dashboard/system-status').then((response) => response.json()).catch(() => null)
     ])
-      .then(([booksPayload, continuePayload, summaryPayload, userPayload, statusPayload]) => {
+      .then(([continuePayload, summaryPayload, userPayload, statusPayload]) => {
         if (!active) return;
-        if (!booksPayload.ok) throw new Error(booksPayload.error?.message ?? '读取书架失败');
-        setBooks(booksPayload.data?.books ?? []);
         setContinueItem(continuePayload?.ok ? continuePayload.data.item : null);
         setSummary(summaryPayload?.ok ? summaryPayload.data : null);
         setUser(userPayload?.ok ? userPayload.data.user : null);
@@ -209,9 +280,6 @@ export function MobileReaderApp() {
       })
       .catch((reason) => {
         if (active) setError(reason instanceof Error ? reason.message : '读取书架失败，请检查网络或服务器状态。');
-      })
-      .finally(() => {
-        if (active) setLoading(false);
       });
     return () => {
       active = false;
@@ -219,24 +287,26 @@ export function MobileReaderApp() {
   }, [reloadKey]);
 
   useEffect(() => {
+    setBooks([]);
+    setBooksMeta(emptyPageMeta);
+    void loadBooksPage(1);
+  }, [loadBooksPage, reloadKey]);
+
+  useEffect(() => {
     const search = searchText.trim();
     if (!search) {
       setSearchBooks([]);
+      setSearchMeta(emptyPageMeta);
       setSearchLoading(false);
       return;
     }
     const timer = window.setTimeout(() => {
-      setSearchLoading(true);
-      fetch(`/api/works?pageSize=40&visibility=active&sort=recent_read&search=${encodeURIComponent(search)}`)
-        .then((response) => readMobilePayload<BooksPayload>(response, '搜索失败'))
-        .then((payload) => {
-          setSearchBooks(payload.data?.books ?? []);
-        })
-        .catch((reason) => setError(reason instanceof Error ? reason.message : '搜索失败，请稍后重试。'))
-        .finally(() => setSearchLoading(false));
+      setSearchBooks([]);
+      setSearchMeta(emptyPageMeta);
+      void loadSearchPage(search, 1);
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [searchText]);
+  }, [loadSearchPage, searchText]);
 
   useEffect(() => {
     if (!detailBookId) return;
@@ -276,18 +346,35 @@ export function MobileReaderApp() {
 
   const baseShelfBooks = searchText.trim() ? searchBooks : books;
   const shelfBooks = useMemo(() => baseShelfBooks.filter((book) => shelfFilterMatches(book, shelfFilter)), [baseShelfBooks, shelfFilter]);
+  const activeMeta = searchText.trim() ? searchMeta : booksMeta;
+  const hasMoreShelfBooks = activeMeta.page > 0 && activeMeta.page < activeMeta.totalPages;
+  const isLoadingMoreShelfBooks = searchText.trim() ? searchLoadingMore : loadingMore;
   const readingBooks = useMemo(
-    () => books.filter((book) => book.progress > 0).sort((left, right) => Date.parse(right.lastReadAt ?? '') - Date.parse(left.lastReadAt ?? '')),
+    () => books.filter((book) => book.lastReadAt).sort((left, right) => Date.parse(right.lastReadAt ?? '') - Date.parse(left.lastReadAt ?? '')),
     [books]
   );
-  const recentBooks = useMemo(() => {
-    const seen = new Set<string>();
-    return [...readingBooks, ...books].filter((book) => {
-      if (seen.has(book.id)) return false;
-      seen.add(book.id);
-      return true;
-    });
-  }, [books, readingBooks]);
+  const recentBooks = readingBooks;
+
+  const loadNextShelfPage = useCallback(() => {
+    if (!hasMoreShelfBooks || loading || searchLoading || loadingMore || searchLoadingMore) return;
+    const search = searchText.trim();
+    if (search) void loadSearchPage(search, searchMeta.page + 1, true);
+    else void loadBooksPage(booksMeta.page + 1, true);
+  }, [booksMeta.page, hasMoreShelfBooks, loadBooksPage, loadSearchPage, loading, loadingMore, searchLoading, searchLoadingMore, searchMeta.page, searchText]);
+
+  useEffect(() => {
+    const element = scrollSectionRef.current;
+    if (!element || detailBookId || tab !== 'shelf') return undefined;
+    const scrollElement = element;
+    function onScroll() {
+      if (scrollElement.scrollHeight - scrollElement.scrollTop - scrollElement.clientHeight < 360) {
+        loadNextShelfPage();
+      }
+    }
+    scrollElement.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+    return () => scrollElement.removeEventListener('scroll', onScroll);
+  }, [tab, detailBookId, loadNextShelfPage]);
 
   function openBookDetail(book: WorkView) {
     setDetailBook(book);
@@ -374,6 +461,7 @@ export function MobileReaderApp() {
         } as MobileScaleStyle}
       >
         <section
+          ref={scrollSectionRef}
           data-pwa-scroll="true"
           className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
           style={{
@@ -417,15 +505,21 @@ export function MobileReaderApp() {
           {!detailBookId && tab === 'shelf' ? (
             <ShelfView
               books={shelfBooks}
-              allBooks={books}
+              allBooks={baseShelfBooks}
               error={error}
               filter={shelfFilter}
+              libraryEmpty={books.length === 0}
               loading={loading}
               message={message}
               searchFocusSignal={searchFocusSignal}
               searchLoading={searchLoading}
+              loadingMore={isLoadingMoreShelfBooks}
+              hasMore={hasMoreShelfBooks}
+              loadMoreError={loadMoreError}
+              total={activeMeta.total}
               searchText={searchText}
               onFilterChange={setShelfFilter}
+              onLoadMore={loadNextShelfPage}
               onOpenBook={openBookDetail}
               onSearchTextChange={setSearchText}
               onUpload={() => uploadInputRef.current?.click()}
@@ -771,16 +865,15 @@ function ContinueCard({ item, onOpenBook, onOpenReader }: { item: NonNullable<Co
 }
 
 function RecentCoverRail({ books, onOpenBook }: { books: WorkView[]; onOpenBook: OpenBookHandler }) {
-  const displayBooks = repeatBooks(books, 5);
   return (
     <div
       data-pwa-scroll-x="true"
       className="-mx-1 flex overflow-x-auto overflow-y-hidden px-1"
       style={{ gap: sv(10.5), paddingBottom: sv(8), scrollbarWidth: 'none' }}
     >
-      {displayBooks.map((book, index) => (
+      {books.map((book) => (
         <button
-          key={`${book.id}-${index}`}
+          key={book.id}
           type="button"
           data-mobile-book-entry="true"
           onClick={(event) => onOpenBook(book, event.currentTarget)}
@@ -805,12 +898,18 @@ function ShelfView({
   allBooks,
   error,
   filter,
+  libraryEmpty,
   loading,
+  loadingMore,
+  hasMore,
+  loadMoreError,
   message,
   searchFocusSignal,
   searchLoading,
   searchText,
+  total,
   onFilterChange,
+  onLoadMore,
   onOpenBook,
   onSearchTextChange,
   onUpload
@@ -819,12 +918,18 @@ function ShelfView({
   allBooks: WorkView[];
   error: string;
   filter: ShelfFilter;
+  libraryEmpty: boolean;
   loading: boolean;
+  loadingMore: boolean;
+  hasMore: boolean;
+  loadMoreError: string;
   message: string;
   searchFocusSignal: number;
   searchLoading: boolean;
   searchText: string;
+  total: number;
   onFilterChange: (filter: ShelfFilter) => void;
+  onLoadMore: () => void;
   onOpenBook: OpenBookHandler;
   onSearchTextChange: (value: string) => void;
   onUpload: () => void;
@@ -869,14 +974,29 @@ function ShelfView({
 
       {message ? <Notice tone="success">{message}</Notice> : null}
       {error ? <Notice tone="error">{error}</Notice> : null}
+      {loadMoreError ? <Notice tone="error">{loadMoreError}</Notice> : null}
       {loading ? <LoadingBlock label="正在读取书架..." /> : null}
       {searchLoading ? <LoadingBlock label="正在搜索..." /> : null}
 
-      {!loading && allBooks.length === 0 ? <EmptyLibrary onUpload={onUpload} /> : null}
-      {!loading && allBooks.length > 0 && books.length === 0 ? (
-        <SoftEmpty title={searchText.trim() ? '没有找到读物' : '暂无匹配读物'} text={searchText.trim() ? '换一个关键词或筛选条件再试。' : '切换筛选条件可以查看其他读物。'} />
+      {!loading && libraryEmpty && !searchText.trim() ? <EmptyLibrary onUpload={onUpload} /> : null}
+      {!loading && !libraryEmpty && books.length === 0 ? (
+        hasMore ? (
+          <SoftEmpty title="当前已加载内容暂无匹配" text="继续下滑会加载更多书架内容，也可以切换筛选条件查看其他读物。" />
+        ) : (
+          <SoftEmpty title={searchText.trim() ? '没有找到读物' : '暂无匹配读物'} text={searchText.trim() ? '换一个关键词或筛选条件再试。' : '切换筛选条件可以查看其他读物。'} />
+        )
       ) : null}
       {!loading && books.length > 0 ? <CompactBookGrid books={books} onOpenBook={onOpenBook} /> : null}
+      {!loading && allBooks.length > 0 ? (
+        <ShelfLoadMore
+          hasMore={hasMore}
+          loading={loadingMore}
+          loaded={allBooks.length}
+          total={total}
+          error={loadMoreError}
+          onLoadMore={onLoadMore}
+        />
+      ) : null}
     </div>
   );
 }
@@ -895,6 +1015,43 @@ function CompactBookGrid({ books, onOpenBook, preview = false }: { books: WorkVi
       {displayBooks.map((book, index) => (
         <CompactBookTile key={`${book.id}-${index}`} book={book} onOpen={onOpenBook} preview={preview} />
       ))}
+    </div>
+  );
+}
+
+function ShelfLoadMore({
+  hasMore,
+  loading,
+  loaded,
+  total,
+  error,
+  onLoadMore
+}: {
+  hasMore: boolean;
+  loading: boolean;
+  loaded: number;
+  total: number;
+  error: string;
+  onLoadMore: () => void;
+}) {
+  const label = loading
+    ? '正在加载更多...'
+    : hasMore
+      ? `已加载 ${loaded}/${total} 本`
+      : `已加载全部 ${loaded} 本`;
+  return (
+    <div className="rounded-[22px] border border-[#DED5C7] bg-[#FBF8F1] p-4 text-center text-sm text-[#70665C]" role="status" aria-live="polite">
+      <div>{label}</div>
+      {hasMore ? (
+        <button
+          type="button"
+          onClick={onLoadMore}
+          disabled={loading}
+          className="mt-3 inline-flex min-h-11 items-center justify-center rounded-full border border-[#DCD1BF] bg-[#FFF8EE] px-5 font-medium text-[#7A4B22] transition active:scale-[0.98] disabled:opacity-60"
+        >
+          {error ? '重试加载' : '加载更多'}
+        </button>
+      ) : null}
     </div>
   );
 }
