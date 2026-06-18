@@ -516,10 +516,8 @@ export function MobileReaderApp() {
               loadingMore={isLoadingMoreShelfBooks}
               hasMore={hasMoreShelfBooks}
               loadMoreError={loadMoreError}
-              total={activeMeta.total}
               searchText={searchText}
               onFilterChange={setShelfFilter}
-              onLoadMore={loadNextShelfPage}
               onOpenBook={openBookDetail}
               onSearchTextChange={setSearchText}
               onUpload={() => uploadInputRef.current?.click()}
@@ -907,9 +905,7 @@ function ShelfView({
   searchFocusSignal,
   searchLoading,
   searchText,
-  total,
   onFilterChange,
-  onLoadMore,
   onOpenBook,
   onSearchTextChange,
   onUpload
@@ -927,9 +923,7 @@ function ShelfView({
   searchFocusSignal: number;
   searchLoading: boolean;
   searchText: string;
-  total: number;
   onFilterChange: (filter: ShelfFilter) => void;
-  onLoadMore: () => void;
   onOpenBook: OpenBookHandler;
   onSearchTextChange: (value: string) => void;
   onUpload: () => void;
@@ -987,16 +981,7 @@ function ShelfView({
         )
       ) : null}
       {!loading && books.length > 0 ? <CompactBookGrid books={books} onOpenBook={onOpenBook} /> : null}
-      {!loading && allBooks.length > 0 ? (
-        <ShelfLoadMore
-          hasMore={hasMore}
-          loading={loadingMore}
-          loaded={allBooks.length}
-          total={total}
-          error={loadMoreError}
-          onLoadMore={onLoadMore}
-        />
-      ) : null}
+      {!loading && loadingMore && allBooks.length > 0 ? <LoadingBlock label="正在加载更多..." /> : null}
     </div>
   );
 }
@@ -1015,43 +1000,6 @@ function CompactBookGrid({ books, onOpenBook, preview = false }: { books: WorkVi
       {displayBooks.map((book, index) => (
         <CompactBookTile key={`${book.id}-${index}`} book={book} onOpen={onOpenBook} preview={preview} />
       ))}
-    </div>
-  );
-}
-
-function ShelfLoadMore({
-  hasMore,
-  loading,
-  loaded,
-  total,
-  error,
-  onLoadMore
-}: {
-  hasMore: boolean;
-  loading: boolean;
-  loaded: number;
-  total: number;
-  error: string;
-  onLoadMore: () => void;
-}) {
-  const label = loading
-    ? '正在加载更多...'
-    : hasMore
-      ? `已加载 ${loaded}/${total} 本`
-      : `已加载全部 ${loaded} 本`;
-  return (
-    <div className="rounded-[22px] border border-[#DED5C7] bg-[#FBF8F1] p-4 text-center text-sm text-[#70665C]" role="status" aria-live="polite">
-      <div>{label}</div>
-      {hasMore ? (
-        <button
-          type="button"
-          onClick={onLoadMore}
-          disabled={loading}
-          className="mt-3 inline-flex min-h-11 items-center justify-center rounded-full border border-[#DCD1BF] bg-[#FFF8EE] px-5 font-medium text-[#7A4B22] transition active:scale-[0.98] disabled:opacity-60"
-        >
-          {error ? '重试加载' : '加载更多'}
-        </button>
-      ) : null}
     </div>
   );
 }

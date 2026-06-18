@@ -653,14 +653,19 @@ export function ReaderPage({ editionId }: { editionId: string }) {
 
   function leaveReader() {
     sendProgress(true);
+    let targetHref = '/library';
     const searchParams = new URLSearchParams(window.location.search);
     if (searchParams.get('from') === 'mobile') {
       const tab = searchParams.get('tab');
       const mobileTab = tab === 'shelf' || tab === 'me' || tab === 'home' ? tab : 'home';
-      router.push(`/mobile?tab=${mobileTab}`);
-      return;
+      targetHref = `/mobile?tab=${mobileTab}`;
+    } else if (bookRef.current) {
+      targetHref = `/works/${bookRef.current.workId ?? bookRef.current.id}`;
     }
-    if (bookRef.current) router.push(`/works/${bookRef.current.workId ?? bookRef.current.id}`);
+    router.push(targetHref);
+    window.setTimeout(() => {
+      if (window.location.pathname.startsWith('/reader/')) window.location.assign(targetHref);
+    }, 900);
   }
 
   function replaceReaderVolumeUrl(volumeId: string) {

@@ -1,7 +1,7 @@
 'use client';
 
 import { BookOpen, ChevronLeft, ChevronRight, ListTree, Minus, Moon, Plus, Settings, Sun, X } from 'lucide-react';
-import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type MouseEvent, type ReactNode, type SyntheticEvent } from 'react';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
 import type { ComicDirection, ComicImageFit, ComicMode } from './comic-reader';
@@ -263,6 +263,7 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
   const panelRef = useRef<'toc' | 'settings' | null>(null);
   const touchRef = useRef({ x: 0, y: 0, time: 0 });
   const suppressClickUntilRef = useRef(0);
+  const backRequestAtRef = useRef(0);
   const [controlsVisible, setControlsVisible] = useState(false);
   const [panel, setPanel] = useState<'toc' | 'settings' | null>(null);
   const [navItems, setNavItems] = useState<ReaderNavigationItem[]>(navigationItems ?? []);
@@ -300,6 +301,15 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
       return;
     }
     enterImmersive();
+  }
+
+  function requestBackFromControl(event: SyntheticEvent) {
+    event.preventDefault();
+    event.stopPropagation();
+    const now = Date.now();
+    if (now - backRequestAtRef.current < 700) return;
+    backRequestAtRef.current = now;
+    onBack();
   }
 
   async function goNext() {
@@ -508,7 +518,13 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
       >
         <div className="mx-auto flex h-12 max-w-6xl items-center justify-between gap-2">
           <div className="flex min-w-0 items-center gap-2">
-            <button type="button" onClick={onBack} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition active:scale-[0.98] hover:bg-white/10" aria-label="返回详情页">
+            <button
+              type="button"
+              onClick={requestBackFromControl}
+              onTouchEnd={requestBackFromControl}
+              className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full transition active:scale-[0.98] hover:bg-white/10"
+              aria-label="返回详情页"
+            >
               <ChevronLeft size={22} />
             </button>
             <div className="hidden h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-white/10 md:flex">
