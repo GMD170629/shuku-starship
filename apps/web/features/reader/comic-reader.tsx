@@ -9,6 +9,9 @@ export type ComicMode = 'single' | 'double' | 'continuous';
 export type ComicDirection = 'ltr' | 'rtl';
 export type ComicImageFit = 'width' | 'height' | 'contain' | 'original';
 
+const pagedPreloadRadius = 2;
+const continuousWarmRadius = 3;
+
 type ComicReaderProps = {
   book: WorkView;
   volumeId?: string | null;
@@ -116,6 +119,7 @@ export function ComicReader({
   const restoredScrollKeyRef = useRef('');
   const visiblePageRef = useRef(Math.max(1, initialPage || 1));
   const scrollProgressFrameRef = useRef<number | null>(null);
+  const preloadedImagesRef = useRef(new Map<number, HTMLImageElement>());
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [pageMeta, setPageMeta] = useState<Record<number, ComicPageMeta>>({});
   const [page, setPage] = useState(Math.max(1, initialPage || 1));
@@ -146,14 +150,17 @@ export function ComicReader({
   const pagedPreloadPages = useMemo(() => {
     const currentIndex = orderedPages.indexOf(page);
     if (currentIndex < 0) return [page];
-    const lookAhead = mode === 'double' ? 4 : 2;
-    return orderedPages.slice(Math.max(0, currentIndex - 2), currentIndex + lookAhead);
+    const visibleCount = mode === 'double' ? 2 : 1;
+    return orderedPages.slice(
+      Math.max(0, currentIndex - pagedPreloadRadius),
+      currentIndex + visibleCount + pagedPreloadRadius
+    );
   }, [mode, orderedPages, page]);
 
   const continuousWarmPages = useMemo(() => {
     const currentIndex = orderedPages.indexOf(page);
     if (currentIndex < 0) return [page];
-    return orderedPages.slice(Math.max(0, currentIndex - 2), currentIndex + 3);
+    return orderedPages.slice(Math.max(0, currentIndex - continuousWarmRadius), currentIndex + continuousWarmRadius + 1);
   }, [orderedPages, page]);
 
   useEffect(() => {
@@ -164,6 +171,10 @@ export function ComicReader({
     setLoadedPages(new Set());
     setFailedPages(new Set());
     setRetryTokens({});
+    preloadedImagesRef.current.forEach((image) => {
+      image.src = '';
+    });
+    preloadedImagesRef.current.clear();
     restoredScrollKeyRef.current = '';
     visiblePageRef.current = seedPage;
     if (!volumeId) {
@@ -207,13 +218,37 @@ export function ComicReader({
 
   useEffect(() => {
     setLoadedPages((current) => {
-      if (mode !== 'continuous') return new Set(pagedPreloadPages);
-      if (continuousWarmPages.every((pageNumber) => current.has(pageNumber))) return current;
-      const next = new Set(current);
-      continuousWarmPages.forEach((pageNumber) => next.add(pageNumber));
+      if (mode !== 'continuous') return current.size === 0 ? current : new Set();
+      const next = new Set(continuousWarmPages);
+      if (next.size === current.size && continuousWarmPages.every((pageNumber) => current.has(pageNumber))) return current;
       return next;
     });
-  }, [continuousWarmPages, mode, pagedPreloadPages]);
+  }, [continuousWarmPages, mode]);
+
+  useEffect(() => {
+    if (mode === 'continuous') {
+      preloadedImagesRef.current.forEach((image) => {
+        image.src = '';
+      });
+      preloadedImagesRef.current.clear();
+      return;
+    }
+    const visiblePages = new Set(spreadPages);
+    const preloadPages = new Set(pagedPreloadPages.filter((pageNumber) => !visiblePages.has(pageNumber)));
+    preloadedImagesRef.current.forEach((image, pageNumber) => {
+      if (!preloadPages.has(pageNumber)) {
+        image.src = '';
+        preloadedImagesRef.current.delete(pageNumber);
+      }
+    });
+    preloadPages.forEach((pageNumber) => {
+      if (preloadedImagesRef.current.has(pageNumber)) return;
+      const image = new Image();
+      image.decoding = 'async';
+      image.src = archivePageUrl(book.id, pageNumber, volumeId, retryTokens[pageNumber] ?? 0);
+      preloadedImagesRef.current.set(pageNumber, image);
+    });
+  }, [book.id, mode, pagedPreloadPages, retryTokens, spreadPages, volumeId]);
 
   useEffect(() => {
     if (mode !== 'continuous' || pageCount === null) return;
@@ -264,6 +299,10 @@ export function ComicReader({
   useEffect(() => {
     return () => {
       if (scrollProgressFrameRef.current !== null) window.cancelAnimationFrame(scrollProgressFrameRef.current);
+      preloadedImagesRef.current.forEach((image) => {
+        image.src = '';
+      });
+      preloadedImagesRef.current.clear();
     };
   }, []);
 
@@ -440,12 +479,15 @@ export function ComicReader({
   const imageClass = cn(
     'block',
     dark ? 'shadow-black/40' : 'shadow-slate-300/80',
-    imageFit === 'height' ? 'h-[calc(100dvh-8rem)] w-auto max-w-full md:h-[calc(100dvh-10rem)]' : '',
-    imageFit === 'contain' ? 'max-h-[calc(100dvh-8rem)] max-w-full object-contain md:max-h-[calc(100dvh-10rem)]' : '',
+    mode !== 'continuous' ? 'max-h-full max-w-full object-contain' : '',
+    imageFit === 'height' && mode !== 'continuous' ? 'h-full w-auto' : '',
+    imageFit === 'contain' && mode !== 'continuous' ? 'h-full w-auto' : '',
+    imageFit === 'width' && mode !== 'continuous' ? 'h-auto w-full' : '',
+    imageFit === 'original' && mode !== 'continuous' ? 'h-auto w-auto' : '',
+    imageFit === 'height' && mode === 'continuous' ? 'h-[calc(100dvh-8rem)] w-auto max-w-full md:h-[calc(100dvh-10rem)]' : '',
+    imageFit === 'contain' && mode === 'continuous' ? 'max-h-[calc(100dvh-8rem)] max-w-full object-contain md:max-h-[calc(100dvh-10rem)]' : '',
     imageFit === 'width' && mode === 'continuous' ? 'w-full max-w-[52rem]' : '',
-    imageFit === 'width' && mode === 'single' ? 'w-full max-w-[56rem]' : '',
-    imageFit === 'width' && mode === 'double' ? 'w-full max-w-full' : '',
-    imageFit === 'original' ? 'h-auto w-auto max-h-[calc(100dvh-8rem)] max-w-full md:max-h-[calc(100dvh-10rem)]' : ''
+    imageFit === 'original' && mode === 'continuous' ? 'h-auto w-auto max-h-[calc(100dvh-8rem)] max-w-full md:max-h-[calc(100dvh-10rem)]' : ''
   );
   const continuousPageFrameClass = imageFit === 'width'
     ? 'max-w-[52rem]'
@@ -455,15 +497,17 @@ export function ComicReader({
         ? 'max-w-[56rem]'
         : 'max-w-6xl';
   const pagedFrameClass = mode === 'double' ? 'max-w-[82rem]' : 'max-w-[56rem]';
-  const pagedImageSlotClass = mode === 'double' ? 'min-w-0 flex-1 basis-1/2' : 'w-full';
+  const pagedImageSlotClass = mode === 'double'
+    ? 'flex h-full min-w-0 flex-1 basis-1/2 items-center justify-center overflow-hidden'
+    : 'flex h-full w-full items-center justify-center overflow-hidden';
 
-  function renderPageImage(pageNumber: number, hidden = false) {
-    if (failedPages.has(pageNumber) && !hidden) {
+  function renderPageImage(pageNumber: number) {
+    if (failedPages.has(pageNumber)) {
       return (
         <ComicImageFallback
           dark={dark}
           pageNumber={pageNumber}
-          className={mode === 'continuous' ? continuousPageFrameClass : mode === 'double' ? 'max-w-full' : 'max-w-[56rem]'}
+          className={mode === 'continuous' ? continuousPageFrameClass : 'h-full max-h-full max-w-full'}
           style={pagePlaceholderStyle(pageNumber)}
           onRetry={() => retryImage(pageNumber)}
         />
@@ -473,11 +517,10 @@ export function ComicReader({
     return (
       <img
         src={archivePageUrl(book.id, pageNumber, volumeId, retryTokens[pageNumber] ?? 0)}
-        alt={hidden ? '' : `${book.title} 第 ${pageNumber} 页`}
-        aria-hidden={hidden ? 'true' : undefined}
-        className={hidden ? '' : cn(imageClass, 'shadow-2xl')}
-        loading={hidden ? 'eager' : 'lazy'}
-        style={hidden ? undefined : { transform: `scale(${zoom})`, transformOrigin: mode === 'continuous' ? 'top center' : 'center center' }}
+        alt={`${book.title} 第 ${pageNumber} 页`}
+        className={cn(imageClass, 'shadow-2xl')}
+        loading="lazy"
+        style={{ transform: `scale(${zoom})`, transformOrigin: mode === 'continuous' ? 'top center' : 'center center' }}
         onLoad={() => markImageLoaded(pageNumber)}
         onError={() => markImageFailed(pageNumber)}
       />
@@ -506,15 +549,17 @@ export function ComicReader({
   return (
     <div
       ref={scrollerRef}
-      data-pwa-scroll="true"
-      className="h-full w-full overflow-auto overscroll-contain px-4 pb-4 pt-6 landscape:px-3 landscape:pb-3 landscape:pt-5 md:px-8 md:pb-6 md:pt-10"
+      data-pwa-scroll={mode === 'continuous' ? 'true' : undefined}
+      className={cn(
+        'h-full w-full overscroll-contain px-4 pb-4 pt-6 landscape:px-3 landscape:pb-3 landscape:pt-5 md:px-8 md:pb-6 md:pt-10',
+        mode === 'continuous' ? 'overflow-auto' : 'overflow-hidden'
+      )}
       onScroll={mode === 'continuous' ? scheduleScrollProgress : undefined}
       dir={direction}
     >
       {mode !== 'continuous' ? (
         <div
-          className={cn('mx-auto flex min-h-full w-full justify-center gap-2 md:gap-4', pagedFrameClass)}
-          style={{ alignItems: 'safe center' }}
+          className={cn('mx-auto flex h-full min-h-0 w-full items-center justify-center gap-2 overflow-hidden md:gap-4', pagedFrameClass)}
           onClick={handlePagedClick}
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
@@ -524,11 +569,6 @@ export function ComicReader({
               {renderPageImage(pageNumber)}
             </div>
           ))}
-          <div className="hidden">
-            {pagedPreloadPages.filter((pageNumber) => !spreadPages.includes(pageNumber)).map((pageNumber) => (
-              <span key={pageNumber}>{renderPageImage(pageNumber, true)}</span>
-            ))}
-          </div>
         </div>
       ) : (
         <div

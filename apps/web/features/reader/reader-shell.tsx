@@ -122,6 +122,7 @@ export const readerThemeSurfaces: Record<ReaderTheme, { background: string; text
 const readerBottomAreaHeight = 'calc(6rem + env(safe-area-inset-bottom))';
 const readerBottomAreaOffset = 'calc(10px - env(safe-area-inset-bottom))';
 const readerBottomControlsMaxWidth = 'max-w-4xl';
+const progressJumpDebounceMs = 160;
 
 function ensureMeta(name: string) {
   const existing = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`);
@@ -264,11 +265,14 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
   const touchRef = useRef({ x: 0, y: 0, time: 0 });
   const suppressClickUntilRef = useRef(0);
   const backRequestAtRef = useRef(0);
+  const progressJumpTimerRef = useRef<number | null>(null);
+  const pendingProgressJumpRef = useRef<number | null>(null);
   const [controlsVisible, setControlsVisible] = useState(false);
   const [panel, setPanel] = useState<'toc' | 'settings' | null>(null);
   const [navItems, setNavItems] = useState<ReaderNavigationItem[]>(navigationItems ?? []);
   const [navLoading, setNavLoading] = useState(false);
   const [selectedNavigationKey, setSelectedNavigationKey] = useState<string | null>(null);
+  const [progressScrubPercent, setProgressScrubPercent] = useState<number | null>(null);
   const dark = isDarkTheme(settings.theme);
   const themeSurface = readerThemeSurfaces[settings.theme];
   const currentNavigationItem = activeNavigationItem(readerType, navItems, progress, progressExtra, selectedNavigationKey);
@@ -328,6 +332,21 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
     await controlsRef.current?.jumpToProgress(100);
   }
 
+  function clearPendingProgressJump() {
+    if (progressJumpTimerRef.current !== null) {
+      window.clearTimeout(progressJumpTimerRef.current);
+      progressJumpTimerRef.current = null;
+    }
+    pendingProgressJumpRef.current = null;
+  }
+
+  function flushPendingProgressJump() {
+    const value = pendingProgressJumpRef.current;
+    clearPendingProgressJump();
+    if (value === null) return;
+    void controlsRef.current?.jumpToProgress(value);
+  }
+
   function handleReaderTap(clientX: number, clientY: number) {
     if (isCenterPointer(clientX, clientY)) {
       toggleControls();
@@ -349,6 +368,17 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
   useEffect(() => {
     panelRef.current = panel;
   }, [panel]);
+
+  useEffect(() => {
+    return () => clearPendingProgressJump();
+  }, []);
+
+  useEffect(() => {
+    if (progressScrubPercent === null) return;
+    if (Math.abs(clampPercent(progress.percent) - progressScrubPercent) <= 1) {
+      setProgressScrubPercent(null);
+    }
+  }, [progress.percent, progressScrubPercent]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -430,8 +460,20 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
     };
   }, [editionId, navigationItems, navItems.length, panel, readerType, settings.reversePages]);
 
-  async function jumpToPercent(value: number) {
-    await controls?.jumpToProgress(clampPercent(value));
+  async function jumpToPercent(value: number, debounce = false) {
+    const nextValue = clampPercent(value);
+    if (!debounce) {
+      clearPendingProgressJump();
+      setProgressScrubPercent(null);
+      await controlsRef.current?.jumpToProgress(nextValue);
+      return;
+    }
+    pendingProgressJumpRef.current = nextValue;
+    setProgressScrubPercent(nextValue);
+    if (progressJumpTimerRef.current !== null) {
+      window.clearTimeout(progressJumpTimerRef.current);
+    }
+    progressJumpTimerRef.current = window.setTimeout(flushPendingProgressJump, progressJumpDebounceMs);
   }
 
   async function jumpToItem(item: ReaderNavigationItem) {
@@ -595,8 +637,12 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
               type="range"
               min={0}
               max={100}
-              value={clampPercent(progress.percent)}
-              onChange={(event) => { void jumpToPercent(Number(event.target.value)); }}
+              value={progressScrubPercent ?? clampPercent(progress.percent)}
+              onChange={(event) => {
+                void jumpToPercent(Number(event.target.value), true);
+                keepControlsOpen();
+              }}
+              onBlur={flushPendingProgressJump}
               className="h-11 min-w-0 flex-1 accent-blue-500"
             />
             <Button variant="ghost" icon={ChevronRight} className={cn('min-h-11 shrink-0 px-3', dark ? 'text-slate-100 hover:bg-white/10' : '')} onClick={() => { void controls?.next(); keepControlsOpen(); }}>
