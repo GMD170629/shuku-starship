@@ -4,10 +4,10 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { WorkView } from '../../types/work';
 import { enqueuePreference, enqueueProgress, flushPreferenceQueue, flushProgressQueue } from '../../lib/pwa/progressQueue';
-import { ComicReader, type ComicImageFit, type ComicMode, type ComicPageMeta } from './comic-reader';
-import { EbookReader } from './epub-reader';
+import { ComicReader, type ComicDirection, type ComicImageFit, type ComicMode, type ComicPageMeta } from './comic-reader';
+import { EpubReader } from './epub-reader';
 import { PdfReader } from './pdf-reader';
-import { ReaderShell, readerThemeSurfaces, type EbookFlow, type EbookPageTurnAnimation, type ReaderVolumeNavigation, type ReaderControls, type ReaderFontFamily, type ReaderKind, type ReaderNavigationItem, type ReaderProgress, type ReaderSettings, type ReaderTheme } from './reader-shell';
+import { ReaderShell, readerThemeSurfaces, type EbookPageTurnAnimation, type ReaderVolumeNavigation, type ReaderControls, type ReaderFontFamily, type ReaderKind, type ReaderNavigationItem, type ReaderProgress, type ReaderSettings, type ReaderTheme } from './reader-shell';
 
 const readerOpeningStorageKey = 'shuku:reader:opening';
 
@@ -76,7 +76,6 @@ const defaultSettings: ReaderSettings = {
   lineHeight: 1.9,
   pageWidth: 960,
   fontFamily: 'system',
-  ebookFlow: 'paginated',
   ebookPageTurnAnimation: 'kindle',
   zoom: 1,
   comicDirection: 'ltr',
@@ -178,27 +177,21 @@ function largeCoverUrl(book: WorkView) {
 function coerceSettings(current: ReaderSettings, savedSettings: Record<string, unknown>) {
   const savedTheme = typeof savedSettings.theme === 'string' && ['day', 'warm', 'night', 'black'].includes(savedSettings.theme)
     ? savedSettings.theme as ReaderTheme
-    : savedSettings.theme === 'light'
-      ? 'day'
-      : savedSettings.theme === 'dark'
-        ? 'night'
-        : undefined;
+    : undefined;
   const savedFont = typeof savedSettings.fontFamily === 'string' && ['system', 'serif', 'sans'].includes(savedSettings.fontFamily)
     ? savedSettings.fontFamily as ReaderFontFamily
-    : undefined;
-  const savedFlow = savedSettings.ebookFlow === 'scrolled' || savedSettings.ebookFlow === 'paginated'
-    ? savedSettings.ebookFlow as EbookFlow
     : undefined;
   const savedPageTurnAnimation = savedSettings.ebookPageTurnAnimation === 'kindle' || savedSettings.ebookPageTurnAnimation === 'off'
     ? savedSettings.ebookPageTurnAnimation as EbookPageTurnAnimation
     : undefined;
-  const savedComicMode = savedSettings.mode === 'continuous' || savedSettings.mode === 'single' || savedSettings.mode === 'double'
-    ? savedSettings.mode as ComicMode
-    : savedSettings.mode === 'scroll'
-      ? 'continuous'
-      : undefined;
+  const savedComicMode = savedSettings.comicMode === 'single' || savedSettings.comicMode === 'double'
+    ? savedSettings.comicMode as ComicMode
+    : undefined;
   const savedFit = savedSettings.imageFit === 'width' || savedSettings.imageFit === 'height' || savedSettings.imageFit === 'contain' || savedSettings.imageFit === 'original'
     ? savedSettings.imageFit as ComicImageFit
+    : undefined;
+  const savedComicDirection = savedSettings.comicDirection === 'rtl' || savedSettings.comicDirection === 'ltr'
+    ? savedSettings.comicDirection as ComicDirection
     : undefined;
 
   return {
@@ -209,9 +202,8 @@ function coerceSettings(current: ReaderSettings, savedSettings: Record<string, u
     zoom: typeof savedSettings.zoom === 'number' ? savedSettings.zoom : current.zoom,
     theme: savedTheme ?? current.theme,
     fontFamily: savedFont ?? current.fontFamily,
-    ebookFlow: savedFlow ?? current.ebookFlow,
     ebookPageTurnAnimation: savedPageTurnAnimation ?? current.ebookPageTurnAnimation ?? defaultSettings.ebookPageTurnAnimation,
-    comicDirection: savedSettings.readingDirection === 'rtl' || savedSettings.readingDirection === 'ltr' ? savedSettings.readingDirection : current.comicDirection,
+    comicDirection: savedComicDirection ?? current.comicDirection,
     comicMode: savedComicMode ?? current.comicMode,
     imageFit: savedFit ?? current.imageFit,
     reversePages: typeof savedSettings.reversePages === 'boolean' ? savedSettings.reversePages : current.reversePages
@@ -283,6 +275,13 @@ function activeNavigationItemFromExtra(extra: Record<string, unknown>, items: Re
   if (currentHref) {
     const hrefItem = items.find((item) => item.href && normalizeReaderHref(item.href) === currentHref);
     if (hrefItem) return hrefItem;
+    return null;
+  }
+  const chapterHref = normalizeReaderHref(extra.chapterHref);
+  if (chapterHref) {
+    const hrefItem = items.find((item) => item.href && normalizeReaderHref(item.href) === chapterHref);
+    if (hrefItem) return hrefItem;
+    return null;
   }
   const sectionIndex = numberFromExtra(extra.sectionIndex ?? extra.chapterIndex);
   if (sectionIndex !== null) {
@@ -396,9 +395,10 @@ export function ReaderPage({ editionId }: { editionId: string }) {
 
     const nextPreferenceType = preferenceTypeForReader(nextReaderType);
     if (nextPreferenceType) {
-      const cachedSettings = readCache<ReaderSettings>(settingsCacheKey(nextPreferenceType));
+      const cachedSettings = readCache<Record<string, unknown>>(settingsCacheKey(nextPreferenceType));
       const serverSettings = safeRecord(preferences[nextPreferenceType]);
-      setSettings(coerceSettings(cachedSettings ?? defaultSettings, serverSettings));
+      const baseSettings = coerceSettings(defaultSettings, safeRecord(cachedSettings));
+      setSettings(coerceSettings(baseSettings, serverSettings));
     }
 
     if (nextReaderType === 'comic') {
@@ -691,7 +691,10 @@ export function ReaderPage({ editionId }: { editionId: string }) {
     setReaderReady(false);
     replaceReaderVolumeUrl(volumeId);
     loadBootstrap(editionId, volumeId)
-      .then(() => setReaderReady(true))
+      .then(() => {
+        if (typeof window !== 'undefined') window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+        setReaderReady(true);
+      })
       .catch((reason) => setError(reason instanceof Error ? reason.message : '读取卷册失败'))
       .finally(() => setVolumeNavigationLoading(false));
   }
@@ -709,6 +712,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
       .then(() => {
         const nextProgress = defaultComicProgress(nextVolume, nextVolume.pageCount);
         applyProgressState(nextProgress.progress, nextProgress.extra);
+        if (typeof window !== 'undefined') window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
         setReaderReady(true);
       })
       .catch((reason) => setError(reason instanceof Error ? reason.message : '读取下一卷失败'))
@@ -782,7 +786,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
         onSettingsChange={updateSettings}
       >
         {(readerEvents) => readerType === 'epub' ? (
-          <EbookReader
+          <EpubReader
             editionId={editionId}
             volumeId={currentVolumeSection?.id ?? null}
             title={book.title}
@@ -791,10 +795,8 @@ export function ReaderPage({ editionId }: { editionId: string }) {
             lineHeight={settings.lineHeight}
             pageWidth={settings.pageWidth}
             fontFamily={settings.fontFamily}
-            ebookFlow={settings.ebookFlow}
             ebookPageTurnAnimation={settings.ebookPageTurnAnimation}
             initialCfi={progress.position}
-            initialScrollTop={typeof progressExtra.scrollTop === 'number' ? progressExtra.scrollTop : 0}
             initialPercentage={progress.percent}
             onControls={setControls}
             onProgress={handleProgress}
@@ -812,7 +814,6 @@ export function ReaderPage({ editionId }: { editionId: string }) {
             initialPageCount={comicPageCount}
             dark={settings.theme === 'night' || settings.theme === 'black'}
             initialPage={progress.page}
-            initialPosition={progress.position}
             mode={settings.comicMode}
             direction={settings.comicDirection}
             imageFit={settings.imageFit}

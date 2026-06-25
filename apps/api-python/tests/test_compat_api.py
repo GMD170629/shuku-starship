@@ -60,6 +60,26 @@ def create_download_tables(db_session):
     db_session.commit()
 
 
+def set_default_download_folder(db_session, root_path):
+    db_session.execute(
+        text(
+            """INSERT OR REPLACE INTO MonitorFolder (
+                id, name, rootPath, enabled, ignoreHidden, minFileSizeBytes, createdAt, updatedAt
+            ) VALUES (
+                'download-folder-1', 'Downloads', :root_path, 1, 1, 1024, 'now', 'now'
+            )"""
+        ),
+        {"root_path": str(root_path)},
+    )
+    db_session.execute(
+        text(
+            "INSERT OR REPLACE INTO SystemSetting (`key`, `value`, `createdAt`, `updatedAt`) "
+            "VALUES ('library.defaultDownloadFolderId', 'download-folder-1', 'now', 'now')"
+        )
+    )
+    db_session.commit()
+
+
 def create_organize_detail_tables(db_session):
     db_session.execute(
         text(
@@ -1587,6 +1607,11 @@ def test_source_manual_and_http_providers_execute_search_and_save_records(client
     assert repeated.status_code == 200
     assert db_session.execute(text("SELECT COUNT(*) FROM SourceSearchRecord WHERE sourceId = :source_id"), {"source_id": manual_id}).scalar() == 1
 
+    saved_again = client.post("/api/source-search-records", json={**search_data["results"][0], "status": "ignored"})
+    assert saved_again.status_code == 200
+    assert saved_again.json()["data"]["record"]["status"] == "ignored"
+    assert db_session.execute(text("SELECT COUNT(*) FROM SourceSearchRecord WHERE sourceId = :source_id"), {"source_id": manual_id}).scalar() == 1
+
     http_source = client.post(
         "/api/sources",
         json={
@@ -1616,6 +1641,9 @@ def test_source_manual_and_http_providers_execute_search_and_save_records(client
 def test_pt_rss_provider_search_saves_record_and_creates_download_task(client, db_session, tmp_path):
     create_source_tables(db_session)
     create_download_tables(db_session)
+    download_dir = tmp_path / "pt-downloads"
+    download_dir.mkdir()
+    set_default_download_folder(db_session, download_dir)
     _login(client, db_session)
     feed_dir = tmp_path / "rss"
     feed_dir.mkdir()
@@ -1705,6 +1733,9 @@ def test_pt_rss_provider_search_saves_record_and_creates_download_task(client, d
 def test_generic_rss_and_comic_api_providers_create_download_tasks(client, db_session, tmp_path):
     create_source_tables(db_session)
     create_download_tables(db_session)
+    download_dir = tmp_path / "generic-downloads"
+    download_dir.mkdir()
+    set_default_download_folder(db_session, download_dir)
     _login(client, db_session)
     feed_dir = tmp_path / "generic-rss"
     feed_dir.mkdir()
@@ -1798,7 +1829,9 @@ def test_generic_rss_and_comic_api_providers_create_download_tasks(client, db_se
 def test_create_download_task_only_queues_without_downloading(client, db_session, test_settings, tmp_path):
     create_source_tables(db_session)
     create_download_tables(db_session)
-    test_settings.resolved_download_inbox_path.mkdir(parents=True)
+    download_dir = tmp_path / "queue-downloads"
+    download_dir.mkdir()
+    set_default_download_folder(db_session, download_dir)
     _login(client, db_session)
     source_dir = tmp_path / "queue-source"
     source_dir.mkdir()
@@ -1825,15 +1858,59 @@ def test_create_download_task_only_queues_without_downloading(client, db_session
         task = queued.json()["data"]["task"]
         assert task["status"] == "queued"
         assert task["type"] == "http"
-        assert not test_settings.resolved_download_inbox_path.joinpath("book.epub").exists()
+        assert not download_dir.joinpath("book.epub").exists()
     finally:
         server.shutdown()
 
 
-def test_zlibrary_provider_search_masks_password_and_downloads_with_eapi(client, db_session, test_settings):
+def test_create_download_from_search_result_checks_monitor_folder_before_saving_record(client, db_session, tmp_path):
     create_source_tables(db_session)
     create_download_tables(db_session)
-    test_settings.resolved_download_inbox_path.mkdir(parents=True)
+    _login(client, db_session)
+
+    created = client.post(
+        "/api/sources",
+        json={
+            "name": "HTTP direct queue source",
+            "providerType": "http",
+            "config": {"items": [{"externalId": "direct-1", "title": "Direct Queue Book", "downloadUrl": "https://example.test/direct.epub"}]},
+        },
+    )
+    assert created.status_code == 201
+    source_id = created.json()["data"]["source"]["id"]
+
+    searched = client.post(f"/api/sources/{source_id}/search", json={"keyword": "direct"})
+    assert searched.status_code == 200
+    result = searched.json()["data"]["results"][0]
+
+    missing_folder = client.post("/api/source-search-records/create-download-task", json=result)
+    assert missing_folder.status_code == 400
+    assert "默认下载监控文件夹" in missing_folder.json()["error"]["message"]
+    assert db_session.execute(text("SELECT COUNT(*) FROM SourceSearchRecord WHERE sourceId = :source_id"), {"source_id": source_id}).scalar() == 0
+
+    download_dir = tmp_path / "direct-downloads"
+    download_dir.mkdir()
+    set_default_download_folder(db_session, download_dir)
+
+    queued = client.post("/api/source-search-records/create-download-task", json=result)
+    assert queued.status_code == 201
+    queued_data = queued.json()["data"]
+    assert queued_data["record"]["status"] == "download_created"
+    assert queued_data["task"]["searchRecordId"] == queued_data["record"]["id"]
+    assert db_session.execute(text("SELECT COUNT(*) FROM SourceSearchRecord WHERE sourceId = :source_id"), {"source_id": source_id}).scalar() == 1
+
+    repeated = client.post("/api/source-search-records/create-download-task", json=result)
+    assert repeated.status_code == 200
+    assert repeated.json()["data"]["alreadyQueued"] is True
+    assert db_session.execute(text("SELECT COUNT(*) FROM SourceSearchRecord WHERE sourceId = :source_id"), {"source_id": source_id}).scalar() == 1
+
+
+def test_zlibrary_provider_search_masks_password_and_downloads_with_eapi(client, db_session, test_settings, tmp_path):
+    create_source_tables(db_session)
+    create_download_tables(db_session)
+    download_dir = tmp_path / "zlibrary-downloads"
+    download_dir.mkdir()
+    set_default_download_folder(db_session, download_dir)
     _login(client, db_session)
     server = serve_zlibrary_eapi()
     try:
@@ -1893,7 +1970,7 @@ def test_zlibrary_provider_search_masks_password_and_downloads_with_eapi(client,
         downloaded_task = started.json()["data"]["task"]
         assert downloaded_task["status"] == "downloaded"
         assert downloaded_task["filePath"].endswith("orbital.epub")
-        assert test_settings.resolved_download_inbox_path.joinpath("orbital.epub").read_bytes() == b"zlibrary-epub"
+        assert download_dir.joinpath("orbital.epub").read_bytes() == b"zlibrary-epub"
         assert any(item["path"] == "/eapi/book/123/abc123/file" and "remix_userid=user-1" in (item["cookie"] or "") for item in server.requests)
     finally:
         server.shutdown()

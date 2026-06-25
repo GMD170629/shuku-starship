@@ -93,7 +93,7 @@ export function FeedbackProvider({ children }: { children: ReactNode }) {
   return (
     <FeedbackContext.Provider value={value}>
       {children}
-      <div className="fixed right-4 top-4 z-[120] flex w-[calc(100vw-2rem)] max-w-sm flex-col gap-3 md:right-6 md:top-6" aria-live="polite" aria-atomic="true">
+      <div className="shuku-toast-region fixed right-4 top-4 z-[120] flex w-[calc(100vw-2rem)] max-w-sm flex-col gap-3 md:right-6 md:top-6" aria-live="polite" aria-atomic="true">
         {toasts.map((item) => {
           const tone = toastTone[item.tone];
           const Icon = tone.icon;

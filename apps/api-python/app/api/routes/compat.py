@@ -2740,7 +2740,7 @@ async def search_source(source_id: str, request: Request, db: Session = Depends(
         )
     except ValueError as exc:
         return fail(str(exc), status_code=400)
-    records = [_upsert_source_record(db, source, result, "saved") for result in results] if payload.get("saveResults") else []
+    records = [_upsert_source_record(db, source, result, "saved")[0] for result in results] if payload.get("saveResults") else []
     return ok({"results": results, "records": records, "provider": provider})
 
 
@@ -2748,8 +2748,8 @@ def _source_record_values(source: dict[str, Any], result: dict[str, Any], status
     return {
         "sourceId": source["id"],
         "providerType": result.get("providerType") or source.get("providerType"),
-        "externalId": result.get("externalId"),
-        "title": (result.get("title") or "").strip(),
+        "externalId": result.get("externalId") or f"manual:{time_ns()}",
+        "title": (result.get("title") or "未命名结果").strip(),
         "subtitle": result.get("subtitle"),
         "author": result.get("author"),
         "description": result.get("description"),
@@ -2767,20 +2767,71 @@ def _source_record_values(source: dict[str, Any], result: dict[str, Any], status
     }
 
 
-def _upsert_source_record(db: Session, source: dict[str, Any], result: dict[str, Any], status: str) -> dict[str, Any]:
+def _upsert_source_record(db: Session, source: dict[str, Any], result: dict[str, Any], status: str) -> tuple[dict[str, Any], bool]:
     if not _has_table(db, "SourceSearchRecord"):
-        return result
+        return result, True
+    values = _source_record_values(source, result, status)
     existing = _row(
         db,
         "SELECT * FROM `SourceSearchRecord` WHERE `sourceId` = :source_id AND `externalId` = :external_id",
-        {"source_id": source["id"], "external_id": result.get("externalId")},
+        {"source_id": source["id"], "external_id": values["externalId"]},
     )
-    values = _source_record_values(source, result, status)
     if existing:
-        return _update(db, "SourceSearchRecord", existing["id"], values) or existing
+        return _update(db, "SourceSearchRecord", existing["id"], values) or existing, False
     values["id"] = f"py_{time_ns()}"
     values["createdAt"] = _now()
-    return _insert(db, "SourceSearchRecord", values)
+    try:
+        return _insert(db, "SourceSearchRecord", values), True
+    except IntegrityError:
+        db.rollback()
+        existing = _row(
+            db,
+            "SELECT * FROM `SourceSearchRecord` WHERE `sourceId` = :source_id AND `externalId` = :external_id",
+            {"source_id": source["id"], "external_id": values["externalId"]},
+        )
+        if existing:
+            return _update(db, "SourceSearchRecord", existing["id"], values) or existing, False
+        raise
+
+
+def _source_from_record_payload(db: Session, payload: dict[str, Any]) -> dict[str, Any] | None:
+    source_id = payload.get("sourceId")
+    if source_id and _has_table(db, "Source"):
+        return _row(db, "SELECT * FROM `Source` WHERE `id` = :id", {"id": source_id})
+    return None
+
+
+def _create_download_task_for_record(db: Session, record: dict[str, Any], save_path: str) -> tuple[dict[str, Any], dict[str, Any], bool, int]:
+    existing = find_active_download_task(db, record["id"])
+    if existing:
+        if record.get("status") != "download_created":
+            record = _update(db, "SourceSearchRecord", record["id"], {"status": "download_created", "updatedAt": _now()}) or record
+        return existing, record, True, 200
+    remote_ref = create_remote_ref_from_search_record(record)
+    task_type = infer_download_task_type(record.get("providerType") or "", record.get("downloadMeta"))
+    task = (
+        _insert(
+            db,
+            "DownloadTask",
+            {
+                "id": f"py_{time_ns()}",
+                "sourceId": record.get("sourceId"),
+                "searchRecordId": record["id"],
+                "type": task_type,
+                "status": "queued",
+                "displayName": record.get("title") or "下载任务",
+                "remoteRef": _json_text(remote_ref),
+                "savePath": save_path,
+                "progress": 0,
+                "createdAt": _now(),
+                "updatedAt": _now(),
+            },
+        )
+        if _has_table(db, "DownloadTask")
+        else {"id": None}
+    )
+    record = _update(db, "SourceSearchRecord", record["id"], {"status": "download_created", "updatedAt": _now()}) or record
+    return task, record, False, 201
 
 
 def _source_record_view(db: Session, record: dict[str, Any]) -> dict[str, Any]:
@@ -2830,8 +2881,33 @@ async def create_source_record(request: Request, db: Session = Depends(get_db), 
     if auth_error:
         return auth_error
     payload = await request.json()
-    record = _insert(db, "SourceSearchRecord", {"id": f"py_{time_ns()}", "sourceId": payload.get("sourceId"), "providerType": payload.get("providerType") or "manual", "externalId": payload.get("externalId") or f"manual:{time_ns()}", "title": payload.get("title") or "未命名结果", "subtitle": payload.get("subtitle"), "author": payload.get("author"), "description": payload.get("description"), "coverUrl": payload.get("coverUrl"), "externalUrl": payload.get("externalUrl"), "format": payload.get("format"), "size": payload.get("size"), "language": payload.get("language"), "downloadAvailable": bool(payload.get("downloadAvailable", False)), "downloadMeta": _json_text(payload.get("downloadMeta", {})), "raw": _json_text(payload.get("raw", payload)), "status": payload.get("status") or "new", "createdAt": _now(), "updatedAt": _now()})
-    return ok({"record": record}, status_code=201)
+    source = _source_from_record_payload(db, payload)
+    if not source:
+        return fail("源不存在", status_code=404)
+    record, created = _upsert_source_record(db, source, {**payload, "raw": payload.get("raw", payload)}, payload.get("status") or "new")
+    return ok({"record": record, "created": created}, status_code=201 if created else 200)
+
+
+@router.post("/source-search-records/create-download-task")
+async def create_download_from_search_result(request: Request, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+    _user, auth_error = _auth(db, request, settings)
+    if auth_error:
+        return auth_error
+    payload = await request.json()
+    source = _source_from_record_payload(db, payload)
+    if not source:
+        return fail("源不存在", status_code=404)
+    if not payload.get("downloadAvailable"):
+        return fail("该搜索结果不可下载", status_code=400)
+    if not has_usable_download_meta(payload.get("providerType") or source.get("providerType") or "", payload.get("downloadMeta")):
+        return fail("该搜索结果缺少可用下载信息", status_code=400)
+    try:
+        save_path = str(default_monitor_folder_path(db, "library.defaultDownloadFolderId"))
+    except ValueError as exc:
+        return fail(str(exc), status_code=400)
+    record, _created = _upsert_source_record(db, source, {**payload, "raw": payload.get("raw", payload)}, "saved")
+    task, record, already_queued, status_code = _create_download_task_for_record(db, record, save_path)
+    return ok({"task": task, "record": record, "alreadyQueued": already_queued}, status_code=status_code)
 
 
 @router.get("/source-search-records/{record_id}")
@@ -2889,40 +2965,12 @@ def create_download_from_record(record_id: str, request: Request, db: Session = 
         return fail("该搜索结果不可下载", status_code=400)
     if not has_usable_download_meta(record.get("providerType") or "", record.get("downloadMeta")):
         return fail("该搜索结果缺少可用下载信息", status_code=400)
-    existing = find_active_download_task(db, record_id)
-    if existing:
-        if record.get("status") != "download_created":
-            record = _update(db, "SourceSearchRecord", record_id, {"status": "download_created", "updatedAt": _now()}) or record
-        return ok({"task": existing, "record": record, "alreadyQueued": True})
     try:
         save_path = str(default_monitor_folder_path(db, "library.defaultDownloadFolderId"))
     except ValueError as exc:
         return fail(str(exc), status_code=400)
-    remote_ref = create_remote_ref_from_search_record(record)
-    task_type = infer_download_task_type(record.get("providerType") or "", record.get("downloadMeta"))
-    task = (
-        _insert(
-            db,
-            "DownloadTask",
-            {
-                "id": f"py_{time_ns()}",
-                "sourceId": record.get("sourceId"),
-                "searchRecordId": record_id,
-                "type": task_type,
-                "status": "queued",
-                "displayName": record.get("title") or "下载任务",
-                "remoteRef": _json_text(remote_ref),
-                "savePath": save_path,
-                "progress": 0,
-                "createdAt": _now(),
-                "updatedAt": _now(),
-            },
-        )
-        if _has_table(db, "DownloadTask")
-        else {"id": None}
-    )
-    record = _update(db, "SourceSearchRecord", record_id, {"status": "download_created", "updatedAt": _now()}) or record
-    return ok({"task": task, "record": record}, status_code=201)
+    task, record, already_queued, status_code = _create_download_task_for_record(db, record, save_path)
+    return ok({"task": task, "record": record, "alreadyQueued": already_queued}, status_code=status_code)
 
 
 @router.get("/download-tasks")

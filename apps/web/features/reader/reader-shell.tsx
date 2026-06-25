@@ -9,7 +9,6 @@ import type { ComicDirection, ComicImageFit, ComicMode } from './comic-reader';
 export type ReaderKind = 'epub' | 'comic' | 'pdf';
 export type ReaderTheme = 'day' | 'warm' | 'night' | 'black';
 export type ReaderFontFamily = 'system' | 'serif' | 'sans';
-export type EbookFlow = 'paginated' | 'scrolled';
 export type EbookPageTurnAnimation = 'kindle' | 'off';
 
 export type ReaderProgress = {
@@ -34,7 +33,6 @@ export type ReaderSettings = {
   lineHeight: number;
   pageWidth: number;
   fontFamily: ReaderFontFamily;
-  ebookFlow: EbookFlow;
   ebookPageTurnAnimation: EbookPageTurnAnimation;
   zoom: number;
   comicDirection: ComicDirection;
@@ -159,6 +157,10 @@ function isActiveNavigationItem(readerType: ReaderKind, item: ReaderNavigationIt
   if (readerType === 'pdf') return item.index === progress.page;
   const currentHref = normalizeReaderHref(progressExtra.currentHref);
   if (item.href && currentHref && normalizeReaderHref(item.href) === currentHref) return true;
+  if (currentHref) return false;
+  const chapterHref = normalizeReaderHref(progressExtra.chapterHref);
+  if (item.href && chapterHref && normalizeReaderHref(item.href) === chapterHref) return true;
+  if (chapterHref) return false;
   const sectionIndex = numberFromExtra(progressExtra.sectionIndex ?? progressExtra.chapterIndex);
   if (sectionIndex !== null) return item.sectionIndex === sectionIndex || item.index === sectionIndex + 1;
   return false;
@@ -748,12 +750,6 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
                     onChange={(value) => updateSettings({ pageWidth: Number(value) })}
                   />
                   <SegmentedSetting
-                    label="模式"
-                    value={settings.ebookFlow}
-                    options={[{ value: 'paginated', label: '分页' }, { value: 'scrolled', label: '滚动' }]}
-                    onChange={(value) => updateSettings({ ebookFlow: value as EbookFlow })}
-                  />
-                  <SegmentedSetting
                     label="翻页动画"
                     value={settings.ebookPageTurnAnimation}
                     options={[{ value: 'kindle', label: 'Kindle' }, { value: 'off', label: '关闭' }]}
@@ -769,7 +765,7 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
                   <SegmentedSetting
                     label="模式"
                     value={settings.comicMode}
-                    options={[{ value: 'single', label: '单页' }, { value: 'double', label: '双页' }, { value: 'continuous', label: '连续' }]}
+                    options={[{ value: 'single', label: '单页' }, { value: 'double', label: '双页' }]}
                     onChange={(value) => updateSettings({ comicMode: value as ComicMode })}
                   />
                   <SegmentedSetting

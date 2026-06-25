@@ -1,4 +1,4 @@
-const VERSION = 'shuku-pwa-v0.4.8';
+const VERSION = 'shuku-pwa-v0.4.9';
 const SHELL_CACHE = `${VERSION}-app-shell`;
 const STATIC_CACHE = `${VERSION}-static`;
 const PRIVATE_COVER_CACHE = `${VERSION}-private-cover`;
@@ -160,6 +160,24 @@ async function clearPrivateCaches() {
   await Promise.all(PRIVATE_CACHES.map((cacheName) => caches.delete(cacheName)));
 }
 
+function isReaderClientUrl(clientUrl) {
+  try {
+    const url = new URL(clientUrl);
+    return isSameOrigin(url) && url.pathname.startsWith('/reader/');
+  } catch {
+    return false;
+  }
+}
+
+async function reloadReaderClients() {
+  const clients = await self.clients.matchAll({ includeUncontrolled: true, type: 'window' });
+  await Promise.all(
+    clients
+      .filter((client) => isReaderClientUrl(client.url))
+      .map((client) => client.navigate(client.url).catch(() => undefined))
+  );
+}
+
 self.addEventListener('install', (event) => {
   debugLog('info', 'install', VERSION);
   event.waitUntil(
@@ -182,6 +200,7 @@ self.addEventListener('activate', (event) => {
     caches.keys()
       .then((keys) => Promise.all(keys.filter((key) => !key.startsWith(VERSION)).map((key) => caches.delete(key))))
       .then(() => self.clients.claim())
+      .then(() => reloadReaderClients())
       .then(() => debugLog('info', 'clients claimed', VERSION))
       .catch((error) => {
         debugLog('error', 'activate failed', error?.message || String(error));

@@ -1,8 +1,8 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type MouseEvent, type TouchEvent } from 'react';
 import ePub, { type Book, type Location, type Rendition } from 'epubjs';
-import { readerThemeSurfaces, type EbookFlow, type EbookPageTurnAnimation, type ReaderControls, type ReaderFontFamily, type ReaderProgress, type ReaderTheme } from './reader-shell';
+import { readerThemeSurfaces, type EbookPageTurnAnimation, type ReaderControls, type ReaderFontFamily, type ReaderProgress, type ReaderTheme } from './reader-shell';
 
 type EpubReaderProps = {
   editionId: string;
@@ -13,10 +13,8 @@ type EpubReaderProps = {
   lineHeight: number;
   pageWidth: number;
   fontFamily: ReaderFontFamily;
-  ebookFlow: EbookFlow;
   ebookPageTurnAnimation: EbookPageTurnAnimation;
   initialCfi: string;
-  initialScrollTop: number;
   initialPercentage: number;
   onControls: (controls: ReaderControls | null) => void;
   onProgress: (progress: ReaderProgress, extra?: Record<string, unknown>) => void;
@@ -36,6 +34,11 @@ type EpubLocationStore = {
 type EpubView = {
   document?: Document;
   iframe?: HTMLIFrameElement;
+};
+
+type EpubSpineItem = {
+  href?: string;
+  index?: number;
 };
 
 type EpubBookWithReadiness = Book & {
@@ -58,7 +61,7 @@ type ReaderDocument = Document & {
   __shukuReaderEventsBound?: boolean;
 };
 
-type NavigationIntent = 'initial' | 'next' | 'prev' | 'display' | 'progress' | 'index' | 'scroll';
+type NavigationIntent = 'initial' | 'next' | 'prev' | 'progress' | 'index';
 
 type RenditionWithReporting = Rendition & {
   currentLocation?: () => Location | Location[] | null;
@@ -139,9 +142,21 @@ function readerPageX(clientX: number, width: number) {
   return ((clientX % width) + width) % width;
 }
 
-function isCenterPointer(clientX: number, clientY: number, viewport: { width: number; height: number }) {
-  const x = readerPageX(clientX, viewport.width);
-  return x >= viewport.width * 0.33 && x <= viewport.width * 0.67 && clientY >= viewport.height * 0.2 && clientY <= viewport.height * 0.85;
+function readerPointerPosition(clientX: number, clientY: number, viewport: { width: number; height: number }) {
+  return {
+    x: readerPageX(clientX, viewport.width),
+    y: Math.max(0, Math.min(viewport.height, clientY))
+  };
+}
+
+function readerPointerIntent(clientX: number, clientY: number, viewport: { width: number; height: number }): 'center' | 'prev' | 'next' | null {
+  const pointer = readerPointerPosition(clientX, clientY, viewport);
+  if (pointer.x >= viewport.width * 0.33 && pointer.x <= viewport.width * 0.67 && pointer.y >= viewport.height * 0.2 && pointer.y <= viewport.height * 0.85) {
+    return 'center';
+  }
+  if (pointer.x < viewport.width * 0.33) return 'prev';
+  if (pointer.x > viewport.width * 0.67) return 'next';
+  return null;
 }
 
 function isInteractiveElement(target: EventTarget | null) {
@@ -198,36 +213,10 @@ function allowScriptsForEpubView(view: EpubView) {
   }
 }
 
-function scrollElementFromView(view: EpubView | null) {
-  const doc = view?.document;
-  return doc?.scrollingElement ?? doc?.documentElement ?? doc?.body ?? null;
-}
-
-function scrollTopFromView(view: EpubView | null) {
-  return scrollElementFromView(view)?.scrollTop ?? 0;
-}
-
-function scrollViewTo(view: EpubView | null, top: number) {
-  scrollElementFromView(view)?.scrollTo({ top });
-}
-
-function canScrollPage(view: EpubView | null, direction: 1 | -1) {
-  const target = scrollElementFromView(view);
-  if (!target) return false;
-  if (direction > 0) return target.scrollTop + target.clientHeight < target.scrollHeight - 4;
-  return target.scrollTop > 4;
-}
-
-function scrollViewByPage(view: EpubView | null, direction: 1 | -1) {
-  const target = scrollElementFromView(view);
-  if (!target || !canScrollPage(view, direction)) return false;
-  target.scrollBy({ top: target.clientHeight * 0.86 * direction, behavior: 'smooth' });
-  return true;
-}
-
-function isStaleEpubDisplayOptionsError(reason: unknown) {
+function isStaleEpubLifecycleError(reason: unknown) {
   const message = reason instanceof Error ? reason.message : String(reason);
-  return message.includes("Cannot read properties of undefined") && message.includes("displayOptions");
+  return message.includes("Cannot read properties of undefined")
+    && (message.includes("displayOptions") || message.includes("package") || message.includes("resize") || message.includes("size"));
 }
 
 async function waitForEpubPackage(book: EpubBookWithReadiness) {
@@ -243,7 +232,20 @@ function isRtlBook(book: EpubBookWithReadiness) {
 }
 
 function waitForAnimationFrame() {
-  return new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+  return new Promise<void>((resolve) => {
+    let settled = false;
+    const timeout = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    }, 80);
+    window.requestAnimationFrame(() => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      resolve();
+    });
+  });
 }
 
 function wait(ms: number) {
@@ -299,6 +301,15 @@ function reportRenditionLocation(rendition: Rendition | null) {
   }
 }
 
+function resizeRenditionSafely(rendition: Rendition | null, width: number, height: number) {
+  if (!rendition) return;
+  try {
+    rendition.resize(width, height);
+  } catch (reason) {
+    if (!isStaleEpubLifecycleError(reason)) throw reason;
+  }
+}
+
 function currentRenditionLocation(rendition: Rendition | null) {
   const getter = (rendition as RenditionWithReporting | null)?.currentLocation;
   if (typeof getter !== 'function') return null;
@@ -313,6 +324,103 @@ function currentRenditionLocation(rendition: Rendition | null) {
 function hrefFromLocation(location: Location) {
   const start = location.start as { href?: unknown } | undefined;
   return typeof start?.href === 'string' ? start.href : '';
+}
+
+function normalizeEpubHref(value: unknown) {
+  if (typeof value !== 'string') return '';
+  try {
+    const decoded = decodeURIComponent(value).split('#')[0].replace(/\\/g, '/');
+    const path = /^[a-z][a-z0-9+.-]*:\/\//i.test(decoded) ? new URL(decoded).pathname : decoded;
+    return path.replace(/^\.?\//, '').toLowerCase();
+  } catch {
+    return value.split('#')[0].replace(/^\.?\//, '').replace(/\\/g, '/').toLowerCase();
+  }
+}
+
+function hrefFileName(value: string) {
+  const parts = value.split('/').filter(Boolean);
+  return parts.length > 0 ? parts[parts.length - 1] : value;
+}
+
+function epubSpineItems(book: EpubBookWithReadiness) {
+  const items = book.spine?.items ?? book.spine?.spineItems;
+  return Array.isArray(items) ? items as EpubSpineItem[] : [];
+}
+
+function spineIndexForHref(book: EpubBookWithReadiness, href: string) {
+  const target = normalizeEpubHref(href);
+  if (!target) return null;
+  const targetFile = hrefFileName(target);
+  const items = epubSpineItems(book);
+  const match = items.find((item) => normalizeEpubHref(item.href) === target)
+    ?? items.find((item) => {
+      const itemHref = normalizeEpubHref(item.href);
+      return itemHref.endsWith(`/${target}`) || target.endsWith(`/${itemHref}`);
+    })
+    ?? items.find((item) => hrefFileName(normalizeEpubHref(item.href)) === targetFile);
+  if (!match) return null;
+  const index = items.indexOf(match);
+  if (index >= 0) return index;
+  return typeof match.index === 'number' && Number.isFinite(match.index) ? Math.max(0, Math.round(match.index)) : null;
+}
+
+function spineHrefForHref(book: EpubBookWithReadiness, href: string) {
+  const target = normalizeEpubHref(href);
+  if (!target) return '';
+  const targetFile = hrefFileName(target);
+  const items = epubSpineItems(book);
+  const match = items.find((item) => normalizeEpubHref(item.href) === target)
+    ?? items.find((item) => {
+      const itemHref = normalizeEpubHref(item.href);
+      return itemHref.endsWith(`/${target}`) || target.endsWith(`/${itemHref}`);
+    })
+    ?? items.find((item) => hrefFileName(normalizeEpubHref(item.href)) === targetFile);
+  return typeof match?.href === 'string' ? match.href : href;
+}
+
+function viewHref(view: EpubView | null) {
+  const base = view?.document?.querySelector('base')?.getAttribute('href') ?? '';
+  return normalizeEpubHref(base);
+}
+
+function viewMatchesHref(view: EpubView | null, href: string) {
+  const current = viewHref(view);
+  const target = normalizeEpubHref(href);
+  return Boolean(current && target && (current === target || current.endsWith(`/${target}`) || target.endsWith(`/${current}`)));
+}
+
+async function displayTargetWithTimeout(rendition: Rendition, target?: string | number, timeoutMs = 1800) {
+  const displayPromise = typeof target === 'number'
+    ? rendition.display(target)
+    : target === undefined
+      ? rendition.display()
+      : rendition.display(target);
+  displayPromise.catch(() => undefined);
+  await Promise.race([displayPromise, wait(timeoutMs)]);
+}
+
+async function displayHref(rendition: Rendition, book: EpubBookWithReadiness, href: string, currentView: () => EpubView | null) {
+  let lastError: unknown = null;
+  const spineHref = spineHrefForHref(book, href);
+  const targets: Array<string | number | undefined> = [];
+  if (spineHref) targets.push(spineHref);
+  if (href && href !== spineHref) targets.push(href);
+  const spineIndex = spineIndexForHref(book, href);
+  if (spineIndex !== null) targets.push(spineIndex);
+  targets.push(undefined);
+
+  for (const target of targets) {
+    try {
+      await displayTargetWithTimeout(rendition, target);
+      await wait(120);
+      if (viewMatchesHref(currentView(), href)) return;
+    } catch (reason) {
+      lastError = reason;
+    }
+  }
+  if (lastError) throw lastError;
+  const currentHref = viewHref(currentView());
+  throw new Error(`无法定位 EPUB 章节：${href}${currentHref ? `（当前章节：${currentHref}）` : ''}`);
 }
 
 function spineSectionCount(book: EpubBookWithReadiness) {
@@ -338,7 +446,7 @@ function fallbackPercentFromLocation(location: Location, sectionIndex: number, d
   return 0;
 }
 
-export function EbookReader({
+export function EpubReader({
   editionId,
   volumeId,
   title,
@@ -347,10 +455,8 @@ export function EbookReader({
   lineHeight,
   pageWidth,
   fontFamily,
-  ebookFlow,
   ebookPageTurnAnimation,
   initialCfi,
-  initialScrollTop,
   initialPercentage,
   onControls,
   onProgress,
@@ -366,7 +472,6 @@ export function EbookReader({
   const currentCfiRef = useRef(initialCfi);
   const navigationTailRef = useRef<Promise<unknown>>(Promise.resolve());
   const navigationTokenRef = useRef(0);
-  const initialScrollTopRef = useRef(initialScrollTop);
   const initialPercentageRef = useRef(initialPercentage);
   const onActivityRef = useRef(onActivity);
   const onProgressRef = useRef(onProgress);
@@ -379,6 +484,10 @@ export function EbookReader({
   const lineHeightRef = useRef(lineHeight);
   const fontFamilyRef = useRef(fontFamily);
   const pageWidthRef = useRef(pageWidth);
+  const runNextRef = useRef<() => Promise<void>>(async () => undefined);
+  const runPrevRef = useRef<() => Promise<void>>(async () => undefined);
+  const hostTouchRef = useRef({ x: 0, y: 0, time: 0 });
+  const hostSuppressClickUntilRef = useRef(0);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [navigating, setNavigating] = useState(false);
@@ -400,9 +509,8 @@ export function EbookReader({
 
   useEffect(() => {
     if (initialCfi) currentCfiRef.current = initialCfi;
-    initialScrollTopRef.current = initialScrollTop;
     initialPercentageRef.current = initialPercentage;
-  }, [initialCfi, initialPercentage, initialScrollTop]);
+  }, [initialCfi, initialPercentage]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -429,12 +537,12 @@ export function EbookReader({
     bookRef.current = book;
 
     const suppressStaleCleanupError = (event: PromiseRejectionEvent) => {
-      if ((canceled || destroyRequested) && isStaleEpubDisplayOptionsError(event.reason)) {
+      if ((canceled || destroyRequested) && isStaleEpubLifecycleError(event.reason)) {
         event.preventDefault();
       }
     };
     const suppressStaleCleanupWindowError = (event: ErrorEvent) => {
-      if ((canceled || destroyRequested) && isStaleEpubDisplayOptionsError(event.error ?? event.message)) {
+      if ((canceled || destroyRequested) && isStaleEpubLifecycleError(event.error ?? event.message)) {
         event.preventDefault();
       }
     };
@@ -444,7 +552,11 @@ export function EbookReader({
     const destroyReader = () => {
       if (readerDestroyed) return;
       readerDestroyed = true;
-      localRendition?.destroy();
+      try {
+        localRendition?.destroy();
+      } catch (reason) {
+        if (!isStaleEpubLifecycleError(reason)) throw reason;
+      }
       window.setTimeout(() => book.destroy(), 10000);
     };
 
@@ -456,22 +568,21 @@ export function EbookReader({
       }
     };
 
-    const runNavigation = (intent: NavigationIntent, action: () => Promise<unknown>, options: { direction?: 1 | -1; cover?: boolean } = {}) => {
+    const runNavigation = (intent: NavigationIntent, action: () => Promise<unknown>, options: { direction?: 1 | -1; cover?: boolean; timeoutMs?: number } = {}) => {
       const token = navigationTokenRef.current + 1;
       navigationTokenRef.current = token;
-      const cover = options.cover ?? intent !== 'scroll';
+      const cover = options.cover ?? intent !== 'initial';
       const task = navigationTailRef.current.catch(() => undefined).then(async () => {
         if (canceled || readerDestroyed) return;
         const startedAt = performance.now();
         if (cover) setNavigating(true);
         const direction = options.direction;
         const shouldAnimate = direction !== undefined
-          && ebookFlow === 'paginated'
           && ebookPageTurnAnimationRef.current === 'kindle'
           && !prefersReducedMotion();
         try {
           if (shouldAnimate) await runKindlePageTurn(container, direction, action);
-          else await waitForNavigationAction(action);
+          else await waitForNavigationAction(action, options.timeoutMs);
           reportRenditionLocation(localRendition);
           emitCurrentLocation?.();
           if (cover) await finishVisibleCommit(startedAt);
@@ -490,22 +601,16 @@ export function EbookReader({
       return task.then(() => undefined);
     };
 
-    const updateScrolledProgress = (view: EpubView, locations: EpubLocationStore) => {
-      if (ebookFlow !== 'scrolled') return;
-      const scrollElement = scrollElementFromView(view);
-      const cfi = currentCfiRef.current;
-      const max = Math.max(1, (scrollElement?.scrollHeight ?? 1) - (scrollElement?.clientHeight ?? 0));
-      const chapterPercent = clampPercent((scrollTopFromView(view) / max) * 100);
-      const locationTotal = locations.length();
-      const pageIndex = cfi && locationTotal > 0 ? Math.max(1, locations.locationFromCfi(cfi) + 1) : 1;
-      const percent = locationTotal > 1 ? clampPercent(((pageIndex - 1) / (locationTotal - 1)) * 100) : chapterPercent;
-      onProgressRef.current({
-        page: pageIndex,
-        total: locationTotal || null,
-        percent,
-        position: cfi,
-        label: locationTotal ? `第 ${pageIndex} / ${locationTotal} 页` : `${chapterPercent}%`
-      }, { scrollTop: scrollTopFromView(view), cfi, percentage: percent, chapterPercent, pageIndex, totalPages: locationTotal || null });
+    const handleReaderPointerIntent = (clientX: number, clientY: number, runNext: () => Promise<void>, runPrev: () => Promise<void>) => {
+      const viewport = readerViewportForContainer(container);
+      const intent = readerPointerIntent(clientX, clientY, viewport);
+      if (intent === 'center') {
+        onTapRef.current();
+        return;
+      }
+      onActivityRef.current();
+      if (intent === 'prev') void runPrev();
+      else if (intent === 'next') void runNext();
     };
 
     const setupDocumentEvents = (document: ReaderDocument, locations: EpubLocationStore, ensureLocationsReady: () => Promise<unknown>, runNext: () => Promise<void>, runPrev: () => Promise<void>) => {
@@ -556,15 +661,7 @@ export function EbookReader({
           return;
         }
         if (isInteractiveElement(target)) return;
-        const viewport = readerViewportForContainer(container);
-        const x = readerPageX(event.clientX, viewport.width);
-        if (isCenterPointer(event.clientX, event.clientY, viewport)) {
-          onTapRef.current();
-          return;
-        }
-        onActivityRef.current();
-        if (x < viewport.width * 0.33) void runPrev();
-        else if (x > viewport.width * 0.67) void runNext();
+        handleReaderPointerIntent(event.clientX, event.clientY, runNext, runPrev);
       });
 
       document.addEventListener('touchstart', (event) => {
@@ -590,23 +687,8 @@ export function EbookReader({
         }
         if (Math.abs(deltaX) < 12 && Math.abs(deltaY) < 12) {
           suppressClickUntil = Date.now() + 450;
-          const viewport = readerViewportForContainer(container);
-          const x = readerPageX(touch.clientX, viewport.width);
-          if (isCenterPointer(touch.clientX, touch.clientY, viewport)) {
-            onTapRef.current();
-            return;
-          }
-          onActivityRef.current();
-          if (x < viewport.width * 0.33) void runPrev();
-          else if (x > viewport.width * 0.67) void runNext();
+          handleReaderPointerIntent(touch.clientX, touch.clientY, runNext, runPrev);
         }
-      }, { passive: true });
-
-      document.addEventListener('scroll', () => {
-        if (ebookFlow !== 'scrolled') return;
-        onActivityRef.current();
-        const view = currentViewRef.current;
-        if (view) updateScrolledProgress(view, locations);
       }, { passive: true });
     };
 
@@ -631,7 +713,7 @@ export function EbookReader({
           manager: 'default',
           width: '100%',
           height: '100%',
-          flow: ebookFlow === 'scrolled' ? 'scrolled-doc' : 'paginated',
+          flow: 'paginated',
           spread: 'none',
           allowScriptedContent: true
         });
@@ -668,7 +750,6 @@ export function EbookReader({
           const percent = fixedTotal && fixedTotal > 1
             ? clampPercent(((fixedPage - 1) / (fixedTotal - 1)) * 100)
             : fallbackPercentFromLocation(location, sectionIndex, displayedPage, displayedTotal, spineSectionCount(book as EpubBookWithReadiness));
-          const scrollTop = ebookFlow === 'scrolled' ? scrollTopFromView(currentViewRef.current) : 0;
           onProgressRef.current({
             page: fixedPage,
             total: fixedTotal,
@@ -686,7 +767,6 @@ export function EbookReader({
             locationIndex,
             locationTotal: locationTotal || null,
             chapterIndex: location.start?.index ?? 0,
-            scrollTop,
             cfi
           });
         };
@@ -697,27 +777,13 @@ export function EbookReader({
         };
 
         const runNext = async () => {
-          if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, 1)) {
-            const view = currentViewRef.current;
-            if (view) {
-              window.requestAnimationFrame(() => updateScrolledProgress(view, locations));
-              window.setTimeout(() => updateScrolledProgress(view, locations), 80);
-            }
-            return;
-          }
           await runNavigation('next', rawNext, { direction: 1 });
         };
         const runPrev = async () => {
-          if (ebookFlow === 'scrolled' && scrollViewByPage(currentViewRef.current, -1)) {
-            const view = currentViewRef.current;
-            if (view) {
-              window.requestAnimationFrame(() => updateScrolledProgress(view, locations));
-              window.setTimeout(() => updateScrolledProgress(view, locations), 80);
-            }
-            return;
-          }
           await runNavigation('prev', rawPrev, { direction: -1 });
         };
+        runNextRef.current = runNext;
+        runPrevRef.current = runPrev;
 
         rendition.on('rendered', (_section: unknown, view: EpubView) => {
           lastRenderedAt = performance.now();
@@ -753,7 +819,7 @@ export function EbookReader({
           jumpToHref: async (href) => {
             onActivityRef.current();
             await runNavigation('index', async () => {
-              await rendition.display(href);
+              await displayHref(rendition, book as EpubBookWithReadiness, href, () => currentViewRef.current);
             });
           },
           jumpToIndex: async (index) => {
@@ -781,12 +847,6 @@ export function EbookReader({
         void ensureLocationsReady().then(() => {
           if (!canceled && !destroyRequested) emitCurrentLocation?.();
         });
-
-        if (ebookFlow === 'scrolled' && initialScrollTopRef.current > 0) {
-          window.setTimeout(() => {
-            if (!canceled) scrollViewTo(currentViewRef.current, initialScrollTopRef.current);
-          }, 150);
-        }
       })
       .then(() => {
         if (!canceled) {
@@ -817,19 +877,21 @@ export function EbookReader({
       renditionRef.current = null;
       bookRef.current = null;
       currentViewRef.current = null;
+      runNextRef.current = async () => undefined;
+      runPrevRef.current = async () => undefined;
       window.setTimeout(() => {
         window.removeEventListener('unhandledrejection', suppressStaleCleanupError, { capture: true });
         window.removeEventListener('error', suppressStaleCleanupWindowError, { capture: true });
       }, 30000);
     };
-  }, [editionId, volumeId, ebookFlow, onControls, retryToken]);
+  }, [editionId, volumeId, onControls, retryToken]);
 
   useEffect(() => {
     const rendition = renditionRef.current;
     if (!rendition) return;
     applyTheme(rendition, theme, fontSize, lineHeight, fontFamily, pageWidth);
     const container = containerRef.current;
-    rendition.resize(container?.clientWidth ?? window.innerWidth, container?.clientHeight ?? window.innerHeight);
+    resizeRenditionSafely(rendition, container?.clientWidth ?? window.innerWidth, container?.clientHeight ?? window.innerHeight);
   }, [fontFamily, fontSize, lineHeight, pageWidth, theme]);
 
   useEffect(() => {
@@ -842,7 +904,7 @@ export function EbookReader({
         frame = null;
         const rendition = renditionRef.current;
         if (!rendition) return;
-        rendition.resize(container.clientWidth || window.innerWidth, container.clientHeight || window.innerHeight);
+        resizeRenditionSafely(rendition, container.clientWidth || window.innerWidth, container.clientHeight || window.innerHeight);
         reportRenditionLocation(rendition);
       });
     });
@@ -856,13 +918,72 @@ export function EbookReader({
   const tokens = themeTokens[theme];
   const constrainedPageWidth = Math.min(pageWidth, readerContentMaxWidth);
 
+  const handleHostPointerIntent = (clientX: number, clientY: number) => {
+    const container = containerRef.current;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const viewport = {
+      width: container.clientWidth || rect.width || window.innerWidth,
+      height: container.clientHeight || rect.height || window.innerHeight
+    };
+    const intent = readerPointerIntent(clientX - rect.left, clientY - rect.top, viewport);
+    if (intent === 'center') {
+      onTapRef.current();
+      return;
+    }
+    onActivityRef.current();
+    if (intent === 'prev') void runPrevRef.current();
+    else if (intent === 'next') void runNextRef.current();
+  };
+
+  const handleHostClick = (event: MouseEvent<HTMLDivElement>) => {
+    if (Date.now() < hostSuppressClickUntilRef.current || isInteractiveElement(event.target)) return;
+    event.stopPropagation();
+    handleHostPointerIntent(event.clientX, event.clientY);
+  };
+
+  const handleHostTouchStart = (event: TouchEvent<HTMLDivElement>) => {
+    if (isInteractiveElement(event.target)) return;
+    const touch = event.changedTouches[0];
+    if (!touch) return;
+    hostTouchRef.current = { x: touch.clientX, y: touch.clientY, time: Date.now() };
+  };
+
+  const handleHostTouchEnd = (event: TouchEvent<HTMLDivElement>) => {
+    if (isInteractiveElement(event.target)) return;
+    const touch = event.changedTouches[0];
+    if (!touch) return;
+    const deltaX = touch.clientX - hostTouchRef.current.x;
+    const deltaY = touch.clientY - hostTouchRef.current.y;
+    const elapsed = Date.now() - hostTouchRef.current.time;
+    if (Math.abs(deltaX) >= 48 && Math.abs(deltaX) > Math.abs(deltaY) * 1.4 && elapsed < 900) {
+      event.stopPropagation();
+      hostSuppressClickUntilRef.current = Date.now() + 450;
+      onActivityRef.current();
+      void (deltaX < 0 ? runNextRef.current() : runPrevRef.current());
+      return;
+    }
+    if (Math.abs(deltaX) < 12 && Math.abs(deltaY) < 12) {
+      event.stopPropagation();
+      hostSuppressClickUntilRef.current = Date.now() + 450;
+      handleHostPointerIntent(touch.clientX, touch.clientY);
+    }
+  };
+
   return (
     <div className="flex h-full w-full flex-col px-4 pb-4 pt-6 md:px-8 md:pb-6 md:pt-10" data-allow-text-selection="true" style={{ background: tokens.background }}>
       <div
         className="relative mx-auto min-h-0 w-full flex-1 overflow-hidden"
         style={{ background: tokens.background, maxWidth: constrainedPageWidth }}
       >
-        <div ref={containerRef} className="h-full w-full" aria-label={`${title} EPUB 阅读器`} />
+        <div
+          ref={containerRef}
+          className="h-full w-full"
+          aria-label={`${title} EPUB 阅读器`}
+          onClick={handleHostClick}
+          onTouchStart={handleHostTouchStart}
+          onTouchEnd={handleHostTouchEnd}
+        />
         {loading || navigating ? (
           <div
             className="pointer-events-none absolute inset-0 z-10 transition-opacity duration-100"
@@ -885,5 +1006,3 @@ export function EbookReader({
     </div>
   );
 }
-
-export { EbookReader as EpubReader };

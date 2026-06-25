@@ -186,18 +186,13 @@ export function SourceSearchPage() {
     setMessage('');
     try {
       const existingRecord = records.find((record) => record.externalId === result.externalId);
-      let record = existingRecord;
-      if (!record) {
-        const saveResponse = await fetch('/api/source-search-records', {
+      const response = existingRecord
+        ? await fetch(`/api/source-search-records/${existingRecord.id}/create-download-task`, { method: 'POST' })
+        : await fetch('/api/source-search-records/create-download-task', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ ...result, status: 'saved' })
+          body: JSON.stringify(result)
         });
-        const savePayload = (await saveResponse.json()) as { ok: boolean; data?: { record: SourceSearchRecordView }; error?: { message: string } };
-        if (!savePayload.ok || !savePayload.data?.record) throw new Error(savePayload.error?.message ?? '保存搜索结果失败');
-        record = savePayload.data.record;
-      }
-      const response = await fetch(`/api/source-search-records/${record.id}/create-download-task`, { method: 'POST' });
       const payload = (await response.json()) as CreateDownloadPayload;
       if (!payload.ok || !payload.data?.record) throw new Error(payload.error?.message ?? '创建下载任务失败');
       setRecords((current) => [...current.filter((item) => item.externalId !== result.externalId), payload.data!.record]);

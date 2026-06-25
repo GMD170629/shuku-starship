@@ -5,12 +5,11 @@ import { cn } from '../../components/ui/cn';
 import type { WorkView } from '../../types/work';
 import type { ReaderControls, ReaderProgress } from './reader-shell';
 
-export type ComicMode = 'single' | 'double' | 'continuous';
+export type ComicMode = 'single' | 'double';
 export type ComicDirection = 'ltr' | 'rtl';
 export type ComicImageFit = 'width' | 'height' | 'contain' | 'original';
 
 const pagedPreloadRadius = 2;
-const continuousWarmRadius = 3;
 
 type ComicReaderProps = {
   book: WorkView;
@@ -20,7 +19,6 @@ type ComicReaderProps = {
   initialPageCount?: number | null;
   dark: boolean;
   initialPage: number;
-  initialPosition: string;
   mode: ComicMode;
   direction: ComicDirection;
   imageFit: ComicImageFit;
@@ -76,11 +74,6 @@ function pagePercentByOrder(pageIndex: number, orderedPages: number[]) {
   return Math.round((orderedIndex / (orderedPages.length - 1)) * 100);
 }
 
-function scrollPercent(element: HTMLElement) {
-  const max = Math.max(1, element.scrollHeight - element.clientHeight);
-  return clamp(Math.round((element.scrollTop / max) * 100), 0, 100);
-}
-
 function pageMetaByIndex(pages: ComicPageMeta[] | undefined) {
   return Object.fromEntries((pages ?? []).map((item) => [item.pageIndex, item]));
 }
@@ -99,7 +92,6 @@ export function ComicReader({
   initialPageCount,
   dark,
   initialPage,
-  initialPosition,
   mode,
   direction,
   imageFit,
@@ -112,18 +104,12 @@ export function ComicReader({
   onNextVolume,
   onError
 }: ComicReaderProps) {
-  const scrollerRef = useRef<HTMLDivElement>(null);
-  const pageRefs = useRef(new Map<number, HTMLDivElement>());
   const touchRef = useRef({ x: 0, y: 0, time: 0 });
   const suppressClickUntilRef = useRef(0);
-  const restoredScrollKeyRef = useRef('');
-  const visiblePageRef = useRef(Math.max(1, initialPage || 1));
-  const scrollProgressFrameRef = useRef<number | null>(null);
   const preloadedImagesRef = useRef(new Map<number, HTMLImageElement>());
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [pageMeta, setPageMeta] = useState<Record<number, ComicPageMeta>>({});
   const [page, setPage] = useState(Math.max(1, initialPage || 1));
-  const [loadedPages, setLoadedPages] = useState<Set<number>>(() => new Set());
   const [failedPages, setFailedPages] = useState<Set<number>>(() => new Set());
   const [retryTokens, setRetryTokens] = useState<Record<number, number>>({});
   const archiveComic = book.files.some(isArchiveComicFile);
@@ -157,26 +143,17 @@ export function ComicReader({
     );
   }, [mode, orderedPages, page]);
 
-  const continuousWarmPages = useMemo(() => {
-    const currentIndex = orderedPages.indexOf(page);
-    if (currentIndex < 0) return [page];
-    return orderedPages.slice(Math.max(0, currentIndex - continuousWarmRadius), currentIndex + continuousWarmRadius + 1);
-  }, [orderedPages, page]);
-
   useEffect(() => {
     let active = true;
     const seedPage = Math.max(1, initialPage || 1);
     setPageCount(null);
     setPageMeta({});
-    setLoadedPages(new Set());
     setFailedPages(new Set());
     setRetryTokens({});
     preloadedImagesRef.current.forEach((image) => {
       image.src = '';
     });
     preloadedImagesRef.current.clear();
-    restoredScrollKeyRef.current = '';
-    visiblePageRef.current = seedPage;
     if (!volumeId) {
       onError('漫画卷不存在');
       return;
@@ -214,25 +191,9 @@ export function ComicReader({
     return () => {
       active = false;
     };
-  }, [book.editionId, book.id, initialPageCount, initialPages, onError, pageIndexKey, volumeId]);
+  }, [book.editionId, book.id, initialPage, initialPageCount, initialPages, onError, pageIndexKey, volumeId]);
 
   useEffect(() => {
-    setLoadedPages((current) => {
-      if (mode !== 'continuous') return current.size === 0 ? current : new Set();
-      const next = new Set(continuousWarmPages);
-      if (next.size === current.size && continuousWarmPages.every((pageNumber) => current.has(pageNumber))) return current;
-      return next;
-    });
-  }, [continuousWarmPages, mode]);
-
-  useEffect(() => {
-    if (mode === 'continuous') {
-      preloadedImagesRef.current.forEach((image) => {
-        image.src = '';
-      });
-      preloadedImagesRef.current.clear();
-      return;
-    }
     const visiblePages = new Set(spreadPages);
     const preloadPages = new Set(pagedPreloadPages.filter((pageNumber) => !visiblePages.has(pageNumber)));
     preloadedImagesRef.current.forEach((image, pageNumber) => {
@@ -248,57 +209,10 @@ export function ComicReader({
       image.src = archivePageUrl(book.id, pageNumber, volumeId, retryTokens[pageNumber] ?? 0);
       preloadedImagesRef.current.set(pageNumber, image);
     });
-  }, [book.id, mode, pagedPreloadPages, retryTokens, spreadPages, volumeId]);
-
-  useEffect(() => {
-    if (mode !== 'continuous' || pageCount === null) return;
-    if (restoredScrollKeyRef.current === pageIndexKey) return;
-    restoredScrollKeyRef.current = pageIndexKey;
-    const timer = window.setTimeout(() => {
-      const top = Number(initialPosition);
-      if (Number.isFinite(top)) scrollerRef.current?.scrollTo({ top });
-    }, 150);
-    return () => window.clearTimeout(timer);
-  }, [initialPosition, mode, pageCount, pageIndexKey]);
-
-  useEffect(() => {
-    if (mode !== 'continuous' || !scrollerRef.current) return;
-    const root = scrollerRef.current;
-    const observer = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((entry) => entry.isIntersecting)
-          .sort((left, right) => right.intersectionRatio - left.intersectionRatio)[0];
-        if (!visible) return;
-        const pageIndex = Number((visible.target as HTMLElement).dataset.pageIndex);
-        if (!Number.isFinite(pageIndex)) return;
-        setLoadedPages((current) => {
-          if (current.has(pageIndex)) return current;
-          const next = new Set(current);
-          next.add(pageIndex);
-          return next;
-        });
-        setPage((current) => (current === pageIndex ? current : pageIndex));
-        if (visiblePageRef.current === pageIndex) return;
-        visiblePageRef.current = pageIndex;
-        const percent = scrollPercent(root);
-        onProgress({
-          page: pageIndex,
-          total: Math.max(1, pageCount ?? 1),
-          percent,
-          position: String(Math.round(root.scrollTop)),
-          label: `${progressPrefix}第 ${pageIndex} / ${Math.max(1, pageCount ?? 1)} 页`
-        }, { pageIndex, totalPages: pageCount ?? 1, percentage: percent, mode, direction, fitMode: imageFit, reversePages, volumeId, volumeTitle });
-      },
-      { root, threshold: [0.35, 0.6, 0.85], rootMargin: '800px 0px' }
-    );
-    pageRefs.current.forEach((element) => observer.observe(element));
-    return () => observer.disconnect();
-  }, [direction, imageFit, mode, onProgress, pageCount, progressPrefix, reversePages, volumeId, volumeTitle]);
+  }, [book.id, pagedPreloadPages, retryTokens, spreadPages, volumeId]);
 
   useEffect(() => {
     return () => {
-      if (scrollProgressFrameRef.current !== null) window.cancelAnimationFrame(scrollProgressFrameRef.current);
       preloadedImagesRef.current.forEach((image) => {
         image.src = '';
       });
@@ -307,7 +221,6 @@ export function ComicReader({
   }, []);
 
   useEffect(() => {
-    if (mode === 'continuous') return;
     const total = Math.max(1, pageCount ?? 1);
     const percent = pagePercentByOrder(page, orderedPages);
     onProgress({
@@ -324,16 +237,11 @@ export function ComicReader({
     const next = orderedPages[clamp(currentIndex + step, 0, Math.max(0, orderedPages.length - 1))];
     if (!next) return;
     setPage(next);
-    if (mode === 'continuous') {
-      pageRefs.current.get(next)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    }
   }
 
   function moveByReaderIntent(intent: 'next' | 'prev') {
     const pageStep = mode === 'double' ? 2 : 1;
-    const directionStep = direction === 'rtl'
-      ? (intent === 'next' ? -1 : 1)
-      : (intent === 'next' ? 1 : -1);
+    const directionStep = intent === 'next' ? 1 : -1;
     const currentIndex = Math.max(0, orderedPages.indexOf(page));
     const targetIndex = currentIndex + directionStep * pageStep;
     onActivity();
@@ -356,6 +264,11 @@ export function ComicReader({
     moveByReaderIntent(intent);
   }
 
+  function intentFromSwipe(deltaX: number) {
+    if (direction === 'rtl') return deltaX > 0 ? 'next' : 'prev';
+    return deltaX < 0 ? 'next' : 'prev';
+  }
+
   function handleTouchStart(event: TouchEvent<HTMLDivElement>) {
     const touch = event.changedTouches[0];
     if (!touch) return;
@@ -371,7 +284,7 @@ export function ComicReader({
     if (Math.abs(deltaX) >= 48 && Math.abs(deltaX) > Math.abs(deltaY) * 1.4 && elapsed < 900) {
       event.stopPropagation();
       suppressClickUntilRef.current = Date.now() + 450;
-      moveByReaderIntent(deltaX < 0 ? 'next' : 'prev');
+      moveByReaderIntent(intentFromSwipe(deltaX));
       return;
     }
     if (Math.abs(deltaX) < 12 && Math.abs(deltaY) < 12) {
@@ -392,13 +305,6 @@ export function ComicReader({
       },
       jumpToProgress: async (value) => {
         onActivity();
-        if (mode === 'continuous') {
-          const element = scrollerRef.current;
-          if (!element) return;
-          const max = Math.max(0, element.scrollHeight - element.clientHeight);
-          element.scrollTo({ top: Math.round(max * (clamp(value, 0, 100) / 100)), behavior: 'smooth' });
-          return;
-        }
         const orderedIndex = clamp(Math.round((clamp(value, 0, 100) / 100) * Math.max(0, orderedPages.length - 1)), 0, Math.max(0, orderedPages.length - 1));
         const next = orderedPages[orderedIndex];
         if (next) setPage(next);
@@ -406,38 +312,11 @@ export function ComicReader({
       jumpToIndex: async (index) => {
         onActivity();
         const next = orderedPages.includes(index) ? index : orderedPages[0];
-        if (next) {
-          setPage(next);
-          if (mode === 'continuous') {
-            pageRefs.current.get(next)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }
-        }
+        if (next) setPage(next);
       }
     });
     return () => onControls(null);
-  }, [direction, mode, onActivity, onControls, onNextVolume, orderedPages, page]);
-
-  function reportScrollProgress() {
-    const element = scrollerRef.current;
-    if (!element) return;
-    const percent = scrollPercent(element);
-    onProgress({
-      page,
-      total: Math.max(1, pageCount ?? 1),
-      percent,
-      position: String(Math.round(element.scrollTop)),
-      label: `${progressPrefix}第 ${page} / ${Math.max(1, pageCount ?? 1)} 页`
-    }, { pageIndex: page, totalPages: pageCount ?? 1, percentage: percent, mode, direction, fitMode: imageFit, reversePages, volumeId, volumeTitle });
-    onActivity();
-  }
-
-  function scheduleScrollProgress() {
-    if (scrollProgressFrameRef.current !== null) return;
-    scrollProgressFrameRef.current = window.requestAnimationFrame(() => {
-      scrollProgressFrameRef.current = null;
-      reportScrollProgress();
-    });
-  }
+  }, [mode, onActivity, onControls, onNextVolume, orderedPages, page]);
 
   function handlePagedClick(event: MouseEvent<HTMLDivElement>) {
     event.stopPropagation();
@@ -466,7 +345,6 @@ export function ComicReader({
       next.delete(pageNumber);
       return next;
     });
-    setLoadedPages((current) => new Set(current).add(pageNumber));
     setRetryTokens((current) => ({ ...current, [pageNumber]: (current[pageNumber] ?? 0) + 1 }));
   }
 
@@ -477,29 +355,22 @@ export function ComicReader({
   }
 
   const imageClass = cn(
-    'block',
+    'block max-h-full max-w-full object-contain',
     dark ? 'shadow-black/40' : 'shadow-slate-300/80',
-    mode !== 'continuous' ? 'max-h-full max-w-full object-contain' : '',
-    imageFit === 'height' && mode !== 'continuous' ? 'h-full w-auto' : '',
-    imageFit === 'contain' && mode !== 'continuous' ? 'h-full w-auto' : '',
-    imageFit === 'width' && mode !== 'continuous' ? 'h-auto w-full' : '',
-    imageFit === 'original' && mode !== 'continuous' ? 'h-auto w-auto' : '',
-    imageFit === 'height' && mode === 'continuous' ? 'h-[calc(100dvh-8rem)] w-auto max-w-full md:h-[calc(100dvh-10rem)]' : '',
-    imageFit === 'contain' && mode === 'continuous' ? 'max-h-[calc(100dvh-8rem)] max-w-full object-contain md:max-h-[calc(100dvh-10rem)]' : '',
-    imageFit === 'width' && mode === 'continuous' ? 'w-full max-w-[52rem]' : '',
-    imageFit === 'original' && mode === 'continuous' ? 'h-auto w-auto max-h-[calc(100dvh-8rem)] max-w-full md:max-h-[calc(100dvh-10rem)]' : ''
+    imageFit === 'height' ? 'h-full w-auto' : '',
+    imageFit === 'contain' ? 'h-full w-auto' : '',
+    imageFit === 'width' ? 'h-auto w-full' : '',
+    imageFit === 'original' ? 'h-auto w-auto' : ''
   );
-  const continuousPageFrameClass = imageFit === 'width'
-    ? 'max-w-[52rem]'
-    : imageFit === 'contain'
-      ? 'max-w-full'
-      : imageFit === 'height' || imageFit === 'original'
-        ? 'max-w-[56rem]'
-        : 'max-w-6xl';
   const pagedFrameClass = mode === 'double' ? 'max-w-[82rem]' : 'max-w-[56rem]';
-  const pagedImageSlotClass = mode === 'double'
-    ? 'flex h-full min-w-0 flex-1 basis-1/2 items-center justify-center overflow-hidden'
-    : 'flex h-full w-full items-center justify-center overflow-hidden';
+
+  function pagedImageSlotClass(index: number) {
+    if (mode !== 'double') return 'flex h-full w-full items-center justify-center overflow-hidden';
+    return cn(
+      'flex h-full min-w-0 flex-1 basis-1/2 items-center overflow-hidden',
+      index === 0 ? 'justify-end' : 'justify-start'
+    );
+  }
 
   function renderPageImage(pageNumber: number) {
     if (failedPages.has(pageNumber)) {
@@ -507,7 +378,7 @@ export function ComicReader({
         <ComicImageFallback
           dark={dark}
           pageNumber={pageNumber}
-          className={mode === 'continuous' ? continuousPageFrameClass : 'h-full max-h-full max-w-full'}
+          className="h-full max-h-full max-w-full"
           style={pagePlaceholderStyle(pageNumber)}
           onRetry={() => retryImage(pageNumber)}
         />
@@ -520,7 +391,7 @@ export function ComicReader({
         alt={`${book.title} 第 ${pageNumber} 页`}
         className={cn(imageClass, 'shadow-2xl')}
         loading="lazy"
-        style={{ transform: `scale(${zoom})`, transformOrigin: mode === 'continuous' ? 'top center' : 'center center' }}
+        style={{ transform: `scale(${zoom})`, transformOrigin: 'center center' }}
         onLoad={() => markImageLoaded(pageNumber)}
         onError={() => markImageFailed(pageNumber)}
       />
@@ -548,68 +419,21 @@ export function ComicReader({
 
   return (
     <div
-      ref={scrollerRef}
-      data-pwa-scroll={mode === 'continuous' ? 'true' : undefined}
-      className={cn(
-        'h-full w-full overscroll-contain px-4 pb-4 pt-6 landscape:px-3 landscape:pb-3 landscape:pt-5 md:px-8 md:pb-6 md:pt-10',
-        mode === 'continuous' ? 'overflow-auto' : 'overflow-hidden'
-      )}
-      onScroll={mode === 'continuous' ? scheduleScrollProgress : undefined}
+      className="h-full w-full overflow-hidden overscroll-contain px-4 pb-4 pt-6 landscape:px-3 landscape:pb-3 landscape:pt-5 md:px-8 md:pb-6 md:pt-10"
       dir={direction}
     >
-      {mode !== 'continuous' ? (
-        <div
-          className={cn('mx-auto flex h-full min-h-0 w-full items-center justify-center gap-2 overflow-hidden md:gap-4', pagedFrameClass)}
-          onClick={handlePagedClick}
-          onTouchStart={handleTouchStart}
-          onTouchEnd={handleTouchEnd}
-        >
-          {visualSpreadPages.map((pageNumber) => (
-            <div key={pageNumber} className={pagedImageSlotClass}>
-              {renderPageImage(pageNumber)}
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div
-          className="flex w-full flex-col items-center gap-4"
-          onClick={(event) => {
-            event.stopPropagation();
-            if (Date.now() < suppressClickUntilRef.current) return;
-            const rect = event.currentTarget.getBoundingClientRect();
-            handleContentTap(event.clientX - rect.left, rect.width);
-          }}
-          onTouchStart={handleTouchStart}
-          onTouchEnd={handleTouchEnd}
-        >
-          {orderedPages.map((pageNumber) => (
-            <div
-              key={pageNumber}
-              ref={(element) => {
-                if (element) pageRefs.current.set(pageNumber, element);
-                else pageRefs.current.delete(pageNumber);
-              }}
-              data-page-index={pageNumber}
-              className="flex min-h-48 w-full justify-center"
-            >
-              {loadedPages.has(pageNumber) ? (
-                renderPageImage(pageNumber)
-              ) : (
-                <div
-                  className={cn(
-                    'flex min-h-80 w-full items-center justify-center rounded-xl text-sm opacity-60',
-                    continuousPageFrameClass,
-                    dark ? 'bg-white/5' : 'bg-slate-200/70'
-                  )}
-                  style={pagePlaceholderStyle(pageNumber)}
-                >
-                  第 {pageNumber} 页
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+      <div
+        className={cn('mx-auto flex h-full min-h-0 w-full items-center justify-center overflow-hidden', mode === 'double' ? 'gap-0' : 'gap-2 md:gap-4', pagedFrameClass)}
+        onClick={handlePagedClick}
+        onTouchStart={handleTouchStart}
+        onTouchEnd={handleTouchEnd}
+      >
+        {visualSpreadPages.map((pageNumber, index) => (
+          <div key={pageNumber} className={pagedImageSlotClass(index)}>
+            {renderPageImage(pageNumber)}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
