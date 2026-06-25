@@ -1,10 +1,12 @@
 from functools import partial
 from http.server import BaseHTTPRequestHandler, SimpleHTTPRequestHandler, ThreadingHTTPServer
+from io import BytesIO
 import json
 from threading import Thread
 from urllib.parse import parse_qs, quote, urlparse
 import zipfile
 
+from PIL import Image, ImageDraw
 from sqlalchemy import text
 
 from app.api.routes import compat
@@ -22,6 +24,21 @@ def _login(client, db_session):
     db_session.commit()
     response = client.post("/api/auth/login", json={"email": "admin@example.com", "password": "starshipnas"})
     assert response.status_code == 200
+
+
+def _comic_page_jpeg_bytes() -> bytes:
+    image = Image.new("RGB", (1126, 1600), "white")
+    draw = ImageDraw.Draw(image)
+    draw.rectangle((420, 220, 1030, 1520), fill=(219, 185, 184), outline=(12, 12, 12), width=7)
+    draw.rectangle((650, 1020, 1110, 1590), fill=(67, 88, 153), outline=(10, 14, 28), width=6)
+    draw.ellipse((470, 300, 740, 610), fill=(224, 188, 178), outline=(12, 12, 12), width=5)
+    draw.polygon([(520, 610), (760, 610), (840, 1450), (430, 1450)], fill=(65, 86, 153), outline=(10, 14, 28))
+    for offset in range(0, 980, 34):
+        draw.line((470 + offset // 5, 290 + offset, 840 - offset // 8, 500 + offset), fill=(18, 22, 33), width=2)
+    draw.text((92, 90), "漫画测试页", fill=(70, 84, 145))
+    output = BytesIO()
+    image.save(output, format="JPEG", quality=95)
+    return output.getvalue()
 
 
 def create_source_tables(db_session):
@@ -3635,6 +3652,104 @@ def test_manual_comic_upload_serves_archive_page(client, db_session, test_settin
 
     cached = client.get(f"/api/volumes/{volume_id}/pages/1", headers={"If-None-Match": page.headers["etag"]})
     assert cached.status_code == 304
+
+
+def test_comic_page_data_saver_returns_webp_for_archive_page(client, db_session, test_settings):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    _login(client, db_session)
+    source_jpeg = _comic_page_jpeg_bytes()
+    archive_path = test_settings.resolved_storage_root / "books" / "archive" / "comic.zip"
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("001.jpg", source_jpeg)
+    relative_archive_path = str(archive_path.relative_to(test_settings.resolved_storage_root))
+    volume_id = "archive-volume"
+    db_session.execute(
+        text(
+            """
+            INSERT INTO LibraryFile (
+                id, editionId, volumeId, path, kind, mimeType, sizeBytes, sortOrder, createdAt, updatedAt
+            ) VALUES (
+                'archive-file', 'archive-edition', :volume_id, :path, 'COMIC', 'application/zip', :size, 1, 'now', 'now'
+            )
+            """
+        ),
+        {"volume_id": volume_id, "path": relative_archive_path, "size": archive_path.stat().st_size},
+    )
+    db_session.execute(
+        text(
+            """
+            INSERT INTO LibraryReadingUnit (
+                id, editionId, volumeId, fileId, unitType, title, href, mediaType, sortOrder, size, metadataJson, createdAt, updatedAt
+            ) VALUES (
+                'archive-page-1', 'archive-edition', :volume_id, 'archive-file', 'page', '第 1 页', '001.jpg', 'image/jpeg', 1, :size, :metadata, 'now', 'now'
+            )
+            """
+        ),
+        {"volume_id": volume_id, "size": len(source_jpeg), "metadata": json.dumps({"zipEntryName": "001.jpg"})},
+    )
+    db_session.commit()
+
+    original = client.get(f"/api/volumes/{volume_id}/pages/1?imageVariant=original")
+    assert original.status_code == 200
+    assert original.content == source_jpeg
+    assert original.headers["content-type"].startswith("image/jpeg")
+    assert original.headers["x-comic-image-variant"] == "original"
+
+    data_saver = client.get(f"/api/volumes/{volume_id}/pages/1?imageVariant=data-saver")
+    assert data_saver.status_code == 200
+    assert data_saver.content.startswith(b"RIFF")
+    assert data_saver.headers["content-type"].startswith("image/webp")
+    assert data_saver.headers["x-comic-image-variant"] == "data-saver"
+    assert data_saver.headers["x-comic-image-quality"] == "webp;q=82"
+    assert len(data_saver.content) < len(source_jpeg)
+    assert data_saver.headers["etag"] != original.headers["etag"]
+
+    ranged = client.get(f"/api/volumes/{volume_id}/pages/1?imageVariant=data-saver", headers={"Range": "bytes=0-3"})
+    assert ranged.status_code == 206
+    assert ranged.content == b"RIFF"
+    assert ranged.headers["content-range"] == f"bytes 0-3/{len(data_saver.content)}"
+
+    cached = client.get(f"/api/volumes/{volume_id}/pages/1?imageVariant=data-saver", headers={"If-None-Match": data_saver.headers["etag"]})
+    assert cached.status_code == 304
+
+
+def test_comic_page_data_saver_returns_webp_for_stored_page_file(client, db_session, test_settings):
+    create_worker_tables(db_session)
+    test_settings.resolved_storage_root.mkdir(parents=True)
+    _login(client, db_session)
+    source_jpeg = _comic_page_jpeg_bytes()
+    page_path = test_settings.resolved_storage_root / "books" / "direct" / "page-001.jpg"
+    page_path.parent.mkdir(parents=True, exist_ok=True)
+    page_path.write_bytes(source_jpeg)
+    relative_page_path = str(page_path.relative_to(test_settings.resolved_storage_root))
+    db_session.execute(
+        text(
+            """
+            INSERT INTO LibraryReadingUnit (
+                id, editionId, volumeId, fileId, unitType, title, href, mediaType, sortOrder, size, metadataJson, createdAt, updatedAt
+            ) VALUES (
+                'direct-page-1', 'direct-edition', 'direct-volume', NULL, 'page', '第 1 页', :href, 'image/jpeg', 1, :size, '{}', 'now', 'now'
+            )
+            """
+        ),
+        {"href": relative_page_path, "size": len(source_jpeg)},
+    )
+    db_session.commit()
+
+    original = client.get("/api/volumes/direct-volume/pages/1?imageVariant=original")
+    assert original.status_code == 200
+    assert original.content == source_jpeg
+    assert original.headers["x-comic-image-variant"] == "original"
+
+    data_saver = client.get("/api/volumes/direct-volume/pages/1?imageVariant=data-saver")
+    assert data_saver.status_code == 200
+    assert data_saver.content.startswith(b"RIFF")
+    assert data_saver.headers["content-type"].startswith("image/webp")
+    assert data_saver.headers["x-comic-image-variant"] == "data-saver"
+    assert data_saver.headers["x-comic-image-quality"] == "webp;q=82"
+    assert len(data_saver.content) < len(source_jpeg)
 
 
 def test_volume_pages_rebuilds_missing_comic_page_index(client, db_session, test_settings, tmp_path):

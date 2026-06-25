@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { WorkView } from '../../types/work';
 import { enqueuePreference, enqueueProgress, flushPreferenceQueue, flushProgressQueue } from '../../lib/pwa/progressQueue';
-import { ComicReader, type ComicDirection, type ComicImageFit, type ComicMode, type ComicPageMeta } from './comic-reader';
+import { ComicReader, type ComicDirection, type ComicImageFit, type ComicImageVariant, type ComicMode, type ComicPageMeta } from './comic-reader';
 import { EpubReader } from './epub-reader';
 import { PdfReader } from './pdf-reader';
 import { ReaderShell, readerThemeSurfaces, type EbookPageTurnAnimation, type ReaderVolumeNavigation, type ReaderControls, type ReaderFontFamily, type ReaderKind, type ReaderNavigationItem, type ReaderProgress, type ReaderSettings, type ReaderTheme } from './reader-shell';
@@ -81,6 +81,7 @@ const defaultSettings: ReaderSettings = {
   comicDirection: 'ltr',
   comicMode: 'single',
   imageFit: 'width',
+  imageVariant: 'original',
   reversePages: false
 };
 
@@ -193,6 +194,9 @@ function coerceSettings(current: ReaderSettings, savedSettings: Record<string, u
   const savedComicDirection = savedSettings.comicDirection === 'rtl' || savedSettings.comicDirection === 'ltr'
     ? savedSettings.comicDirection as ComicDirection
     : undefined;
+  const savedImageVariant = savedSettings.imageVariant === 'original' || savedSettings.imageVariant === 'data-saver'
+    ? savedSettings.imageVariant as ComicImageVariant
+    : undefined;
 
   return {
     ...current,
@@ -206,6 +210,7 @@ function coerceSettings(current: ReaderSettings, savedSettings: Record<string, u
     comicDirection: savedComicDirection ?? current.comicDirection,
     comicMode: savedComicMode ?? current.comicMode,
     imageFit: savedFit ?? current.imageFit,
+    imageVariant: savedImageVariant ?? current.imageVariant,
     reversePages: typeof savedSettings.reversePages === 'boolean' ? savedSettings.reversePages : current.reversePages
   };
 }
@@ -817,6 +822,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
             mode={settings.comicMode}
             direction={settings.comicDirection}
             imageFit={settings.imageFit}
+            imageVariant={settings.imageVariant}
             zoom={settings.zoom}
             reversePages={settings.reversePages}
             onControls={setControls}

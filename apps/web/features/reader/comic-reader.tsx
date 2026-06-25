@@ -9,6 +9,7 @@ import type { ReaderControls, ReaderProgress } from './reader-shell';
 export type ComicMode = 'single' | 'double';
 export type ComicDirection = 'ltr' | 'rtl';
 export type ComicImageFit = 'width' | 'height' | 'contain' | 'original';
+export type ComicImageVariant = 'original' | 'data-saver';
 
 type ComicReaderProps = {
   book: WorkView;
@@ -21,6 +22,7 @@ type ComicReaderProps = {
   mode: ComicMode;
   direction: ComicDirection;
   imageFit: ComicImageFit;
+  imageVariant: ComicImageVariant;
   zoom: number;
   reversePages: boolean;
   onControls: (controls: ReaderControls | null) => void;
@@ -49,8 +51,9 @@ export type ComicPageMeta = {
   size?: number | null;
 };
 
-function archivePageUrl(bookId: string, pageIndex: number, volumeId?: string | null, retryToken = 0) {
+function archivePageUrl(bookId: string, pageIndex: number, volumeId?: string | null, retryToken = 0, imageVariant: ComicImageVariant = 'original') {
   const params = new URLSearchParams();
+  params.set('imageVariant', imageVariant);
   if (retryToken > 0) params.set('retry', String(retryToken));
   const query = params.toString();
   const resolvedVolumeId = volumeId ?? bookId;
@@ -94,6 +97,7 @@ export function ComicReader({
   mode,
   direction,
   imageFit,
+  imageVariant,
   zoom,
   reversePages,
   onControls,
@@ -148,6 +152,17 @@ export function ComicReader({
   const visiblePagesLoaded = useMemo(() => {
     return spreadPages.every((pageNumber) => loadedPages.has(pageNumber));
   }, [loadedPages, spreadPages]);
+
+  useEffect(() => {
+    preloadControllersRef.current.forEach((controller) => controller.abort());
+    preloadControllersRef.current.clear();
+    cachedImageUrlsRef.current.forEach((imageUrl) => window.URL.revokeObjectURL(imageUrl));
+    cachedImageUrlsRef.current.clear();
+    setCachedImageUrls({});
+    setLoadedPages(new Set());
+    setFailedPages(new Set());
+    setRetryTokens({});
+  }, [imageVariant, pageIndexKey]);
 
   useEffect(() => {
     let active = true;
@@ -220,7 +235,7 @@ export function ComicReader({
         if (cachedImageUrlsRef.current.has(pageNumber) || preloadControllersRef.current.has(pageNumber)) return;
         const controller = new AbortController();
         preloadControllersRef.current.set(pageNumber, controller);
-        fetch(archivePageUrl(book.id, pageNumber, volumeId, retryTokens[pageNumber] ?? 0), { signal: controller.signal })
+        fetch(archivePageUrl(book.id, pageNumber, volumeId, retryTokens[pageNumber] ?? 0, imageVariant), { signal: controller.signal })
           .then((response) => {
             if (!response.ok) throw new Error(`comic preload failed: ${response.status}`);
             return response.blob();
@@ -242,7 +257,7 @@ export function ComicReader({
       });
     }, comicPreloadAfterVisibleDelayMs);
     return () => window.clearTimeout(timeoutId);
-  }, [book.id, failedPages, pagedPreloadPages, retainedPages, retryTokens, spreadPages, visiblePagesLoaded, volumeId]);
+  }, [book.id, failedPages, imageVariant, pagedPreloadPages, retainedPages, retryTokens, spreadPages, visiblePagesLoaded, volumeId]);
 
   useEffect(() => {
     return () => {
@@ -262,8 +277,8 @@ export function ComicReader({
       percent,
       position: String(page),
       label: `${progressPrefix}${spreadLabel(spreadPages, total)}`
-    }, { pageIndex: page, visiblePages: spreadPages, totalPages: total, percentage: percent, mode, direction, fitMode: imageFit, reversePages, volumeId, volumeTitle });
-  }, [direction, imageFit, mode, onProgress, orderedPages, page, pageCount, progressPrefix, reversePages, volumeId, volumeTitle, spreadPages]);
+    }, { pageIndex: page, visiblePages: spreadPages, totalPages: total, percentage: percent, mode, direction, fitMode: imageFit, imageVariant, reversePages, volumeId, volumeTitle });
+  }, [direction, imageFit, imageVariant, mode, onProgress, orderedPages, page, pageCount, progressPrefix, reversePages, volumeId, volumeTitle, spreadPages]);
 
   function moveOrdered(step: number) {
     const currentIndex = Math.max(0, orderedPages.indexOf(page));
@@ -454,7 +469,7 @@ export function ComicReader({
 
     return (
       <img
-        src={cachedImageUrls[pageNumber] ?? archivePageUrl(book.id, pageNumber, volumeId, retryTokens[pageNumber] ?? 0)}
+        src={cachedImageUrls[pageNumber] ?? archivePageUrl(book.id, pageNumber, volumeId, retryTokens[pageNumber] ?? 0, imageVariant)}
         alt={`${book.title} 第 ${pageNumber} 页`}
         className={cn(imageClass, 'shadow-2xl')}
         loading="lazy"

@@ -4,7 +4,7 @@ import { BookOpen, ChevronLeft, ChevronRight, ListTree, Minus, Moon, Plus, Setti
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode, type SyntheticEvent } from 'react';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../components/ui/cn';
-import type { ComicDirection, ComicImageFit, ComicMode } from './comic-reader';
+import type { ComicDirection, ComicImageFit, ComicImageVariant, ComicMode } from './comic-reader';
 
 export type ReaderKind = 'epub' | 'comic' | 'pdf';
 export type ReaderTheme = 'day' | 'warm' | 'night' | 'black';
@@ -38,6 +38,7 @@ export type ReaderSettings = {
   comicDirection: ComicDirection;
   comicMode: ComicMode;
   imageFit: ComicImageFit;
+  imageVariant: ComicImageVariant;
   reversePages: boolean;
 };
 
@@ -778,6 +779,12 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
                       { value: 'original', label: '原始' }
                     ]}
                     onChange={(value) => updateSettings({ imageFit: value as ComicImageFit })}
+                  />
+                  <SegmentedSetting
+                    label="画质"
+                    value={settings.imageVariant}
+                    options={[{ value: 'original', label: '原图' }, { value: 'data-saver', label: '省流' }]}
+                    onChange={(value) => updateSettings({ imageVariant: value as ComicImageVariant })}
                   />
                   <SegmentedSetting
                     label="方向"
