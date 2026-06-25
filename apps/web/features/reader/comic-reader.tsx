@@ -111,6 +111,7 @@ export function ComicReader({
   const suppressClickUntilRef = useRef(0);
   const preloadControllersRef = useRef(new Map<number, AbortController>());
   const cachedImageUrlsRef = useRef(new Map<number, string>());
+  const onNextVolumeRef = useRef(onNextVolume);
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [pageMeta, setPageMeta] = useState<Record<number, ComicPageMeta>>({});
   const [page, setPage] = useState(Math.max(1, initialPage || 1));
@@ -152,6 +153,10 @@ export function ComicReader({
   const visiblePagesLoaded = useMemo(() => {
     return spreadPages.every((pageNumber) => loadedPages.has(pageNumber));
   }, [loadedPages, spreadPages]);
+
+  useEffect(() => {
+    onNextVolumeRef.current = onNextVolume;
+  }, [onNextVolume]);
 
   useEffect(() => {
     preloadControllersRef.current.forEach((controller) => controller.abort());
@@ -294,7 +299,7 @@ export function ComicReader({
     const targetIndex = currentIndex + directionStep * pageStep;
     onActivity();
     if (intent === 'next' && (targetIndex < 0 || targetIndex >= orderedPages.length)) {
-      onNextVolume?.();
+      onNextVolumeRef.current?.();
       return;
     }
     moveOrdered(directionStep * pageStep);
@@ -364,7 +369,7 @@ export function ComicReader({
       }
     });
     return () => onControls(null);
-  }, [mode, onActivity, onControls, onNextVolume, orderedPages, page]);
+  }, [mode, onActivity, onControls, orderedPages, page]);
 
   function handlePagedClick(event: MouseEvent<HTMLDivElement>) {
     event.stopPropagation();
