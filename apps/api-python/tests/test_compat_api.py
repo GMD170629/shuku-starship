@@ -678,7 +678,7 @@ def test_core_compat_endpoints_return_envelopes(client, db_session, test_setting
         assert "data" in payload, endpoint
 
 
-def test_series_endpoint_lists_visible_non_empty_series(client, db_session):
+def test_series_endpoint_hides_single_book_series_by_default(client, db_session):
     create_worker_tables(db_session)
     db_session.execute(text("ALTER TABLE LibraryWork ADD COLUMN seriesName TEXT"))
     db_session.execute(text("ALTER TABLE LibraryWork ADD COLUMN seriesIndex REAL"))
@@ -718,11 +718,60 @@ def test_series_endpoint_lists_visible_non_empty_series(client, db_session):
     assert response.status_code == 200
     payload = response.json()
     assert payload["ok"] is True
-    assert payload["data"]["total"] == 2
+    assert payload["data"]["total"] == 1
     assert payload["data"]["series"] == [
+        {"name": "星舰纪元", "bookCount": 2, "latestUpdatedAt": "2026-06-11T12:00:00"},
+    ]
+
+    include_single = client.get("/api/series?visibility=active&limit=10&minBooks=1")
+    assert include_single.status_code == 200
+    assert include_single.json()["data"]["total"] == 2
+    assert include_single.json()["data"]["series"] == [
         {"name": "星舰纪元", "bookCount": 2, "latestUpdatedAt": "2026-06-11T12:00:00"},
         {"name": "午夜档案", "bookCount": 1, "latestUpdatedAt": "2026-06-10T00:00:00"},
     ]
+
+
+def test_management_folders_series_group_hides_empty_and_single_book_series(client, db_session):
+    create_worker_tables(db_session)
+    db_session.execute(text("ALTER TABLE LibraryWork ADD COLUMN seriesName TEXT"))
+    _login(client, db_session)
+    for work_id, title, series_name in [
+        ("multi-1", "星舰纪元 一", "星舰纪元"),
+        ("multi-2", "星舰纪元 二", " 星舰纪元 "),
+        ("single-1", "午夜档案", "午夜档案"),
+        ("empty-1", "无系列", ""),
+    ]:
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryWork (
+                    id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                    trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                    seriesName, mergeKey, createdAt, updatedAt
+                ) VALUES (
+                    :id, :title, :normalized_title, 'Author', 'author', 'EPUB', 'WANT', 'UNKNOWN',
+                    'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', 0, 0,
+                    :series_name, :merge_key, '2026-06-10T00:00:00', '2026-06-10T00:00:00'
+                )"""
+            ),
+            {
+                "id": work_id,
+                "title": title,
+                "normalized_title": title.lower().replace(" ", ""),
+                "series_name": series_name,
+                "merge_key": f"epub:{work_id}:author",
+            },
+        )
+    db_session.commit()
+
+    response = client.get("/api/management/folders")
+    assert response.status_code == 200
+    series_groups = response.json()["data"]["logical"]["series"]
+    assert len(series_groups) == 1
+    assert series_groups[0]["name"] == "星舰纪元"
+    assert series_groups[0]["count"] == 2
+    assert series_groups[0]["sizeBytes"] == 0
+    assert {item["title"] for item in series_groups[0]["items"]} == {"星舰纪元 一", "星舰纪元 二"}
 
 
 def test_works_series_filter_is_exact_and_accepts_unicode_names(client, db_session):
@@ -3613,6 +3662,32 @@ def test_volume_pages_rebuilds_missing_comic_page_index(client, db_session, test
     page = client.get(f"/api/volumes/{volume_id}/pages/2")
     assert page.status_code == 200
     assert page.content == b"two"
+
+
+def test_file_stream_limit_zero_disables_slot_rejection(monkeypatch):
+    user_id = "limit-disabled-user"
+    monkeypatch.setattr(compat, "STREAMS_PER_USER_LIMIT", 0)
+    with compat._active_file_streams_lock:
+        compat._active_file_streams_by_user[user_id] = 999
+    try:
+        release = compat._acquire_file_stream_slot(user_id)
+        assert release is not None
+        release()
+        with compat._active_file_streams_lock:
+            assert compat._active_file_streams_by_user[user_id] == 999
+    finally:
+        with compat._active_file_streams_lock:
+            compat._active_file_streams_by_user.pop(user_id, None)
+
+    monkeypatch.setattr(compat, "STREAMS_PER_USER_LIMIT", 1)
+    release = compat._acquire_file_stream_slot(user_id)
+    try:
+        assert release is not None
+        assert compat._acquire_file_stream_slot(user_id) is None
+    finally:
+        release()
+        with compat._active_file_streams_lock:
+            compat._active_file_streams_by_user.pop(user_id, None)
 
 
 def test_archive_page_streams_are_limited_and_logged(client, db_session, test_settings, tmp_path, monkeypatch, caplog):

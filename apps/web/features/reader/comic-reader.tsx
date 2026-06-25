@@ -2,14 +2,13 @@
 
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent, type TouchEvent } from 'react';
 import { cn } from '../../components/ui/cn';
+import { comicPreloadAfterVisibleDelayMs, comicPreloadPages, comicRetainedPages } from '../../lib/comic-preload';
 import type { WorkView } from '../../types/work';
 import type { ReaderControls, ReaderProgress } from './reader-shell';
 
 export type ComicMode = 'single' | 'double';
 export type ComicDirection = 'ltr' | 'rtl';
 export type ComicImageFit = 'width' | 'height' | 'contain' | 'original';
-
-const pagedPreloadRadius = 2;
 
 type ComicReaderProps = {
   book: WorkView;
@@ -106,11 +105,14 @@ export function ComicReader({
 }: ComicReaderProps) {
   const touchRef = useRef({ x: 0, y: 0, time: 0 });
   const suppressClickUntilRef = useRef(0);
-  const preloadedImagesRef = useRef(new Map<number, HTMLImageElement>());
+  const preloadControllersRef = useRef(new Map<number, AbortController>());
+  const cachedImageUrlsRef = useRef(new Map<number, string>());
   const [pageCount, setPageCount] = useState<number | null>(null);
   const [pageMeta, setPageMeta] = useState<Record<number, ComicPageMeta>>({});
   const [page, setPage] = useState(Math.max(1, initialPage || 1));
   const [failedPages, setFailedPages] = useState<Set<number>>(() => new Set());
+  const [loadedPages, setLoadedPages] = useState<Set<number>>(() => new Set());
+  const [cachedImageUrls, setCachedImageUrls] = useState<Record<number, string>>({});
   const [retryTokens, setRetryTokens] = useState<Record<number, number>>({});
   const archiveComic = book.files.some(isArchiveComicFile);
   const progressPrefix = volumeTitle ? `${volumeTitle} · ` : '';
@@ -134,14 +136,18 @@ export function ComicReader({
   }, [direction, spreadPages]);
 
   const pagedPreloadPages = useMemo(() => {
-    const currentIndex = orderedPages.indexOf(page);
-    if (currentIndex < 0) return [page];
     const visibleCount = mode === 'double' ? 2 : 1;
-    return orderedPages.slice(
-      Math.max(0, currentIndex - pagedPreloadRadius),
-      currentIndex + visibleCount + pagedPreloadRadius
-    );
+    return comicPreloadPages(orderedPages, page, visibleCount);
   }, [mode, orderedPages, page]);
+
+  const retainedPages = useMemo(() => {
+    const visibleCount = mode === 'double' ? 2 : 1;
+    return comicRetainedPages(orderedPages, page, visibleCount);
+  }, [mode, orderedPages, page]);
+
+  const visiblePagesLoaded = useMemo(() => {
+    return spreadPages.every((pageNumber) => loadedPages.has(pageNumber));
+  }, [loadedPages, spreadPages]);
 
   useEffect(() => {
     let active = true;
@@ -149,11 +155,13 @@ export function ComicReader({
     setPageCount(null);
     setPageMeta({});
     setFailedPages(new Set());
+    setLoadedPages(new Set());
+    setCachedImageUrls({});
     setRetryTokens({});
-    preloadedImagesRef.current.forEach((image) => {
-      image.src = '';
-    });
-    preloadedImagesRef.current.clear();
+    preloadControllersRef.current.forEach((controller) => controller.abort());
+    preloadControllersRef.current.clear();
+    cachedImageUrlsRef.current.forEach((imageUrl) => window.URL.revokeObjectURL(imageUrl));
+    cachedImageUrlsRef.current.clear();
     if (!volumeId) {
       onError('漫画卷不存在');
       return;
@@ -195,28 +203,53 @@ export function ComicReader({
 
   useEffect(() => {
     const visiblePages = new Set(spreadPages);
-    const preloadPages = new Set(pagedPreloadPages.filter((pageNumber) => !visiblePages.has(pageNumber)));
-    preloadedImagesRef.current.forEach((image, pageNumber) => {
-      if (!preloadPages.has(pageNumber)) {
-        image.src = '';
-        preloadedImagesRef.current.delete(pageNumber);
+    const preloadPages = new Set(pagedPreloadPages.filter((pageNumber) => !visiblePages.has(pageNumber) && !failedPages.has(pageNumber)));
+    const retainedPageSet = new Set(retainedPages);
+    preloadControllersRef.current.forEach((controller, pageNumber) => {
+      if (!retainedPageSet.has(pageNumber)) {
+        controller.abort();
+        preloadControllersRef.current.delete(pageNumber);
       }
     });
-    preloadPages.forEach((pageNumber) => {
-      if (preloadedImagesRef.current.has(pageNumber)) return;
-      const image = new Image();
-      image.decoding = 'async';
-      image.src = archivePageUrl(book.id, pageNumber, volumeId, retryTokens[pageNumber] ?? 0);
-      preloadedImagesRef.current.set(pageNumber, image);
+    cachedImageUrlsRef.current.forEach((_imageUrl, pageNumber) => {
+      if (!retainedPageSet.has(pageNumber)) releaseCachedImage(pageNumber);
     });
-  }, [book.id, pagedPreloadPages, retryTokens, spreadPages, volumeId]);
+    if (!visiblePagesLoaded) return undefined;
+    const timeoutId = window.setTimeout(() => {
+      preloadPages.forEach((pageNumber) => {
+        if (cachedImageUrlsRef.current.has(pageNumber) || preloadControllersRef.current.has(pageNumber)) return;
+        const controller = new AbortController();
+        preloadControllersRef.current.set(pageNumber, controller);
+        fetch(archivePageUrl(book.id, pageNumber, volumeId, retryTokens[pageNumber] ?? 0), { signal: controller.signal })
+          .then((response) => {
+            if (!response.ok) throw new Error(`comic preload failed: ${response.status}`);
+            return response.blob();
+          })
+          .then((blob) => {
+            if (controller.signal.aborted) return;
+            const imageUrl = window.URL.createObjectURL(blob);
+            cachePageImageUrl(pageNumber, imageUrl);
+            markImageLoaded(pageNumber);
+          })
+          .catch(() => {
+            // Visible pages still load through their own <img>; preload failures should stay quiet.
+          })
+          .finally(() => {
+            if (preloadControllersRef.current.get(pageNumber) === controller) {
+              preloadControllersRef.current.delete(pageNumber);
+            }
+          });
+      });
+    }, comicPreloadAfterVisibleDelayMs);
+    return () => window.clearTimeout(timeoutId);
+  }, [book.id, failedPages, pagedPreloadPages, retainedPages, retryTokens, spreadPages, visiblePagesLoaded, volumeId]);
 
   useEffect(() => {
     return () => {
-      preloadedImagesRef.current.forEach((image) => {
-        image.src = '';
-      });
-      preloadedImagesRef.current.clear();
+      preloadControllersRef.current.forEach((controller) => controller.abort());
+      preloadControllersRef.current.clear();
+      cachedImageUrlsRef.current.forEach((imageUrl) => window.URL.revokeObjectURL(imageUrl));
+      cachedImageUrlsRef.current.clear();
     };
   }, []);
 
@@ -327,10 +360,44 @@ export function ComicReader({
   }
 
   function markImageFailed(pageNumber: number) {
+    releaseCachedImage(pageNumber);
     setFailedPages((current) => new Set(current).add(pageNumber));
+    setLoadedPages((current) => {
+      if (!current.has(pageNumber)) return current;
+      const next = new Set(current);
+      next.delete(pageNumber);
+      return next;
+    });
+  }
+
+  function cachePageImageUrl(pageNumber: number, imageUrl: string) {
+    const previousUrl = cachedImageUrlsRef.current.get(pageNumber);
+    if (previousUrl && previousUrl !== imageUrl) window.URL.revokeObjectURL(previousUrl);
+    cachedImageUrlsRef.current.set(pageNumber, imageUrl);
+    setCachedImageUrls((current) => {
+      if (current[pageNumber] === imageUrl) return current;
+      return { ...current, [pageNumber]: imageUrl };
+    });
+  }
+
+  function releaseCachedImage(pageNumber: number) {
+    const imageUrl = cachedImageUrlsRef.current.get(pageNumber);
+    if (!imageUrl) return;
+    cachedImageUrlsRef.current.delete(pageNumber);
+    window.URL.revokeObjectURL(imageUrl);
+    setCachedImageUrls((current) => {
+      if (!current[pageNumber]) return current;
+      const next = { ...current };
+      delete next[pageNumber];
+      return next;
+    });
   }
 
   function markImageLoaded(pageNumber: number) {
+    setLoadedPages((current) => {
+      if (current.has(pageNumber)) return current;
+      return new Set(current).add(pageNumber);
+    });
     setFailedPages((current) => {
       if (!current.has(pageNumber)) return current;
       const next = new Set(current);
@@ -387,7 +454,7 @@ export function ComicReader({
 
     return (
       <img
-        src={archivePageUrl(book.id, pageNumber, volumeId, retryTokens[pageNumber] ?? 0)}
+        src={cachedImageUrls[pageNumber] ?? archivePageUrl(book.id, pageNumber, volumeId, retryTokens[pageNumber] ?? 0)}
         alt={`${book.title} 第 ${pageNumber} 页`}
         className={cn(imageClass, 'shadow-2xl')}
         loading="lazy"

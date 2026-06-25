@@ -58,7 +58,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 _active_file_streams_by_user: dict[str, int] = {}
 _active_file_streams_lock = threading.Lock()
-STREAMS_PER_USER_LIMIT = 4
+STREAMS_PER_USER_LIMIT = 0
 SLOW_REQUEST_LOG_THRESHOLD_MS = 1500
 
 
@@ -1236,6 +1236,19 @@ def management_folders(request: Request, db: Session = Depends(get_db), settings
             buckets.setdefault(value, []).append(work)
         return [{"name": name, "count": len(items), "sizeBytes": sum(int(item.get("sizeBytes") or 0) for item in items), "items": items[:20]} for name, items in sorted(buckets.items(), key=lambda item: item[0])]
 
+    def grouped_series() -> list[dict[str, Any]]:
+        buckets: dict[str, list[dict[str, Any]]] = {}
+        for work in work_items:
+            value = str(work.get("seriesName") or "").strip()
+            if not value:
+                continue
+            buckets.setdefault(value, []).append(work)
+        return [
+            {"name": name, "count": len(items), "sizeBytes": sum(int(item.get("sizeBytes") or 0) for item in items), "items": items[:20]}
+            for name, items in sorted(buckets.items(), key=lambda item: item[0])
+            if len(items) >= 2
+        ]
+
     source_names = {folder.get("id"): folder.get("name") for folder in monitor_folders}
     by_source: dict[str, list[dict[str, Any]]] = {}
     for work in work_items:
@@ -1254,7 +1267,7 @@ def management_folders(request: Request, db: Session = Depends(get_db), settings
     return ok(
         {
             "logical": {
-                "series": grouped("seriesName", "未分系列"),
+                "series": grouped_series(),
                 "authors": grouped("author", "未知作者"),
                 "formats": grouped("workType", "未知格式"),
                 "sources": [{"name": name, "count": len(items), "sizeBytes": sum(int(item.get("sizeBytes") or 0) for item in items), "items": items[:20]} for name, items in sorted(by_source.items(), key=lambda item: item[0])],
@@ -1269,7 +1282,7 @@ def management_folders(request: Request, db: Session = Depends(get_db), settings
 
 
 @router.get("/series")
-def list_series(request: Request, visibility: str = "active", limit: int = 50, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+def list_series(request: Request, visibility: str = "active", limit: int = 50, minBooks: int = 2, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
     _user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
@@ -1277,8 +1290,9 @@ def list_series(request: Request, visibility: str = "active", limit: int = 50, d
         return ok({"series": [], "total": 0})
 
     take = min(100, max(1, limit))
+    min_books = max(1, minBooks)
     where = ["`seriesName` IS NOT NULL", "TRIM(`seriesName`) != ''"]
-    params: dict[str, Any] = {"limit": take}
+    params: dict[str, Any] = {"limit": take, "min_books": min_books}
     if visibility == "ignored":
         where.append("`hidden` = 1")
     elif visibility != "all":
@@ -1287,7 +1301,7 @@ def list_series(request: Request, visibility: str = "active", limit: int = 50, d
     total = int(
         _scalar(
             db,
-            f"SELECT COUNT(*) FROM (SELECT TRIM(`seriesName`) FROM `LibraryWork` WHERE {where_sql} GROUP BY TRIM(`seriesName`)) grouped_series",
+            f"SELECT COUNT(*) FROM (SELECT TRIM(`seriesName`) FROM `LibraryWork` WHERE {where_sql} GROUP BY TRIM(`seriesName`) HAVING COUNT(*) >= :min_books) grouped_series",
             params,
             0,
         )
@@ -1302,6 +1316,7 @@ def list_series(request: Request, visibility: str = "active", limit: int = 50, d
         FROM `LibraryWork`
         WHERE {where_sql}
         GROUP BY TRIM(`seriesName`)
+        HAVING COUNT(*) >= :min_books
         ORDER BY MAX(`updatedAt`) DESC, TRIM(`seriesName`) ASC
         LIMIT :limit
         """,
@@ -2096,6 +2111,8 @@ def _file_stream_limit_response() -> Response:
 
 def _acquire_file_stream_slot(user_id: str):
     limit = STREAMS_PER_USER_LIMIT
+    if limit <= 0:
+        return lambda: None
     with _active_file_streams_lock:
         current = _active_file_streams_by_user.get(user_id, 0)
         if current >= limit:
