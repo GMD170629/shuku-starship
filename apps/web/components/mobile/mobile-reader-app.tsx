@@ -167,6 +167,7 @@ export function MobileReaderApp() {
   const router = useRouter();
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const scrollSectionRef = useRef<HTMLElement>(null);
+  const [mounted, setMounted] = useState(false);
   const [tab, setTab] = useState<MobileTab>('home');
   const [books, setBooks] = useState<WorkView[]>([]);
   const [searchBooks, setSearchBooks] = useState<WorkView[]>([]);
@@ -196,6 +197,10 @@ export function MobileReaderApp() {
   const [detailLoadingVolumeId, setDetailLoadingVolumeId] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     setTab(readSavedTab());
@@ -450,10 +455,14 @@ export function MobileReaderApp() {
     router.replace('/login?next=/mobile');
   }
 
+  if (!mounted) {
+    return <MobileLoadingShell />;
+  }
+
   return (
     <main className="h-screen h-[100dvh] overflow-hidden bg-[#F7F1E7] text-[#211C17]">
       <div
-        className="mx-auto flex h-screen h-[100dvh] min-h-0 max-w-[426.5px] flex-col overflow-hidden"
+        className="mx-auto flex h-screen h-[100dvh] min-h-0 max-w-[426.5px] flex-col overflow-hidden md:w-full md:max-w-none lg:flex-row"
         style={{
           '--mobile-scale': `min(1, calc(100vw / ${mobileDesignWidth}px))`,
           paddingTop: 'env(safe-area-inset-top)',
@@ -465,7 +474,7 @@ export function MobileReaderApp() {
           data-pwa-scroll="true"
           className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
           style={{
-            padding: `${sv(25)} ${sv(27.5)} calc(${sv(88)} + env(safe-area-inset-bottom))`
+            padding: `${sv(25)} clamp(${sv(27.5)}, 4vw, 44px) calc(${sv(88)} + env(safe-area-inset-bottom))`
           }}
         >
           {detailBookId && detailBook ? (
@@ -536,10 +545,12 @@ export function MobileReaderApp() {
           ) : null}
         </section>
 
+        <TabletNavRail activeTab={tab} onSelectTab={selectTab} />
+
         <nav
           role="tablist"
           aria-label="移动端主导航"
-          className="fixed inset-x-0 bottom-0 z-30 mx-auto grid max-w-[426.5px] grid-cols-3 border-t border-[#DED6CA] bg-[#FBF8F1]/95 backdrop-blur-xl"
+          className="fixed inset-x-0 bottom-0 z-30 mx-auto grid max-w-[426.5px] grid-cols-3 border-t border-[#DED6CA] bg-[#FBF8F1]/95 backdrop-blur-xl md:max-w-none lg:hidden"
           style={{
             minHeight: sv(68),
             paddingLeft: sv(32),
@@ -582,6 +593,47 @@ export function MobileReaderApp() {
         />
       </div>
     </main>
+  );
+}
+
+function MobileLoadingShell() {
+  return (
+    <main className="flex h-screen h-[100dvh] items-center justify-center bg-[#F7F1E7] px-6 text-sm text-[#70665C]">
+      正在打开移动书架...
+    </main>
+  );
+}
+
+function TabletNavRail({ activeTab, onSelectTab }: { activeTab: MobileTab; onSelectTab: (tab: MobileTab) => void }) {
+  return (
+    <nav
+      role="tablist"
+      aria-label="iPad 主导航"
+      className="hidden w-[96px] shrink-0 flex-col items-center border-r border-[#E2D8C9] bg-[#FBF8F1]/92 px-3 py-6 backdrop-blur-xl lg:order-first lg:flex"
+    >
+      <div className="flex h-11 w-11 items-center justify-center rounded-[16px] bg-[#211C17] text-lg font-semibold text-[#FBF8F1]">
+        书
+      </div>
+      <div className="mt-8 flex w-full flex-1 flex-col gap-3">
+        {tabs.map(({ key, label, icon: Icon }) => (
+          <button
+            key={key}
+            type="button"
+            role="tab"
+            aria-selected={activeTab === key}
+            aria-current={activeTab === key ? 'page' : undefined}
+            onClick={() => onSelectTab(key)}
+            className={cn(
+              'flex min-h-[64px] w-full flex-col items-center justify-center gap-1 rounded-[18px] text-xs font-medium transition active:scale-[0.98]',
+              activeTab === key ? 'bg-[#F0E4D3] text-[#C06A09]' : 'text-[#625A52] hover:bg-[#F3EBDD]'
+            )}
+          >
+            <Icon size={23} strokeWidth={activeTab === key ? 2.8 : 2.1} />
+            <span>{label}</span>
+          </button>
+        ))}
+      </div>
+    </nav>
   );
 }
 
@@ -722,7 +774,14 @@ function HomeView({
       {error ? <Notice tone="error">{error}</Notice> : null}
       {loading ? <LoadingBlock label="正在读取书架..." /> : null}
 
-      {!loading && continueItem ? <div style={{ marginTop: sv(10) }}><ContinueCard item={continueItem} onOpenBook={onOpenBook} onOpenReader={onOpenReader} /></div> : null}
+      {!loading && continueItem ? (
+        <div style={{ marginTop: sv(10) }}>
+          <div className="lg:grid lg:grid-cols-[minmax(0,1.45fr)_minmax(260px,0.75fr)] lg:gap-4">
+            <ContinueCard item={continueItem} onOpenBook={onOpenBook} onOpenReader={onOpenReader} />
+            <ReadingStatusPanel books={books} continueItem={continueItem} recentBooks={recentBooks} summary={summary} systemStatus={systemStatus} />
+          </div>
+        </div>
+      ) : null}
       {!loading && !continueItem && books.length === 0 ? <EmptyLibrary onUpload={onUpload} /> : null}
 
       {!loading && recentBooks.length > 0 ? (
@@ -794,13 +853,13 @@ function ContinueCard({ item, onOpenBook, onOpenReader }: { item: NonNullable<Co
       ref={entryRef}
       data-mobile-book-entry="true"
       className="flex overflow-hidden border border-[#DCD4C6] bg-[#FBF8F1]"
-      style={{ minHeight: sv(177), borderRadius: sv(10), boxShadow: `0 ${sv(5)} ${sv(14)} rgba(80,55,32,0.035)` }}
+      style={{ minHeight: `clamp(${sv(177)}, 24vw, 220px)`, borderRadius: sv(10), boxShadow: `0 ${sv(5)} ${sv(14)} rgba(80,55,32,0.035)` }}
     >
       <button
         type="button"
         onClick={() => onOpenBook(item.book, entryRef.current)}
         className="h-full shrink-0 transition active:scale-[0.99]"
-        style={{ width: sv(120) }}
+        style={{ width: `clamp(${sv(120)}, 17vw, 160px)` }}
         aria-label={`打开 ${item.book.title} 详情`}
       >
         <Cover book={item.book} size="medium" className="h-full w-full rounded-none shadow-none" />
@@ -862,6 +921,54 @@ function ContinueCard({ item, onOpenBook, onOpenReader }: { item: NonNullable<Co
   );
 }
 
+function ReadingStatusPanel({
+  books,
+  continueItem,
+  recentBooks,
+  summary,
+  systemStatus
+}: {
+  books: WorkView[];
+  continueItem: NonNullable<ContinueItem>;
+  recentBooks: WorkView[];
+  summary: Summary | null;
+  systemStatus: SystemStatus | null;
+}) {
+  const importTask = systemStatus?.currentImportTask;
+  const readingCount = books.filter((book) => book.progress > 0 && !isFinished(book)).length;
+  return (
+    <aside className="hidden rounded-[10px] border border-[#DCD4C6] bg-[#FBF8F1] p-4 shadow-[0_5px_14px_rgba(80,55,32,0.035)] lg:flex lg:flex-col">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-xs font-medium text-[#7B6A5B]">阅读状态</div>
+          <div className="mt-1 text-lg font-semibold text-[#211C17]">{Math.round(continueItem.progress)}%</div>
+        </div>
+        <Cloud size={22} className="text-[#7A4B22]" strokeWidth={2.1} />
+      </div>
+      <BookProgress value={continueItem.progress} className="mt-3" style={{ height: 4 }} />
+      <div className="mt-4 grid grid-cols-2 gap-3">
+        <MiniTabletStat label="总读物" value={String(summary?.totalBooks ?? books.length)} />
+        <MiniTabletStat label="在读" value={String(readingCount)} />
+      </div>
+      <div className="mt-4 border-t border-[#E4D9C8] pt-4 text-sm leading-6 text-[#6B6259]">
+        {importTask ? `正在导入 ${Math.round(importTask.progress)}%` : summary?.latestSyncAt ? `最近同步 ${formatCompactDate(summary.latestSyncAt)}` : 'NAS 已连接，等待同步进度'}
+      </div>
+      <div className="mt-auto pt-4 text-xs text-[#8B8177]">
+        最近阅读 {recentBooks.length} 本
+      </div>
+    </aside>
+  );
+}
+
+function MiniTabletStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-[14px] border border-[#E1D8CB] bg-[#F6F0E6] p-3">
+      <div className="text-base font-semibold text-[#211C17]">{value}</div>
+      <div className="mt-1 text-xs text-[#766A5F]">{label}</div>
+    </div>
+  );
+}
+
 function RecentCoverRail({ books, onOpenBook }: { books: WorkView[]; onOpenBook: OpenBookHandler }) {
   return (
     <div
@@ -876,7 +983,7 @@ function RecentCoverRail({ books, onOpenBook }: { books: WorkView[]; onOpenBook:
           data-mobile-book-entry="true"
           onClick={(event) => onOpenBook(book, event.currentTarget)}
           className="shrink-0 transition active:scale-[0.98]"
-          style={{ width: sv(72) }}
+          style={{ width: `clamp(${sv(72)}, 11vw, 96px)` }}
           aria-label={`打开 ${book.title}`}
         >
           <Cover
@@ -937,7 +1044,7 @@ function ShelfView({
   return (
     <div className="space-y-6">
       <AppHeader title="书架" action={{ label: '上传', onClick: onUpload }} />
-      <div className="space-y-3">
+      <div className="space-y-3 md:grid md:grid-cols-[minmax(0,1fr)_320px] md:items-center md:gap-3 md:space-y-0 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="flex h-12 items-center gap-3 rounded-[18px] border border-[#DED5C7] bg-[#FBF8F1] px-4">
           <Search size={19} className="text-[#7A4B22]" />
           <input
@@ -990,9 +1097,8 @@ function CompactBookGrid({ books, onOpenBook, preview = false }: { books: WorkVi
   const displayBooks = preview ? repeatBooks(books, 9) : books;
   return (
     <div
-      className="grid"
+      className="grid grid-cols-3 md:grid-cols-4 lg:grid-cols-5"
       style={{
-        gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
         columnGap: sv(12),
         rowGap: sv(18)
       }}
@@ -1092,8 +1198,8 @@ function MobileBookDetailView({
 
       {error ? <Notice tone="error">{error}</Notice> : null}
 
-      <section className="flex items-center" style={{ gap: sv(16), paddingTop: sv(2), paddingBottom: sv(4) }}>
-        <div ref={coverRef} className="shrink-0" style={{ width: sv(116) }}>
+      <section className="flex items-center lg:items-start" style={{ gap: `clamp(${sv(16)}, 3vw, 32px)`, paddingTop: sv(2), paddingBottom: sv(4) }}>
+        <div ref={coverRef} className="shrink-0" style={{ width: `clamp(${sv(116)}, 18vw, 168px)` }}>
           <Cover
             book={book}
             size="large"
@@ -1130,7 +1236,7 @@ function MobileBookDetailView({
         </div>
       </section>
 
-      <section className="grid grid-cols-3 border-y border-[#E1D8CB]" style={{ paddingTop: sv(11), paddingBottom: sv(11), gap: sv(10) }}>
+      <section className="grid grid-cols-3 border-y border-[#E1D8CB]" style={{ paddingTop: sv(11), paddingBottom: sv(11), gap: `clamp(${sv(10)}, 2vw, 22px)` }}>
         <ReadingMetric label="上次阅读" value={formatCompactDate(book.lastReadAt)} />
         <ReadingMetric label="当前位置" value={shortPositionLabel(book)} />
         <ReadingMetric label="阅读剩余" value={remainingEstimate(book)} />
@@ -1349,12 +1455,14 @@ function MeView({
             <div className="mt-1 truncate text-sm text-[#70665C]">{user?.email ?? '未登录'}</div>
           </div>
         </div>
-        <div className="mt-5 grid grid-cols-2 gap-3">
+        <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4">
           <MiniStat label="总读物" value={String(summary?.totalBooks ?? 0)} />
           <MiniStat label="最近同步" value={summary?.latestSyncAt ? '有进度' : '暂无'} />
+          <MiniStat label="导入状态" value={importTask ? `${importTask.progress}%` : latestImport ? latestImport.status : '空闲'} />
+          <MiniStat label="模式" value="PWA" />
         </div>
       </section>
-      <section className="space-y-3">
+      <section className="space-y-3 md:grid md:grid-cols-2 md:gap-3 md:space-y-0">
         <MenuButton icon={UploadCloud} label={uploading ? '上传中...' : '上传读物'} value="EPUB / PDF / CBZ / ZIP" onClick={onUpload} />
         <StatusPanel
           title="导入状态"

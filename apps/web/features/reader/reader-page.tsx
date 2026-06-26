@@ -81,8 +81,7 @@ const defaultSettings: ReaderSettings = {
   comicDirection: 'ltr',
   comicMode: 'single',
   imageFit: 'width',
-  imageVariant: 'original',
-  reversePages: false
+  imageVariant: 'original'
 };
 
 const progressSyncDebounceMs = 1500;
@@ -210,8 +209,7 @@ function coerceSettings(current: ReaderSettings, savedSettings: Record<string, u
     comicDirection: savedComicDirection ?? current.comicDirection,
     comicMode: savedComicMode ?? current.comicMode,
     imageFit: savedFit ?? current.imageFit,
-    imageVariant: savedImageVariant ?? current.imageVariant,
-    reversePages: typeof savedSettings.reversePages === 'boolean' ? savedSettings.reversePages : current.reversePages
+    imageVariant: savedImageVariant ?? current.imageVariant
   };
 }
 
@@ -734,7 +732,6 @@ export function ReaderPage({ editionId }: { editionId: string }) {
 
   const volumeNavigation = useMemo<ReaderVolumeNavigation | undefined>(() => {
     if (!book || (readerType !== 'comic' && !(readerType === 'epub' && volumeSections.length > 1))) return undefined;
-    const pages = readerType === 'comic' && settings.reversePages ? [...navigationItems].reverse() : navigationItems;
     return {
       editions: book.editions.map((edition) => ({
         id: edition.id,
@@ -745,7 +742,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
         volumes: edition.volumes.map((volume) => ({ id: volume.id, title: volume.title, pageCount: volume.pageCount }))
       })),
       volumeSections,
-      pages,
+      pages: navigationItems,
       currentEditionId: editionId,
       currentVolumeId: currentVolumeSection?.id ?? null,
       loading: volumeNavigationLoading,
@@ -753,7 +750,7 @@ export function ReaderPage({ editionId }: { editionId: string }) {
       onSelectVolume: handleSelectVolume,
       onSelectItem: handleSelectNavigationItem
     };
-  }, [book, volumeNavigationLoading, currentVolumeSection?.id, volumeSections, controls, editionId, navigationItems, readerType, settings.reversePages]);
+  }, [book, volumeNavigationLoading, currentVolumeSection?.id, volumeSections, controls, editionId, navigationItems, readerType]);
 
   if (error) {
     return (
@@ -824,7 +821,6 @@ export function ReaderPage({ editionId }: { editionId: string }) {
             imageFit={settings.imageFit}
             imageVariant={settings.imageVariant}
             zoom={settings.zoom}
-            reversePages={settings.reversePages}
             onControls={setControls}
             onProgress={handleProgress}
             onActivity={handleReaderActivity}

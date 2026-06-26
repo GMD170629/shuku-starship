@@ -20,7 +20,7 @@ test('comicPreloadPages falls back to previous pages near the end', () => {
   assert.deepEqual(comicPreloadPages(pages, 11, 2), [10, 9]);
 });
 
-test('comicPreloadPages follows reversed reading order', () => {
+test('comicPreloadPages follows the provided page order', () => {
   const pages = Array.from({ length: 12 }, (_, index) => 12 - index);
 
   assert.deepEqual(comicPreloadPages(pages, 7, 2), [5, 4]);

@@ -62,6 +62,7 @@ type ReaderDocument = Document & {
 };
 
 type NavigationIntent = 'initial' | 'next' | 'prev' | 'progress' | 'index';
+type ReadingDirection = 'ltr' | 'rtl';
 
 type RenditionWithReporting = Rendition & {
   currentLocation?: () => Location | Location[] | null;
@@ -149,13 +150,23 @@ function readerPointerPosition(clientX: number, clientY: number, viewport: { wid
   };
 }
 
-function readerPointerIntent(clientX: number, clientY: number, viewport: { width: number; height: number }): 'center' | 'prev' | 'next' | null {
+function physicalSideIntent(side: 'left' | 'right', direction: ReadingDirection): 'prev' | 'next' {
+  if (direction === 'rtl') return side === 'left' ? 'next' : 'prev';
+  return side === 'left' ? 'prev' : 'next';
+}
+
+function horizontalSwipeIntent(deltaX: number, direction: ReadingDirection): 'prev' | 'next' {
+  if (direction === 'rtl') return deltaX > 0 ? 'next' : 'prev';
+  return deltaX < 0 ? 'next' : 'prev';
+}
+
+function readerPointerIntent(clientX: number, clientY: number, viewport: { width: number; height: number }, direction: ReadingDirection): 'center' | 'prev' | 'next' | null {
   const pointer = readerPointerPosition(clientX, clientY, viewport);
   if (pointer.x >= viewport.width * 0.33 && pointer.x <= viewport.width * 0.67 && pointer.y >= viewport.height * 0.2 && pointer.y <= viewport.height * 0.85) {
     return 'center';
   }
-  if (pointer.x < viewport.width * 0.33) return 'prev';
-  if (pointer.x > viewport.width * 0.67) return 'next';
+  if (pointer.x < viewport.width * 0.33) return physicalSideIntent('left', direction);
+  if (pointer.x > viewport.width * 0.67) return physicalSideIntent('right', direction);
   return null;
 }
 
@@ -486,6 +497,7 @@ export function EpubReader({
   const pageWidthRef = useRef(pageWidth);
   const runNextRef = useRef<() => Promise<void>>(async () => undefined);
   const runPrevRef = useRef<() => Promise<void>>(async () => undefined);
+  const readingDirectionRef = useRef<ReadingDirection>('ltr');
   const hostTouchRef = useRef({ x: 0, y: 0, time: 0 });
   const hostSuppressClickUntilRef = useRef(0);
   const [error, setError] = useState('');
@@ -601,9 +613,9 @@ export function EpubReader({
       return task.then(() => undefined);
     };
 
-    const handleReaderPointerIntent = (clientX: number, clientY: number, runNext: () => Promise<void>, runPrev: () => Promise<void>) => {
+    const handleReaderPointerIntent = (clientX: number, clientY: number, readingDirection: ReadingDirection, runNext: () => Promise<void>, runPrev: () => Promise<void>) => {
       const viewport = readerViewportForContainer(container);
-      const intent = readerPointerIntent(clientX, clientY, viewport);
+      const intent = readerPointerIntent(clientX, clientY, viewport, readingDirection);
       if (intent === 'center') {
         onTapRef.current();
         return;
@@ -613,7 +625,7 @@ export function EpubReader({
       else if (intent === 'next') void runNext();
     };
 
-    const setupDocumentEvents = (document: ReaderDocument, locations: EpubLocationStore, ensureLocationsReady: () => Promise<unknown>, runNext: () => Promise<void>, runPrev: () => Promise<void>) => {
+    const setupDocumentEvents = (document: ReaderDocument, locations: EpubLocationStore, ensureLocationsReady: () => Promise<unknown>, readingDirection: ReadingDirection, runNext: () => Promise<void>, runPrev: () => Promise<void>) => {
       if (document.__shukuReaderEventsBound) return;
       document.__shukuReaderEventsBound = true;
       let touchStartX = 0;
@@ -623,13 +635,25 @@ export function EpubReader({
 
       document.addEventListener('keydown', (event) => {
         if (isInteractiveElement(event.target)) return;
-        if (event.key === 'ArrowLeft' || event.key === 'PageUp' || (event.key === ' ' && event.shiftKey)) {
+        if (event.key === 'ArrowLeft') {
+          event.preventDefault();
+          onActivityRef.current();
+          void (physicalSideIntent('left', readingDirection) === 'next' ? runNext() : runPrev());
+          return;
+        }
+        if (event.key === 'ArrowRight') {
+          event.preventDefault();
+          onActivityRef.current();
+          void (physicalSideIntent('right', readingDirection) === 'next' ? runNext() : runPrev());
+          return;
+        }
+        if (event.key === 'PageUp' || (event.key === ' ' && event.shiftKey)) {
           event.preventDefault();
           onActivityRef.current();
           void runPrev();
           return;
         }
-        if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' ') {
+        if (event.key === 'PageDown' || event.key === ' ') {
           event.preventDefault();
           onActivityRef.current();
           void runNext();
@@ -661,7 +685,7 @@ export function EpubReader({
           return;
         }
         if (isInteractiveElement(target)) return;
-        handleReaderPointerIntent(event.clientX, event.clientY, runNext, runPrev);
+        handleReaderPointerIntent(event.clientX, event.clientY, readingDirection, runNext, runPrev);
       });
 
       document.addEventListener('touchstart', (event) => {
@@ -682,12 +706,12 @@ export function EpubReader({
         if (Math.abs(deltaX) >= 48 && Math.abs(deltaX) > Math.abs(deltaY) * 1.4 && elapsed < 900) {
           suppressClickUntil = Date.now() + 450;
           onActivityRef.current();
-          void (deltaX < 0 ? runNext() : runPrev());
+          void (horizontalSwipeIntent(deltaX, readingDirection) === 'next' ? runNext() : runPrev());
           return;
         }
         if (Math.abs(deltaX) < 12 && Math.abs(deltaY) < 12) {
           suppressClickUntil = Date.now() + 450;
-          handleReaderPointerIntent(touch.clientX, touch.clientY, runNext, runPrev);
+          handleReaderPointerIntent(touch.clientX, touch.clientY, readingDirection, runNext, runPrev);
         }
       }, { passive: true });
     };
@@ -720,6 +744,8 @@ export function EpubReader({
         localRendition = rendition;
         renditionRef.current = rendition;
         applyTheme(rendition, themeRef.current, fontSizeRef.current, lineHeightRef.current, fontFamilyRef.current, pageWidthRef.current);
+        const readingDirection: ReadingDirection = isRtlBook(book as EpubBookWithReadiness) ? 'rtl' : 'ltr';
+        readingDirectionRef.current = readingDirection;
 
         const rawNext = () => (isRtlBook(book as EpubBookWithReadiness) ? rendition.prev() : rendition.next());
         const rawPrev = () => (isRtlBook(book as EpubBookWithReadiness) ? rendition.next() : rendition.prev());
@@ -792,7 +818,7 @@ export function EpubReader({
           const document = view.document as ReaderDocument | undefined;
           if (!document) return;
           sanitizeEpubDocument(document);
-          setupDocumentEvents(document, locations, ensureLocationsReady, runNext, runPrev);
+          setupDocumentEvents(document, locations, ensureLocationsReady, readingDirection, runNext, runPrev);
         });
 
         rendition.on('relocated', emitLocationProgress);
@@ -926,7 +952,7 @@ export function EpubReader({
       width: container.clientWidth || rect.width || window.innerWidth,
       height: container.clientHeight || rect.height || window.innerHeight
     };
-    const intent = readerPointerIntent(clientX - rect.left, clientY - rect.top, viewport);
+    const intent = readerPointerIntent(clientX - rect.left, clientY - rect.top, viewport, readingDirectionRef.current);
     if (intent === 'center') {
       onTapRef.current();
       return;
@@ -960,7 +986,7 @@ export function EpubReader({
       event.stopPropagation();
       hostSuppressClickUntilRef.current = Date.now() + 450;
       onActivityRef.current();
-      void (deltaX < 0 ? runNextRef.current() : runPrevRef.current());
+      void (horizontalSwipeIntent(deltaX, readingDirectionRef.current) === 'next' ? runNextRef.current() : runPrevRef.current());
       return;
     }
     if (Math.abs(deltaX) < 12 && Math.abs(deltaY) < 12) {
@@ -971,7 +997,7 @@ export function EpubReader({
   };
 
   return (
-    <div className="flex h-full w-full flex-col px-4 pb-4 pt-6 md:px-8 md:pb-6 md:pt-10" data-allow-text-selection="true" style={{ background: tokens.background }}>
+    <div className="flex h-full w-full flex-col px-4 py-6 md:px-8 md:py-10" data-allow-text-selection="true" style={{ background: tokens.background }}>
       <div
         className="relative mx-auto min-h-0 w-full flex-1 overflow-hidden"
         style={{ background: tokens.background, maxWidth: constrainedPageWidth }}

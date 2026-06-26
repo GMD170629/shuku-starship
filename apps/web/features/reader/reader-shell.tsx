@@ -39,7 +39,6 @@ export type ReaderSettings = {
   comicMode: ComicMode;
   imageFit: ComicImageFit;
   imageVariant: ComicImageVariant;
-  reversePages: boolean;
 };
 
 export type ReaderShellEvents = {
@@ -119,9 +118,19 @@ export const readerThemeSurfaces: Record<ReaderTheme, { background: string; text
 };
 
 const readerBottomAreaHeight = 'calc(6rem + env(safe-area-inset-bottom))';
-const readerBottomAreaOffset = 'calc(10px - env(safe-area-inset-bottom))';
+const readerBottomAreaOffset = 0;
 const readerBottomControlsMaxWidth = 'max-w-4xl';
 const progressJumpDebounceMs = 160;
+
+function physicalSideIntent(side: 'left' | 'right', direction: ComicDirection): 'prev' | 'next' {
+  if (direction === 'rtl') return side === 'left' ? 'next' : 'prev';
+  return side === 'left' ? 'prev' : 'next';
+}
+
+function horizontalSwipeIntent(deltaX: number, direction: ComicDirection): 'prev' | 'next' {
+  if (direction === 'rtl') return deltaX > 0 ? 'next' : 'prev';
+  return deltaX < 0 ? 'next' : 'prev';
+}
 
 function ensureMeta(name: string) {
   const existing = document.querySelector<HTMLMetaElement>(`meta[name="${name}"]`);
@@ -270,6 +279,7 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
   const backRequestAtRef = useRef(0);
   const progressJumpTimerRef = useRef<number | null>(null);
   const pendingProgressJumpRef = useRef<number | null>(null);
+  const readerDirectionRef = useRef<ComicDirection>('ltr');
   const [controlsVisible, setControlsVisible] = useState(false);
   const [panel, setPanel] = useState<'toc' | 'settings' | null>(null);
   const [navItems, setNavItems] = useState<ReaderNavigationItem[]>(navigationItems ?? []);
@@ -281,6 +291,11 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
   const currentNavigationItem = activeNavigationItem(readerType, navItems, progress, progressExtra, selectedNavigationKey);
   const currentNavigationTitle = currentNavigationItem?.title ?? null;
   const progressDetail = currentNavigationTitle ? `${currentNavigationTitle} · ${progress.label}` : progress.label;
+  const readerDirection: ComicDirection = readerType === 'comic' ? settings.comicDirection : 'ltr';
+  const usesCompactPassiveProgress = readerType === 'epub' || readerType === 'comic';
+  const passiveProgressAreaBottom = usesCompactPassiveProgress ? 0 : readerBottomAreaOffset;
+  const passiveProgressAreaHeight = usesCompactPassiveProgress ? 'calc(2.75rem + env(safe-area-inset-bottom))' : readerBottomAreaHeight;
+  const readerContentPaddingBottom = usesCompactPassiveProgress ? passiveProgressAreaHeight : 'calc(6rem + 10px)';
   useReaderPwaSurface(settings.theme);
 
   function setControlsVisibility(visible: boolean) {
@@ -327,6 +342,11 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
     await controlsRef.current?.prev();
   }
 
+  function goByIntent(intent: 'prev' | 'next') {
+    if (intent === 'next') void goNext();
+    else void goPrev();
+  }
+
   async function jumpToStart() {
     await controlsRef.current?.jumpToProgress(0);
   }
@@ -356,8 +376,8 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
       return;
     }
     const width = window.innerWidth;
-    if (clientX < width * 0.33) void goPrev();
-    else if (clientX > width * 0.67) void goNext();
+    if (clientX < width * 0.33) goByIntent(physicalSideIntent('left', readerDirectionRef.current));
+    else if (clientX > width * 0.67) goByIntent(physicalSideIntent('right', readerDirectionRef.current));
   }
 
   useEffect(() => {
@@ -371,6 +391,10 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
   useEffect(() => {
     panelRef.current = panel;
   }, [panel]);
+
+  useEffect(() => {
+    readerDirectionRef.current = readerDirection;
+  }, [readerDirection]);
 
   useEffect(() => {
     return () => clearPendingProgressJump();
@@ -391,12 +415,22 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
         closePanelOrImmersive();
         return;
       }
-      if (event.key === 'ArrowLeft' || event.key === 'PageUp' || (event.key === ' ' && event.shiftKey)) {
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        goByIntent(physicalSideIntent('left', readerDirectionRef.current));
+        return;
+      }
+      if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        goByIntent(physicalSideIntent('right', readerDirectionRef.current));
+        return;
+      }
+      if (event.key === 'PageUp' || (event.key === ' ' && event.shiftKey)) {
         event.preventDefault();
         void goPrev();
         return;
       }
-      if (event.key === 'ArrowRight' || event.key === 'PageDown' || event.key === ' ') {
+      if (event.key === 'PageDown' || event.key === ' ') {
         event.preventDefault();
         void goNext();
         return;
@@ -423,7 +457,7 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
 
   useEffect(() => {
     setNavItems(navigationItems ?? []);
-  }, [editionId, navigationItems, readerType, settings.reversePages]);
+  }, [editionId, navigationItems, readerType]);
 
   useEffect(() => {
     if (!selectedNavigationKey) return;
@@ -445,8 +479,7 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
         if (readerType === 'comic') {
           const data = payload.data as ComicPagesPayload['data'];
           const pages: Array<{ pageIndex: number; title?: string }> = data?.pages?.length ? data.pages : Array.from({ length: data?.pageCount ?? 0 }, (_, index) => ({ pageIndex: index + 1 }));
-          const orderedPages = settings.reversePages ? [...pages].reverse() : pages;
-          setNavItems(orderedPages.map((page) => ({ index: page.pageIndex, title: page.title || `第 ${page.pageIndex} 页` })));
+          setNavItems(pages.map((page) => ({ index: page.pageIndex, title: page.title || `第 ${page.pageIndex} 页` })));
         } else if (readerType === 'pdf') {
           const data = payload.data as PdfPagesPayload['data'];
           setNavItems(Array.from({ length: data?.pageCount ?? progress.total ?? 0 }, (_, index) => ({ index: index + 1, title: `第 ${index + 1} 页` })));
@@ -461,7 +494,7 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
     return () => {
       active = false;
     };
-  }, [editionId, navigationItems, navItems.length, panel, readerType, settings.reversePages]);
+  }, [editionId, navigationItems, navItems.length, panel, readerType, progress.total]);
 
   async function jumpToPercent(value: number, debounce = false) {
     const nextValue = clampPercent(value);
@@ -533,8 +566,7 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
         const elapsed = Date.now() - touchRef.current.time;
         if (Math.abs(deltaX) >= 48 && Math.abs(deltaX) > Math.abs(deltaY) * 1.4 && elapsed < 900) {
           suppressClickUntilRef.current = Date.now() + 450;
-          if (deltaX < 0) void goNext();
-          else void goPrev();
+          goByIntent(horizontalSwipeIntent(deltaX, readerDirectionRef.current));
           return;
         }
         if (Math.abs(deltaX) < 12 && Math.abs(deltaY) < 12) {
@@ -544,7 +576,7 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
       }}
       tabIndex={-1}
     >
-      <main className="min-h-0 flex-1 w-full" style={{ paddingBottom: 'calc(6rem + 10px)' }}>
+      <main className="min-h-0 flex-1 w-full" style={{ paddingBottom: readerContentPaddingBottom }}>
         {typeof children === 'function' ? children({ enterImmersive, toggleControls, shouldIgnoreInteraction: shouldIgnoreReaderInteraction }) : children}
       </main>
 
@@ -594,8 +626,8 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
       <div
         className="pointer-events-none absolute inset-x-0 bottom-0 z-10 px-3 py-3 transition duration-200 md:px-5 md:py-4"
         style={{
-          bottom: readerBottomAreaOffset,
-          height: readerBottomAreaHeight,
+          bottom: passiveProgressAreaBottom,
+          height: passiveProgressAreaHeight,
           paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))',
           paddingLeft: 'max(0.75rem, env(safe-area-inset-left))',
           paddingRight: 'max(0.75rem, env(safe-area-inset-right))',
@@ -792,10 +824,6 @@ export function ReaderShell({ editionId, title, readerType, progress, progressEx
                     options={[{ value: 'ltr', label: '左至右' }, { value: 'rtl', label: '右至左' }]}
                     onChange={(value) => updateSettings({ comicDirection: value as ComicDirection })}
                   />
-                  <label className="flex min-h-11 items-center justify-between gap-3 rounded-xl bg-white/10 px-3 py-2.5">
-                    <span>倒序页码</span>
-                    <input type="checkbox" checked={settings.reversePages} onChange={(event) => updateSettings({ reversePages: event.target.checked })} className="h-5 w-5 accent-blue-500" />
-                  </label>
                 </>
               ) : (
                 <>
