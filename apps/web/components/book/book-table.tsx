@@ -38,60 +38,59 @@ export function BookTable({
           </tr>
         </thead>
         <tbody className="divide-y divide-slate-100">
-          {books.map((book) => (
-            <tr key={book.id} className="hover:bg-slate-50">
-              {onSelectedChange ? (
+          {books.map((book) => {
+            const authorLabel = book.author.trim() && book.author !== '未知作者' ? book.author.trim() : null;
+
+            return (
+              <tr key={book.id} className="hover:bg-slate-50">
+                {onSelectedChange ? (
+                  <td className="p-4">
+                    <input
+                      type="checkbox"
+                      checked={selectedSet.has(book.id)}
+                      onChange={(event) => onSelectedChange(book.id, event.target.checked)}
+                      className="h-4 w-4 accent-blue-600"
+                      aria-label={`选择 ${book.title}`}
+                    />
+                  </td>
+                ) : null}
                 <td className="p-4">
-                  <input
-                    type="checkbox"
-                    checked={selectedSet.has(book.id)}
-                    onChange={(event) => onSelectedChange(book.id, event.target.checked)}
-                    className="h-4 w-4 accent-blue-600"
-                    aria-label={`选择 ${book.title}`}
-                  />
-                </td>
-              ) : null}
-              <td className="p-4">
-                <div className="flex items-center gap-3">
-                  <Cover book={book} className="h-16 w-11" small />
-                  <div>
-                    <div className="font-semibold">{book.title}</div>
-                    <div className="text-xs text-slate-500">
-                      {book.author} · {book.format} · {book.type === 'comic' ? `共 ${book.totalUnits} 页` : `共 ${book.totalUnits} 章`} · {book.size}
-                    </div>
-                    <div className="mt-1 flex gap-1">
-                      {book.versionCount > 1 ? <Badge tone="blue">{book.versionCount} 版本</Badge> : null}
-                      {book.volumeCount > 1 ? <Badge tone="green">{book.volumeCount} 卷</Badge> : null}
+                  <div className="flex items-center gap-3">
+                    <Cover book={book} className="h-16 w-11" small />
+                    <div>
+                      <div className="font-semibold">{book.title}</div>
+                      <div className="mt-1 flex max-w-md flex-wrap gap-1">
+                        {authorLabel ? <Badge className="max-w-full truncate">{authorLabel}</Badge> : null}
+                        {book.versionCount > 1 ? <Badge tone="blue">{book.versionCount} 版本</Badge> : null}
+                        {book.volumeCount > 1 ? <Badge tone="green">{book.volumeCount} 卷</Badge> : null}
+                      </div>
                     </div>
                   </div>
-                </div>
-              </td>
-              <td>{book.type === 'comic' ? '漫画' : '电子书'}</td>
-              <td>
-                <div className="flex gap-1">
-                  {book.tags.slice(0, 2).map((tag) => (
-                    <Badge key={tag}>{tag}</Badge>
-                  ))}
-                </div>
-              </td>
-              <td>
-                <Badge tone={book.status === '已读' ? 'green' : 'blue'}>{book.status}</Badge>
-              </td>
-              <td className="w-40">
-                <div className="flex items-center gap-2">
-                  <Progress value={book.progress} className="flex-1" />
-                  <span className="text-xs text-slate-500">{book.progress}%</span>
-                </div>
-              </td>
-              <td className="text-slate-500">{book.lastRead}</td>
-              <td className="pr-4 text-right">
-                <div className="flex justify-end gap-2">
-                  <Button variant="ghost" icon={Eye} className="min-h-9 px-3 py-2" onClick={() => router.push(`/works/${book.id}`)}>查看</Button>
-                  {onDelete ? <Button variant="danger" icon={Trash2} className="min-h-9 px-3 py-2" onClick={() => onDelete(book)}>删除</Button> : null}
-                </div>
-              </td>
-            </tr>
-          ))}
+                </td>
+                <td>{book.type === 'comic' ? '漫画' : '电子书'}</td>
+                <td>
+                  <div className="flex gap-1">
+                    {book.tags.slice(0, 2).map((tag) => (
+                      <Badge key={tag}>{tag}</Badge>
+                    ))}
+                  </div>
+                </td>
+                <td>
+                  <Badge tone={book.status === '已读' ? 'green' : 'blue'}>{book.status}</Badge>
+                </td>
+                <td className="w-40">
+                  <Progress value={book.progress} />
+                </td>
+                <td className="text-slate-500">{book.lastRead}</td>
+                <td className="pr-4 text-right">
+                  <div className="flex justify-end gap-2">
+                    <Button variant="ghost" icon={Eye} className="min-h-9 px-3 py-2" onClick={() => router.push(`/works/${book.id}`)}>查看</Button>
+                    {onDelete ? <Button variant="danger" icon={Trash2} className="min-h-9 px-3 py-2" onClick={() => onDelete(book)}>删除</Button> : null}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

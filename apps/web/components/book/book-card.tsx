@@ -25,6 +25,8 @@ export function BookCard({
   onDelete?: () => void;
   onClick?: MouseEventHandler<HTMLDivElement>;
 }) {
+  const authorLabel = book.author.trim() && book.author !== '未知作者' ? book.author.trim() : null;
+
   function deleteBook(event: MouseEvent<HTMLButtonElement>) {
     event.stopPropagation();
     onDelete?.();
@@ -63,22 +65,21 @@ export function BookCard({
           <Trash2 size={15} />
         </button>
       ) : null}
-      <Cover book={book} size={compact ? 'small' : 'medium'} className="aspect-[2/3] w-full" />
+      <div className="relative">
+        <Cover book={book} size={compact ? 'small' : 'medium'} className="aspect-[2/3] w-full" />
+        <div className="absolute inset-x-2 bottom-2 rounded-full bg-white/80 p-0.5 shadow-sm backdrop-blur">
+          <Progress value={book.progress} className="h-1.5 bg-slate-200/80" />
+        </div>
+      </div>
       <div className="mt-2.5">
         <div className="line-clamp-1 text-sm font-semibold text-slate-950">{book.title}</div>
-        <div className="mt-1 line-clamp-1 text-xs text-slate-500">
-          {book.author} · {book.format} · {book.type === 'comic' ? `共 ${book.totalUnits ?? 0} 页` : `共 ${book.totalUnits ?? 0} 章`}
-        </div>
         <div className="mt-2 flex flex-wrap gap-1.5">
+          {authorLabel ? <Badge className="max-w-full truncate">{authorLabel}</Badge> : null}
           {(book.versionCount ?? 1) > 1 ? <Badge tone="blue">{book.versionCount} 版本</Badge> : null}
           {(book.volumeCount ?? 0) > 1 ? <Badge tone="green">{book.volumeCount} 卷</Badge> : null}
           {book.tags.slice(0, compact ? 1 : 2).map((tag) => (
             <Badge key={tag}>{tag}</Badge>
           ))}
-        </div>
-        <div className="mt-2.5 flex items-center gap-2">
-          <Progress value={book.progress} className="flex-1" />
-          <span className="text-xs text-slate-500">{book.progress}%</span>
         </div>
       </div>
     </div>
