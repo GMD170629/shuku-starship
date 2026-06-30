@@ -3,7 +3,6 @@
 import { Trash2 } from 'lucide-react';
 import type { MouseEvent, MouseEventHandler } from 'react';
 import { Badge } from '../ui/badge';
-import { cn } from '../ui/cn';
 import { Progress } from '../ui/progress';
 import { Cover } from './cover';
 import type { CoverBook } from './cover';
@@ -11,17 +10,11 @@ import type { CoverBook } from './cover';
 export function BookCard({
   book,
   compact = false,
-  selected = false,
-  selectionEnabled = false,
-  onSelectedChange,
   onDelete,
   onClick
 }: {
   book: CoverBook & { tags: string[]; progress: number; type: string; format: string; totalUnits?: number; versionCount?: number; volumeCount?: number; primaryEditionName?: string | null };
   compact?: boolean;
-  selected?: boolean;
-  selectionEnabled?: boolean;
-  onSelectedChange?: (selected: boolean) => void;
   onDelete?: () => void;
   onClick?: MouseEventHandler<HTMLDivElement>;
 }) {
@@ -35,25 +28,8 @@ export function BookCard({
   return (
     <div
       onClick={onClick}
-      className={cn(
-        'group relative cursor-pointer rounded-[18px] border bg-white p-2.5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md',
-        selected ? 'border-blue-400 ring-4 ring-blue-100' : 'border-slate-200'
-      )}
+      className="group relative cursor-pointer rounded-[18px] border border-slate-200 bg-white p-2.5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
     >
-      {selectionEnabled ? (
-        <label
-          className="absolute left-4 top-4 z-10 flex h-7 w-7 items-center justify-center rounded-full border border-white/80 bg-white/95 shadow-sm"
-          onClick={(event) => event.stopPropagation()}
-        >
-          <input
-            type="checkbox"
-            checked={selected}
-            onChange={(event) => onSelectedChange?.(event.target.checked)}
-            className="h-4 w-4 accent-blue-600"
-            aria-label={`选择 ${book.title}`}
-          />
-        </label>
-      ) : null}
       {onDelete ? (
         <button
           type="button"

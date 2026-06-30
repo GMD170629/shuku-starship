@@ -1,6 +1,6 @@
 'use client';
 
-import { CheckCircle2, ChevronDown, EyeOff, Filter, Grid3X3, List, Loader2, Plus, RefreshCw, Search, Tags, Trash2, UploadCloud, X } from 'lucide-react';
+import { ChevronDown, Filter, Grid3X3, List, Loader2, Plus, RefreshCw, Search, UploadCloud } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { BookCard } from '../../components/book/book-card';
@@ -37,12 +37,6 @@ const sortOptions = [
 const formatOptions = [
   { value: '全部', label: '全部' },
   { value: 'ebook', label: '电子书' },
-  { value: 'COMIC', label: '漫画' }
-];
-
-const bulkFormatOptions = [
-  { value: 'EPUB', label: 'EPUB' },
-  { value: 'PDF', label: 'PDF' },
   { value: 'COMIC', label: '漫画' }
 ];
 
@@ -85,11 +79,6 @@ export function LibraryPage() {
   const [meta, setMeta] = useState({ total: 0, pageSize: 24, totalPages: 1 });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
-  const [selected, setSelected] = useState<string[]>([]);
-  const [bulkFormat, setBulkFormat] = useState('EPUB');
-  const [bulkStatus, setBulkStatus] = useState('READING');
-  const [tagInput, setTagInput] = useState('');
-  const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
   const [uploading, setUploading] = useState(false);
@@ -156,10 +145,8 @@ export function LibraryPage() {
     return () => {
       active = false;
     };
-  }, [query, reloadKey]);
+  }, [page, query, reloadKey]);
 
-  const visibleBookIds = useMemo(() => books.map((book) => book.id), [books]);
-  const allVisibleSelected = visibleBookIds.length > 0 && visibleBookIds.every((id) => selected.includes(id));
   const activeFilterCount = [
     search.trim(),
     filter !== '全部',
@@ -171,64 +158,6 @@ export function LibraryPage() {
     missingCoverOnly,
     newImportOnly
   ].filter(Boolean).length;
-
-  function setBookSelected(bookId: string, checked: boolean) {
-    setSelected((current) => (checked ? [...new Set([...current, bookId])] : current.filter((id) => id !== bookId)));
-  }
-
-  function toggleCurrentPage(checked: boolean) {
-    setSelected((current) => {
-      if (!checked) return current.filter((id) => !visibleBookIds.includes(id));
-      return [...new Set([...current, ...visibleBookIds])];
-    });
-  }
-
-  function parseTagInput() {
-    return tagInput
-      .split(/[,，\n]/)
-      .map((tag) => tag.trim())
-      .filter(Boolean);
-  }
-
-  async function performBulk(body: Record<string, unknown>, successMessage: string) {
-    if (selected.length === 0) return;
-    setBusy(true);
-    setError('');
-    setMessage('');
-    try {
-      const response = await fetch('/api/works/bulk', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: selected, ...body })
-      });
-      const payload = (await response.json()) as { ok: boolean; error?: { message: string } };
-      if (!payload.ok) throw new Error(payload.error?.message ?? '批量操作失败');
-      setMessage(successMessage);
-      toast.success(successMessage);
-      if ('addTags' in body || 'removeTags' in body) setTagInput('');
-      setReloadKey((key) => key + 1);
-      setSelected([]);
-    } catch (reason) {
-      const nextError = reason instanceof Error ? reason.message : '批量操作失败';
-      setError(nextError);
-      toast.error('批量操作失败', nextError);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function confirmBulk(body: Record<string, unknown>, successMessage: string, prompt?: string) {
-    if (prompt) {
-      const confirmed = await confirm({
-        title: successMessage.includes('删除') ? '确认删除记录' : '确认批量操作',
-        description: prompt,
-        confirmLabel: successMessage.includes('删除') ? '删除记录' : '确认',
-        tone: successMessage.includes('删除') || successMessage.includes('隐藏') ? 'danger' : 'default'
-      });
-      if (!confirmed) return;
-    }
-    void performBulk(body, successMessage);
-  }
 
   async function uploadBook(file: File | null) {
     if (!file) return;
@@ -263,7 +192,6 @@ export function LibraryPage() {
       tone: 'danger'
     });
     if (!confirmed) return;
-    setBusy(true);
     setError('');
     setMessage('');
     try {
@@ -272,14 +200,11 @@ export function LibraryPage() {
       if (!payload.ok) throw new Error(payload.error?.message ?? '删除失败');
       setMessage('已删除书库记录');
       toast.success('已删除书库记录', '来源文件已保留');
-      setSelected((current) => current.filter((id) => id !== book.id));
       setReloadKey((key) => key + 1);
     } catch (reason) {
       const nextError = reason instanceof Error ? reason.message : '删除失败';
       setError(nextError);
       toast.error('删除失败', nextError);
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -299,7 +224,7 @@ export function LibraryPage() {
     <div className="space-y-6">
       <PageTitle
         title="我的书库"
-        desc="上传、浏览、搜索、筛选和批量管理 EPUB、PDF 与漫画读物。"
+        desc="上传、浏览、搜索和筛选 EPUB、PDF 与漫画读物。"
         action={
           <div className="flex flex-wrap gap-3">
             <label className={cn('inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-2xl bg-blue-600 px-4 py-2.5 text-sm font-medium text-white transition-colors duration-150 hover:bg-blue-700 focus-within:ring-2 focus-within:ring-blue-200', uploading ? 'cursor-not-allowed opacity-80' : '')}>
@@ -323,11 +248,6 @@ export function LibraryPage() {
             <span>{activeFilterCount > 0 ? `搜索与筛选 · ${activeFilterCount}` : '搜索与筛选'}</span>
             <ChevronDown size={15} className={cn('text-slate-400 transition', filtersOpen && 'rotate-180')} />
           </button>
-          <label className="flex h-10 items-center gap-2 rounded-2xl border border-slate-200 px-3 text-sm text-slate-600">
-            <input type="checkbox" checked={allVisibleSelected} onChange={(event) => toggleCurrentPage(event.target.checked)} className="h-4 w-4 accent-blue-600" />
-            选择当前页
-          </label>
-          {selected.length > 0 ? <button onClick={() => setSelected([])} className="inline-flex h-10 items-center gap-1 rounded-2xl px-2 text-sm text-slate-500 hover:bg-slate-50 hover:text-slate-900"><X size={14} />清空</button> : null}
           {message ? <span className="px-2 text-sm text-emerald-600">{message}</span> : null}
           <div className="ml-auto flex items-center gap-2">
             <Select value={sort} options={sortOptions} onChange={setSort} ariaLabel="排序方式" size="sm" className="min-w-[116px]" align="right" />
@@ -407,27 +327,6 @@ export function LibraryPage() {
             </div>
           </div>
         ) : null}
-        {selected.length > 0 ? (
-          <div className="mt-4 space-y-3 rounded-2xl bg-blue-50 px-4 py-3 text-sm text-blue-700">
-            <div className="flex flex-wrap items-center gap-3">
-              <CheckCircle2 size={16} />
-              已选择 {selected.length} 项
-              <Select value={bulkFormat} options={bulkFormatOptions} onChange={setBulkFormat} ariaLabel="批量修改类型" tone="blue" size="sm" />
-              <Button loading={busy} loadingText="处理中" variant="secondary" className="bg-white" icon={Filter} onClick={() => performBulk({ format: bulkFormat }, '已批量修改类型')}>修改类型</Button>
-              <Select value={bulkStatus} options={statusOptions} onChange={setBulkStatus} ariaLabel="批量修改阅读状态" tone="blue" size="sm" />
-              <Button loading={busy} loadingText="处理中" variant="secondary" className="bg-white" icon={CheckCircle2} onClick={() => performBulk({ status: bulkStatus }, '已批量修改阅读状态')}>修改状态</Button>
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <input value={tagInput} onChange={(event) => setTagInput(event.target.value)} placeholder="标签，用逗号分隔" className="h-10 min-w-[220px] flex-1 rounded-xl border border-blue-100 bg-white px-3 text-sm text-slate-700 outline-none" />
-              <Button disabled={parseTagInput().length === 0} loading={busy} loadingText="处理中" variant="secondary" className="bg-white" icon={Tags} onClick={() => performBulk({ addTags: parseTagInput() }, '已批量添加标签')}>添加标签</Button>
-              <Button disabled={parseTagInput().length === 0} loading={busy} loadingText="处理中" variant="secondary" className="bg-white" icon={Tags} onClick={() => performBulk({ removeTags: parseTagInput() }, '已批量移除标签')}>移除标签</Button>
-              <Button loading={busy} loadingText="处理中" variant="secondary" className="bg-white" icon={RefreshCw} onClick={() => performBulk({ regenerateCover: true }, '已批量重新生成封面')}>重新生成封面</Button>
-              <Button loading={busy} loadingText="处理中" variant="danger" icon={Trash2} onClick={() => void confirmBulk({ ignored: true }, '已批量隐藏读物', `确认隐藏选中的 ${selected.length} 本读物吗？不会删除源文件。`)}>隐藏</Button>
-              <Button loading={busy} loadingText="处理中" variant="danger" icon={Trash2} onClick={() => void confirmBulk({ deleteRecords: true }, '已删除书库记录', `确认删除选中的 ${selected.length} 条书库记录吗？来源文件会保留在监控目录中。`)}>删除记录</Button>
-              {visibility !== 'active' ? <Button loading={busy} loadingText="处理中" variant="secondary" className="bg-white" icon={EyeOff} onClick={() => performBulk({ ignored: false }, '已恢复显示')}>恢复显示</Button> : null}
-            </div>
-          </div>
-        ) : null}
       </div>
       {loading ? <div className="shuku-loading-panel p-8 text-sm" role="status" aria-live="polite">正在读取书库...</div> : null}
       {error ? <div className="rounded-3xl border border-red-100 bg-red-50 p-8 text-sm text-red-700">{error}</div> : null}
@@ -451,16 +350,13 @@ export function LibraryPage() {
                 <BookCard
                   key={book.id}
                   book={book}
-                  selectionEnabled
-                  selected={selected.includes(book.id)}
-                  onSelectedChange={(checked) => setBookSelected(book.id, checked)}
                   onDelete={() => void deleteBook(book)}
                   onClick={() => router.push(`/works/${book.id}`)}
                 />
               ))}
             </div>
           ) : (
-            <BookTable books={books} selectedIds={selected} onSelectedChange={setBookSelected} onDelete={(book) => void deleteBook(book)} />
+            <BookTable books={books} onDelete={(book) => void deleteBook(book)} />
           )}
           <div className="flex flex-col gap-3 rounded-[28px] border border-slate-200 bg-white p-4 text-sm text-slate-600 shadow-sm md:flex-row md:items-center md:justify-between">
             <div>

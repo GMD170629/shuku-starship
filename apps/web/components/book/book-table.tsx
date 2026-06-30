@@ -10,24 +10,18 @@ import { Cover } from './cover';
 
 export function BookTable({
   books,
-  selectedIds = [],
-  onSelectedChange,
   onDelete
 }: {
   books: WorkView[];
-  selectedIds?: string[];
-  onSelectedChange?: (bookId: string, selected: boolean) => void;
   onDelete?: (book: WorkView) => void;
 }) {
   const router = useRouter();
-  const selectedSet = new Set(selectedIds);
 
   return (
     <div className="overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-sm">
       <table className="w-full text-left text-sm">
         <thead className="bg-slate-50 text-xs uppercase text-slate-500">
           <tr>
-            {onSelectedChange ? <th className="w-12 p-4">选择</th> : null}
             <th className="p-4">读物</th>
             <th>类型</th>
             <th>标签</th>
@@ -43,17 +37,6 @@ export function BookTable({
 
             return (
               <tr key={book.id} className="hover:bg-slate-50">
-                {onSelectedChange ? (
-                  <td className="p-4">
-                    <input
-                      type="checkbox"
-                      checked={selectedSet.has(book.id)}
-                      onChange={(event) => onSelectedChange(book.id, event.target.checked)}
-                      className="h-4 w-4 accent-blue-600"
-                      aria-label={`选择 ${book.title}`}
-                    />
-                  </td>
-                ) : null}
                 <td className="p-4">
                   <div className="flex items-center gap-3">
                     <Cover book={book} className="h-16 w-11" small />
