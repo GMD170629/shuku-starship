@@ -81,13 +81,26 @@ function readableEditionId(book: WorkView | null) {
 type ReadingUnitView = { id: string; unitType: string; title: string; href: string; mediaType?: string | null; sortOrder: number; size?: string | number | null };
 type DetailMetadata = { language?: string | null; publisher?: string | null; publishedAt?: string | null; isbn?: string | null; items?: Array<{ source: string; metadataJson: unknown }> };
 type VolumeSectionView = { id: string; editionId?: string | null; title: string; index: number; fileId: string; pageCount: number; coverUrl: string };
+type PageMeta = { page: number; pageSize: number; total: number; totalPages: number };
 type WorksResponse = { ok: boolean; data?: { books: WorkView[] }; error?: { message: string } };
+const DESKTOP_CHAPTER_PAGE_SIZE = 120;
+const emptyReadingUnitsPage: PageMeta = { page: 1, pageSize: DESKTOP_CHAPTER_PAGE_SIZE, total: 0, totalPages: 1 };
 
 function readerUrlForBook(book: WorkView, volumeSections: VolumeSectionView[]) {
   const editionId = readableEditionId(book);
   if (!editionId) return null;
   const volumeId = book.recentVolumeId ?? volumeSections[0]?.id ?? null;
   return volumeId ? `/reader/${editionId}?volume=${encodeURIComponent(volumeId)}` : `/reader/${editionId}`;
+}
+
+function readerUrlForChapter(book: WorkView, volumeId: string | null | undefined, href: string | null | undefined) {
+  const editionId = readableEditionId(book);
+  if (!editionId) return null;
+  const params = new URLSearchParams();
+  if (volumeId) params.set('volume', volumeId);
+  if (href) params.set('href', href);
+  const query = params.toString();
+  return `/reader/${editionId}${query ? `?${query}` : ''}`;
 }
 
 function compactEditionLabel(book: WorkView) {
@@ -119,7 +132,11 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   const [message, setMessage] = useState('');
   const [metadata, setMetadata] = useState<DetailMetadata | null>(null);
   const [readingUnits, setReadingUnits] = useState<ReadingUnitView[]>([]);
+  const [readingUnitsPage, setReadingUnitsPage] = useState<PageMeta>(emptyReadingUnitsPage);
   const [volumeSections, setVolumeSections] = useState<VolumeSectionView[]>([]);
+  const [selectedVolumeId, setSelectedVolumeId] = useState<string | null>(null);
+  const [chapterPage, setChapterPage] = useState(1);
+  const [chapterLoading, setChapterLoading] = useState(false);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [busyAction, setBusyAction] = useState('');
@@ -154,15 +171,25 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   const toast = useToast();
 
   const loadBook = useCallback(() => {
-    return fetch(`/api/works/${bookId}`)
-      .then((response) => response.json() as Promise<{ ok: boolean; data?: { book: WorkView; metadata?: DetailMetadata; readingUnits?: ReadingUnitView[]; volumeSections?: VolumeSectionView[] }; error?: { message: string } }>)
+    const params = new URLSearchParams({
+      chapterPage: String(chapterPage),
+      chapterPageSize: String(DESKTOP_CHAPTER_PAGE_SIZE)
+    });
+    if (selectedVolumeId) params.set('volumeId', selectedVolumeId);
+    setChapterLoading(true);
+    return fetch(`/api/works/${bookId}?${params.toString()}`)
+      .then((response) => response.json() as Promise<{ ok: boolean; data?: { book: WorkView; metadata?: DetailMetadata; readingUnits?: ReadingUnitView[]; readingUnitsPage?: PageMeta; volumeSections?: VolumeSectionView[] }; error?: { message: string } }>)
       .then((payload) => {
         if (!payload.ok) throw new Error(payload.error?.message ?? '读取读物失败');
         const nextBook = payload.data?.book ?? null;
         setBook(nextBook);
         setMetadata(payload.data?.metadata ?? null);
         setReadingUnits(payload.data?.readingUnits ?? []);
+        setReadingUnitsPage(payload.data?.readingUnitsPage ?? emptyReadingUnitsPage);
         setVolumeSections(payload.data?.volumeSections ?? []);
+        if (nextBook && !selectedVolumeId && (payload.data?.volumeSections?.length ?? 0) > 0) {
+          setSelectedVolumeId(nextBook.recentVolumeId ?? payload.data?.volumeSections?.[0]?.id ?? null);
+        }
         if (nextBook) {
           setForm({
             title: nextBook.title,
@@ -183,8 +210,9 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
           });
         }
       })
-      .catch((reason) => setError(reason instanceof Error ? reason.message : '读取读物失败'));
-  }, [bookId]);
+      .catch((reason) => setError(reason instanceof Error ? reason.message : '读取读物失败'))
+      .finally(() => setChapterLoading(false));
+  }, [bookId, chapterPage, selectedVolumeId]);
 
   useEffect(() => {
     loadBook();
@@ -448,12 +476,15 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   if (!book || !displayBook) return <div className="shuku-loading-panel p-8 text-sm" role="status" aria-live="polite">正在读取读物详情...</div>;
   const readerEditionId = readableEditionId(book);
   const hasVolumeSections = volumeSections.length > 0;
+  const hasChapterNavigation = book.formatValue === 'EPUB';
+  const activeVolumeId = selectedVolumeId ?? book.recentVolumeId ?? volumeSections[0]?.id ?? null;
   const readerUrl = readerUrlForBook(book, volumeSections);
   const missingMetadata = metadataMissingLabels(book, metadata);
   const quality = qualityLabel(book.metadataQuality);
-  const visibleReadingUnits = readingUnits.slice(0, 120);
-  const navigationTitle = hasVolumeSections ? '卷册' : '章节';
-  const navigationSummary = hasVolumeSections ? `${volumeSections.length} 个卷册` : readingUnits.length > 0 ? `${readingUnits.length} 章` : '未解析章节';
+  const navigationTitle = hasChapterNavigation ? '章节' : hasVolumeSections ? '卷册' : '章节';
+  const navigationSummary = hasChapterNavigation
+    ? readingUnitsPage.total > 0 ? `第 ${readingUnitsPage.page} / ${readingUnitsPage.totalPages} 页 · 共 ${readingUnitsPage.total} 章` : '未解析章节'
+    : hasVolumeSections ? `${volumeSections.length} 个卷册` : '未解析章节';
   const hasDescription = Boolean(book.desc && book.desc !== DEFAULT_DESCRIPTION);
   const movingVolumeRecord = movingVolume ? book.volumes.find((volume) => volume.id === movingVolume.id) : null;
   const movingEdition = movingVolumeRecord ? book.editions.find((edition) => edition.id === movingVolumeRecord.editionId) : null;
@@ -461,6 +492,11 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
   const selectedTargetBook = targetBooks.find((item) => item.id === targetBookId) ?? null;
   const targetEditionOptions = selectedTargetBook?.editions ?? [];
   const selectedTargetEdition = targetEditionOptions.find((edition) => edition.id === targetEditionId) ?? null;
+
+  function selectChapterVolume(volumeId: string) {
+    setSelectedVolumeId(volumeId);
+    setChapterPage(1);
+  }
 
   return (
     <div className="space-y-5">
@@ -643,7 +679,7 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
             </div>
           </div>
           <div className="mt-4">
-            {hasVolumeSections ? (
+            {hasVolumeSections && !hasChapterNavigation ? (
               <div className="flex flex-wrap gap-3">
                 {volumeSections.map((volume, index) => (
                   <div key={volume.id} className="group relative w-36 rounded-2xl border border-slate-100 bg-white p-2 shadow-sm transition hover:border-blue-100 hover:shadow-md">
@@ -666,14 +702,56 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
                   </div>
                 ))}
               </div>
-            ) : readingUnits.length > 0 ? (
-              <div className="flex flex-wrap gap-3">
-                {visibleReadingUnits.map((unit, index) => (
-                  <button key={unit.id} disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}`)} className="min-h-24 w-full rounded-2xl border border-slate-100 bg-white p-4 text-left shadow-sm transition hover:border-blue-100 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 sm:w-56">
-                    <span className="text-xs tabular-nums text-slate-400">{String(index + 1).padStart(3, '0')}</span>
-                    <span className="mt-2 line-clamp-3 text-sm font-medium leading-5 text-slate-950">{unit.title}</span>
+            ) : hasChapterNavigation ? (
+              <div className="space-y-4">
+                {hasVolumeSections ? (
+                  <div className="flex flex-wrap gap-2">
+                    {volumeSections.map((volume, index) => {
+                      const selected = volume.id === activeVolumeId;
+                      return (
+                        <button
+                          key={volume.id}
+                          type="button"
+                          onClick={() => selectChapterVolume(volume.id)}
+                          className={cn(
+                            'min-h-10 rounded-full border px-4 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-60',
+                            selected ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
+                          )}
+                          disabled={chapterLoading && selected}
+                        >
+                          {volume.title || `第 ${index + 1} 卷`}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                {readingUnits.length > 0 ? (
+                  <div className={cn('flex flex-wrap gap-3 transition', chapterLoading ? 'opacity-70' : '')} aria-busy={chapterLoading || undefined}>
+                    {readingUnits.map((unit, index) => {
+                      const chapterUrl = readerUrlForChapter(book, activeVolumeId, unit.href);
+                      const displayIndex = (readingUnitsPage.page - 1) * readingUnitsPage.pageSize + index + 1;
+                      return (
+                        <button key={unit.id} disabled={!chapterUrl} onClick={() => chapterUrl && router.push(chapterUrl)} className="min-h-24 w-full rounded-2xl border border-slate-100 bg-white p-4 text-left shadow-sm transition hover:border-blue-100 hover:shadow-md disabled:cursor-not-allowed disabled:opacity-50 sm:w-56">
+                          <span className="text-xs tabular-nums text-slate-400">{String(displayIndex).padStart(3, '0')}</span>
+                          <span className="mt-2 line-clamp-3 text-sm font-medium leading-5 text-slate-950">{unit.title}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <button disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}`)} className="flex w-full items-center justify-between rounded-2xl border border-slate-100 bg-white px-4 py-4 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
+                    <div className="text-sm text-slate-500">未拿到章节明细</div>
+                    <ChevronRight size={16} className="text-slate-400" />
                   </button>
-                ))}
+                )}
+                <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-4 text-sm text-slate-500">
+                  <span>{readingUnitsPage.total > 0 ? `第 ${readingUnitsPage.page} / ${readingUnitsPage.totalPages} 页 · 共 ${readingUnitsPage.total} 章` : '共 0 章'}</span>
+                  <div className="flex gap-2">
+                    <Button variant="secondary" disabled={chapterLoading || readingUnitsPage.page <= 1} onClick={() => setChapterPage((current) => Math.max(1, current - 1))}>上一页</Button>
+                    <Button variant="secondary" disabled={chapterLoading || readingUnitsPage.page >= readingUnitsPage.totalPages} onClick={() => setChapterPage((current) => Math.min(readingUnitsPage.totalPages, current + 1))}>下一页</Button>
+                  </div>
+                </div>
+                {chapterLoading ? <div className="text-sm text-slate-400">正在加载章节...</div> : null}
               </div>
             ) : (
               <button disabled={!readerEditionId} onClick={() => readerEditionId && router.push(`/reader/${readerEditionId}`)} className="flex w-full items-center justify-between rounded-2xl border border-slate-100 bg-white px-4 py-4 text-left transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
@@ -682,7 +760,6 @@ export function BookDetailPage({ bookId }: { bookId: string }) {
               </button>
             )}
           </div>
-          {readingUnits.length > visibleReadingUnits.length ? <div className="px-1 py-4 text-sm text-slate-500">还有 {readingUnits.length - visibleReadingUnits.length} 项未展开，进入阅读器可继续阅读。</div> : null}
         </section>
 
         <aside className="space-y-4">

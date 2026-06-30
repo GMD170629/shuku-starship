@@ -915,6 +915,124 @@ def test_works_library_filters_cover_type_status_tags_and_import_state(client, d
         assert [book["id"] for book in payload["data"]["books"]] == expected_ids
 
 
+def test_work_detail_epub_reading_units_are_paginated_and_clamped(client, db_session):
+    create_worker_tables(db_session)
+    _login(client, db_session)
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryWork (
+                id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                primaryEditionId, mergeKey, createdAt, updatedAt
+            ) VALUES (
+                'paged-epub', 'Paged EPUB', 'pagedepub', 'Author', 'author', 'EPUB', 'WANT', 'UNKNOWN',
+                'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', 0, 0,
+                'paged-epub-edition', 'epub:paged-epub:author', 'now', 'now'
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryEdition (
+                id, workId, origin, format, versionName, versionKey, importStatus, sizeBytes,
+                pageCount, chapterCount, coverStatus, "primary", hidden, createdAt, updatedAt
+            ) VALUES (
+                'paged-epub-edition', 'paged-epub', 'MANUAL', 'EPUB', 'Default', 'default',
+                'COMPLETED', 0, NULL, 125, 'PENDING', 1, 0, 'now', 'now'
+            )"""
+        )
+    )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryVolume (
+                id, editionId, title, volumeIndex, sortOrder, pageCount, chapterCount, coverPath, createdAt, updatedAt
+            ) VALUES (
+                'paged-epub-volume', 'paged-epub-edition', '正文', 1, 0, NULL, 125, NULL, 'now', 'now'
+            )"""
+        )
+    )
+    for index in range(1, 126):
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryReadingUnit (
+                    id, editionId, volumeId, fileId, unitType, title, href, mediaType, sortOrder,
+                    metadataJson, createdAt, updatedAt
+                ) VALUES (
+                    :id, 'paged-epub-edition', 'paged-epub-volume', NULL, 'chapter', :title, :href,
+                    'application/xhtml+xml', :sort_order, '{}', 'now', 'now'
+                )"""
+            ),
+            {"id": f"chapter-{index}", "title": f"第 {index} 章", "href": f"{index}.xhtml", "sort_order": index},
+        )
+    db_session.commit()
+
+    page_two = client.get("/api/works/paged-epub", params={"chapterPage": 2, "chapterPageSize": 50})
+    assert page_two.status_code == 200
+    page_two_data = page_two.json()["data"]
+    assert page_two_data["readingUnitsPage"] == {"page": 2, "pageSize": 50, "total": 125, "totalPages": 3}
+    assert [unit["title"] for unit in page_two_data["readingUnits"][:2]] == ["第 51 章", "第 52 章"]
+    assert page_two_data["readingUnits"][-1]["title"] == "第 100 章"
+
+    clamped = client.get("/api/works/paged-epub", params={"chapterPage": 999, "chapterPageSize": 50})
+    clamped_data = clamped.json()["data"]
+    assert clamped_data["readingUnitsPage"] == {"page": 3, "pageSize": 50, "total": 125, "totalPages": 3}
+    assert [unit["title"] for unit in clamped_data["readingUnits"]] == [f"第 {index} 章" for index in range(101, 126)]
+
+
+def test_work_detail_empty_epub_and_comic_return_reading_units_page(client, db_session):
+    create_worker_tables(db_session)
+    _login(client, db_session)
+    for work_id, edition_id, fmt, work_type in [
+        ("empty-epub", "empty-epub-edition", "EPUB", "EPUB"),
+        ("comic-detail", "comic-detail-edition", "COMIC", "COMIC"),
+    ]:
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryWork (
+                    id, title, normalizedTitle, author, normalizedAuthor, workType, status, publicationStatus,
+                    trackingStatus, tags, metadataQuality, organizeStatus, coverStatus, hidden, organized,
+                    primaryEditionId, mergeKey, createdAt, updatedAt
+                ) VALUES (
+                    :work_id, :work_id, :work_id, 'Author', 'author', :work_type, 'WANT', 'UNKNOWN',
+                    'NOT_TRACKING', '[]', 0, 'REVIEWING', 'PENDING', 0, 0,
+                    :edition_id, :merge_key, 'now', 'now'
+                )"""
+            ),
+            {"work_id": work_id, "work_type": work_type, "edition_id": edition_id, "merge_key": f"{fmt.lower()}:{work_id}:author"},
+        )
+        db_session.execute(
+            text(
+                """INSERT INTO LibraryEdition (
+                    id, workId, origin, format, versionName, versionKey, importStatus, sizeBytes,
+                    pageCount, chapterCount, coverStatus, "primary", hidden, createdAt, updatedAt
+                ) VALUES (
+                    :edition_id, :work_id, 'MANUAL', :fmt, 'Default', 'default',
+                    'COMPLETED', 0, 0, 0, 'PENDING', 1, 0, 'now', 'now'
+                )"""
+            ),
+            {"edition_id": edition_id, "work_id": work_id, "fmt": fmt},
+        )
+    db_session.execute(
+        text(
+            """INSERT INTO LibraryVolume (
+                id, editionId, title, volumeIndex, sortOrder, pageCount, chapterCount, coverPath, createdAt, updatedAt
+            ) VALUES (
+                'comic-detail-volume', 'comic-detail-edition', '第 1 卷', 1, 0, 5, NULL, NULL, 'now', 'now'
+            )"""
+        )
+    )
+    db_session.commit()
+
+    empty_epub = client.get("/api/works/empty-epub", params={"chapterPageSize": 50}).json()["data"]
+    assert empty_epub["readingUnits"] == []
+    assert empty_epub["readingUnitsPage"] == {"page": 1, "pageSize": 50, "total": 0, "totalPages": 1}
+
+    comic = client.get("/api/works/comic-detail", params={"chapterPageSize": 50}).json()["data"]
+    assert comic["readingUnits"] == []
+    assert comic["readingUnitsPage"] == {"page": 1, "pageSize": 50, "total": 0, "totalPages": 1}
+    assert [volume["id"] for volume in comic["volumeSections"]] == ["comic-detail-volume"]
+
+
 def test_works_recent_read_sort_uses_latest_user_progress_across_pages(client, db_session):
     create_worker_tables(db_session)
     _login(client, db_session)

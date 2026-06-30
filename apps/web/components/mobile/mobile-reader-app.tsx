@@ -28,7 +28,7 @@ type ImportPayload = { ok: boolean; data?: { title: string; duplicate?: boolean 
 type ContinueItem = { book: WorkView; progress: number; lastReadAt: string; chapter: string | null } | null;
 type ReadingUnitView = { id: string; unitType: string; title: string; href?: string | null; sortOrder: number; volumeId?: string | null; mediaType?: string | null; size?: string | number | null };
 type VolumeSectionView = { id: string; title: string; index: number; fileId: string; pageCount: number; coverUrl: string; progress?: number; lastReadAt?: string | null; position?: string | null; currentPage?: number | null; currentHref?: string | null; currentSectionIndex?: number | null; currentChapterTitle?: string | null; currentChapterSortOrder?: number | null };
-type WorkDetailPayload = { ok: boolean; data?: { book: WorkView; readingUnits?: ReadingUnitView[]; volumeSections?: VolumeSectionView[] }; error?: { message: string } };
+type WorkDetailPayload = { ok: boolean; data?: { book: WorkView; readingUnits?: ReadingUnitView[]; readingUnitsPage?: PageMeta; volumeSections?: VolumeSectionView[] }; error?: { message: string } };
 type Summary = { totalBooks: number; latestSyncAt: string | null };
 type UserInfo = { email: string; name: string; role: string };
 type SystemStatus = {
@@ -43,7 +43,9 @@ type MobileScaleStyle = CSSProperties & { '--mobile-scale'?: string };
 const mobileDesignWidth = 426.5;
 const sv = (value: number) => `calc(${value}px * var(--mobile-scale))`;
 const MOBILE_SHELF_PAGE_SIZE = 24;
+const MOBILE_CHAPTER_PAGE_SIZE = 50;
 const emptyPageMeta: PageMeta = { page: 0, pageSize: MOBILE_SHELF_PAGE_SIZE, total: 0, totalPages: 1 };
+const emptyChapterPageMeta: PageMeta = { page: 1, pageSize: MOBILE_CHAPTER_PAGE_SIZE, total: 0, totalPages: 1 };
 
 const tabs: Array<{ key: MobileTab; label: string; icon: typeof Library }> = [
   { key: 'home', label: '首页', icon: Home },
@@ -167,6 +169,7 @@ export function MobileReaderApp() {
   const router = useRouter();
   const uploadInputRef = useRef<HTMLInputElement>(null);
   const scrollSectionRef = useRef<HTMLElement>(null);
+  const detailRequestSeqRef = useRef(0);
   const [mounted, setMounted] = useState(false);
   const [tab, setTab] = useState<MobileTab>('home');
   const [books, setBooks] = useState<WorkView[]>([]);
@@ -192,11 +195,14 @@ export function MobileReaderApp() {
   const [detailBookId, setDetailBookId] = useState('');
   const [detailBook, setDetailBook] = useState<WorkView | null>(null);
   const [detailReadingUnits, setDetailReadingUnits] = useState<ReadingUnitView[]>([]);
+  const [detailReadingUnitsPage, setDetailReadingUnitsPage] = useState<PageMeta>(emptyChapterPageMeta);
   const [detailVolumeSections, setDetailVolumeSections] = useState<VolumeSectionView[]>([]);
   const [detailSelectedVolumeId, setDetailSelectedVolumeId] = useState<string | null>(null);
   const [detailLoadingVolumeId, setDetailLoadingVolumeId] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailLoadingMore, setDetailLoadingMore] = useState(false);
   const [detailError, setDetailError] = useState('');
+  const [detailLoadMoreError, setDetailLoadMoreError] = useState('');
 
   useEffect(() => {
     setMounted(true);
@@ -313,47 +319,65 @@ export function MobileReaderApp() {
     return () => window.clearTimeout(timer);
   }, [loadSearchPage, searchText]);
 
+  const loadDetailChapterPage = useCallback(async (pageNumber: number, append = false) => {
+    if (!detailBookId) return;
+    const requestSeq = detailRequestSeqRef.current + 1;
+    detailRequestSeqRef.current = requestSeq;
+    const requestedVolumeId = detailSelectedVolumeId;
+    if (append) setDetailLoadingMore(true);
+    else setDetailLoading(true);
+    setDetailLoadMoreError('');
+    if (!append) setDetailError('');
+    try {
+      const params = new URLSearchParams({
+        chapterPage: String(pageNumber),
+        chapterPageSize: String(MOBILE_CHAPTER_PAGE_SIZE)
+      });
+      if (requestedVolumeId) params.set('volumeId', requestedVolumeId);
+      const payload = await fetch(`/api/works/${detailBookId}?${params.toString()}`).then((response) => readMobilePayload<WorkDetailPayload>(response, '读取图书详情失败'));
+      if (detailRequestSeqRef.current !== requestSeq) return;
+      if (payload.data?.book) {
+        setDetailBook(payload.data.book);
+        if (!detailSelectedVolumeId) {
+          const firstVolumeId = payload.data.volumeSections?.[0]?.id ?? payload.data.book.volumes[0]?.id ?? null;
+          setDetailSelectedVolumeId(payload.data.book.recentVolumeId ?? firstVolumeId);
+        }
+      }
+      const nextUnits = payload.data?.readingUnits ?? [];
+      setDetailReadingUnits((current) => {
+        if (!append) return nextUnits;
+        const byId = new Map(current.map((unit) => [unit.id, unit]));
+        nextUnits.forEach((unit) => byId.set(unit.id, unit));
+        return Array.from(byId.values());
+      });
+      setDetailReadingUnitsPage(payload.data?.readingUnitsPage ?? emptyChapterPageMeta);
+      setDetailVolumeSections(payload.data?.volumeSections ?? []);
+    } catch (reason) {
+      if (detailRequestSeqRef.current !== requestSeq) return;
+      const message = reason instanceof Error ? reason.message : '读取图书详情失败';
+      if (append) setDetailLoadMoreError(message);
+      else setDetailError(message);
+    } finally {
+      if (detailRequestSeqRef.current !== requestSeq) return;
+      if (append) setDetailLoadingMore(false);
+      else setDetailLoading(false);
+      setDetailLoadingVolumeId((current) => (current === requestedVolumeId ? null : current));
+    }
+  }, [detailBookId, detailSelectedVolumeId]);
+
   useEffect(() => {
     if (!detailBookId) return;
-    let active = true;
-    setDetailLoading(true);
-    setDetailError('');
-    const requestedVolumeId = detailSelectedVolumeId;
-    const params = new URLSearchParams();
-    if (requestedVolumeId) params.set('volumeId', requestedVolumeId);
-    fetch(`/api/works/${detailBookId}${params.toString() ? `?${params.toString()}` : ''}`)
-      .then((response) => readMobilePayload<WorkDetailPayload>(response, '读取图书详情失败'))
-      .then((payload) => {
-        if (!active) return;
-        if (payload.data?.book) {
-          setDetailBook(payload.data.book);
-          if (!detailSelectedVolumeId) {
-            const firstVolumeId = payload.data.volumeSections?.[0]?.id ?? payload.data.book.volumes[0]?.id ?? null;
-            setDetailSelectedVolumeId(payload.data.book.recentVolumeId ?? firstVolumeId);
-          }
-        }
-        setDetailReadingUnits(payload.data?.readingUnits ?? []);
-        setDetailVolumeSections(payload.data?.volumeSections ?? []);
-      })
-      .catch((reason) => {
-        if (active) setDetailError(reason instanceof Error ? reason.message : '读取图书详情失败');
-      })
-      .finally(() => {
-        if (active) {
-          setDetailLoading(false);
-          setDetailLoadingVolumeId((current) => (current === requestedVolumeId ? null : current));
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [detailBookId, detailSelectedVolumeId]);
+    setDetailReadingUnits([]);
+    setDetailReadingUnitsPage(emptyChapterPageMeta);
+    void loadDetailChapterPage(1);
+  }, [detailBookId, detailSelectedVolumeId, loadDetailChapterPage]);
 
   const baseShelfBooks = searchText.trim() ? searchBooks : books;
   const shelfBooks = useMemo(() => baseShelfBooks.filter((book) => shelfFilterMatches(book, shelfFilter)), [baseShelfBooks, shelfFilter]);
   const activeMeta = searchText.trim() ? searchMeta : booksMeta;
   const hasMoreShelfBooks = activeMeta.page > 0 && activeMeta.page < activeMeta.totalPages;
   const isLoadingMoreShelfBooks = searchText.trim() ? searchLoadingMore : loadingMore;
+  const hasMoreDetailChapters = detailReadingUnitsPage.page > 0 && detailReadingUnitsPage.page < detailReadingUnitsPage.totalPages;
   const readingBooks = useMemo(
     () => books.filter((book) => book.lastReadAt).sort((left, right) => Date.parse(right.lastReadAt ?? '') - Date.parse(left.lastReadAt ?? '')),
     [books]
@@ -366,6 +390,11 @@ export function MobileReaderApp() {
     if (search) void loadSearchPage(search, searchMeta.page + 1, true);
     else void loadBooksPage(booksMeta.page + 1, true);
   }, [booksMeta.page, hasMoreShelfBooks, loadBooksPage, loadSearchPage, loading, loadingMore, searchLoading, searchLoadingMore, searchMeta.page, searchText]);
+
+  const loadNextDetailChapterPage = useCallback(() => {
+    if (!hasMoreDetailChapters || detailLoading || detailLoadingMore) return;
+    void loadDetailChapterPage(detailReadingUnitsPage.page + 1, true);
+  }, [detailLoading, detailLoadingMore, detailReadingUnitsPage.page, hasMoreDetailChapters, loadDetailChapterPage]);
 
   useEffect(() => {
     const element = scrollSectionRef.current;
@@ -381,9 +410,24 @@ export function MobileReaderApp() {
     return () => scrollElement.removeEventListener('scroll', onScroll);
   }, [tab, detailBookId, loadNextShelfPage]);
 
+  useEffect(() => {
+    const element = scrollSectionRef.current;
+    if (!element || !detailBookId) return undefined;
+    const scrollElement = element;
+    function onScroll() {
+      if (scrollElement.scrollHeight - scrollElement.scrollTop - scrollElement.clientHeight < 360) {
+        loadNextDetailChapterPage();
+      }
+    }
+    scrollElement.addEventListener('scroll', onScroll, { passive: true });
+    onScroll();
+    return () => scrollElement.removeEventListener('scroll', onScroll);
+  }, [detailBookId, loadNextDetailChapterPage]);
+
   function openBookDetail(book: WorkView) {
     setDetailBook(book);
     setDetailReadingUnits([]);
+    setDetailReadingUnitsPage(emptyChapterPageMeta);
     const seededVolumes = book.volumes.map((volume) => ({
       id: volume.id,
       title: volume.title,
@@ -403,6 +447,7 @@ export function MobileReaderApp() {
     setDetailVolumeSections(seededVolumes);
     setDetailSelectedVolumeId(book.recentVolumeId ?? seededVolumes[0]?.id ?? null);
     setDetailLoadingVolumeId(null);
+    setDetailLoadMoreError('');
     setDetailBookId(book.id);
   }
 
@@ -410,12 +455,17 @@ export function MobileReaderApp() {
     setDetailBookId('');
     setDetailSelectedVolumeId(null);
     setDetailLoadingVolumeId(null);
+    setDetailReadingUnitsPage(emptyChapterPageMeta);
+    setDetailLoadMoreError('');
     setDetailError('');
   }
 
   function selectDetailVolume(volumeId: string) {
     if (detailSelectedVolumeId === volumeId) return;
     setDetailLoadingVolumeId(volumeId);
+    setDetailReadingUnits([]);
+    setDetailReadingUnitsPage(emptyChapterPageMeta);
+    setDetailLoadMoreError('');
     setDetailSelectedVolumeId(volumeId);
   }
 
@@ -483,11 +533,15 @@ export function MobileReaderApp() {
               error={detailError}
               loading={detailLoading}
               readingUnits={detailReadingUnits}
+              readingUnitsPage={detailReadingUnitsPage}
               volumeSections={detailVolumeSections}
               selectedVolumeId={detailSelectedVolumeId}
               loadingVolumeId={detailLoadingVolumeId}
+              loadingMore={detailLoadingMore}
+              loadMoreError={detailLoadMoreError}
               onBack={closeBookDetail}
               onSelectVolume={selectDetailVolume}
+              onLoadMore={loadNextDetailChapterPage}
               onOpenReader={openReader}
             />
           ) : null}
@@ -1144,22 +1198,30 @@ function MobileBookDetailView({
   error,
   loading,
   readingUnits,
+  readingUnitsPage,
   volumeSections,
   selectedVolumeId,
   loadingVolumeId,
+  loadingMore,
+  loadMoreError,
   onBack,
   onSelectVolume,
+  onLoadMore,
   onOpenReader
 }: {
   book: WorkView;
   error: string;
   loading: boolean;
   readingUnits: ReadingUnitView[];
+  readingUnitsPage: PageMeta;
   volumeSections: VolumeSectionView[];
   selectedVolumeId: string | null;
   loadingVolumeId: string | null;
+  loadingMore: boolean;
+  loadMoreError: string;
   onBack: () => void;
   onSelectVolume: (volumeId: string) => void;
+  onLoadMore: () => void;
   onOpenReader: OpenReaderHandler;
 }) {
   const coverRef = useRef<HTMLDivElement>(null);
@@ -1185,6 +1247,8 @@ function MobileBookDetailView({
   const activeVolume = visibleVolumes.find((volume) => volume.id === activeVolumeId) ?? null;
   const chapterRows = detailChapterRows(book, readingUnits, activeVolume);
   const showChapterSkeleton = loading && !loadingVolumeId && chapterRows.length === 0;
+  const chapterMeta = readingUnitsPage.total > 0 ? `已加载 ${chapterRows.length} / 共 ${readingUnitsPage.total}` : chapterRows.length > 0 ? `${chapterRows.length} 项` : '目录';
+  const hasMoreChapters = readingUnitsPage.page > 0 && readingUnitsPage.page < readingUnitsPage.totalPages;
 
   return (
     <div className="space-y-3">
@@ -1275,7 +1339,7 @@ function MobileBookDetailView({
       ) : null}
 
       <section>
-        <SectionTitle title="章节" meta={showChapterSkeleton ? '目录' : chapterRows.length > 0 ? `${chapterRows.length} 项` : '目录'} />
+        <SectionTitle title="章节" meta={showChapterSkeleton ? '目录' : chapterMeta} />
         <div className="overflow-hidden border-y border-[#E1D8CB]">
           {showChapterSkeleton ? (
             <ChapterListSkeleton />
@@ -1307,6 +1371,20 @@ function MobileBookDetailView({
             </button>
           )}
         </div>
+        {loadingMore ? (
+          <div className="flex items-center justify-center text-[#8B8177]" style={{ minHeight: `max(44px, ${sv(38)})`, fontSize: sv(12) }}>正在加载更多章节...</div>
+        ) : loadMoreError ? (
+          <button
+            type="button"
+            onClick={onLoadMore}
+            className="flex w-full items-center justify-center font-medium text-[#8D4E07]"
+            style={{ minHeight: `max(44px, ${sv(38)})`, fontSize: sv(12) }}
+          >
+            加载失败，点按重试
+          </button>
+        ) : hasMoreChapters ? (
+          <div className="flex items-center justify-center text-[#8B8177]" style={{ minHeight: `max(38px, ${sv(34)})`, fontSize: sv(11.5) }}>继续下滑加载更多</div>
+        ) : null}
       </section>
     </div>
   );

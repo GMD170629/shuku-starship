@@ -1435,7 +1435,7 @@ def list_works(request: Request, page: int = 1, pageSize: int = 24, visibility: 
 
 
 @router.get("/works/{work_id}")
-def get_work(work_id: str, request: Request, volumeId: str | None = None, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
+def get_work(work_id: str, request: Request, volumeId: str | None = None, chapterPage: int = 1, chapterPageSize: int = 120, db: Session = Depends(get_db), settings: Settings = Depends(get_settings)):
     user, auth_error = _auth(db, request, settings)
     if auth_error:
         return auth_error
@@ -1443,7 +1443,7 @@ def get_work(work_id: str, request: Request, volumeId: str | None = None, db: Se
     if not work:
         return fail("作品不存在", status_code=404)
     book = _work_view(db, work, user.id)
-    return ok({"book": book, **_work_detail_navigation(db, book.get("recentEditionId") or book.get("editionId"), user.id, volumeId)})
+    return ok({"book": book, **_work_detail_navigation(db, book.get("recentEditionId") or book.get("editionId"), user.id, volumeId, chapterPage, chapterPageSize)})
 
 
 @router.patch("/works/{work_id}")
@@ -1886,6 +1886,31 @@ def _reading_unit_view(unit: dict[str, Any]) -> dict[str, Any]:
     return {**unit, "metadataJson": _parse_json(unit.get("metadataJson"), {})}
 
 
+def _empty_reading_units_page(page_size: int) -> dict[str, int]:
+    return {"page": 1, "pageSize": page_size, "total": 0, "totalPages": 1}
+
+
+def _reading_units_page(db: Session, edition_id: str, page: int, page_size: int, volume_id: str | None = None) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    resolved_page_size = min(200, max(1, int(page_size or 120)))
+    requested_page = max(1, int(page or 1))
+    if not _has_table(db, "LibraryReadingUnit"):
+        return [], _empty_reading_units_page(resolved_page_size)
+    params: dict[str, Any] = {"edition_id": edition_id}
+    where = "`editionId` = :edition_id"
+    if volume_id:
+        where += " AND `volumeId` = :volume_id"
+        params["volume_id"] = volume_id
+    total = int(db.execute(text(f"SELECT COUNT(*) FROM `LibraryReadingUnit` WHERE {where}"), params).scalar() or 0)
+    total_pages = max(1, (total + resolved_page_size - 1) // resolved_page_size)
+    resolved_page = min(requested_page, total_pages)
+    units = _rows(
+        db,
+        f"SELECT * FROM `LibraryReadingUnit` WHERE {where} ORDER BY `sortOrder` ASC LIMIT :limit OFFSET :offset",
+        {**params, "limit": resolved_page_size, "offset": (resolved_page - 1) * resolved_page_size},
+    ) if total > 0 else []
+    return units, {"page": resolved_page, "pageSize": resolved_page_size, "total": total, "totalPages": total_pages}
+
+
 def _volume_section_view(volume: dict[str, Any], fmt: str, count_override: int | None = None, progress: dict[str, Any] | None = None, units: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     count_key = "pageCount" if fmt in {"COMIC", "PDF"} else "chapterCount"
     return {
@@ -1904,30 +1929,33 @@ def _volume_section_view(volume: dict[str, Any], fmt: str, count_override: int |
     }
 
 
-def _work_detail_navigation(db: Session, edition_id: str | None, user_id: str | None = None, requested_volume_id: str | None = None) -> dict[str, Any]:
+def _work_detail_navigation(db: Session, edition_id: str | None, user_id: str | None = None, requested_volume_id: str | None = None, chapter_page: int = 1, chapter_page_size: int = 120) -> dict[str, Any]:
+    resolved_page_size = min(200, max(1, int(chapter_page_size or 120)))
     if not edition_id or not _has_table(db, "LibraryEdition"):
-        return {"readingUnits": [], "volumeSections": []}
+        return {"readingUnits": [], "volumeSections": [], "readingUnitsPage": _empty_reading_units_page(resolved_page_size)}
     edition = _row(db, "SELECT * FROM `LibraryEdition` WHERE `id` = :id", {"id": edition_id})
     if not edition:
-        return {"readingUnits": [], "volumeSections": []}
+        return {"readingUnits": [], "volumeSections": [], "readingUnitsPage": _empty_reading_units_page(resolved_page_size)}
     progresses = _rows(db, "SELECT * FROM `LibraryReadingProgress` WHERE `editionId` = :edition_id AND `userId` = :user_id ORDER BY `updatedAt` DESC", {"edition_id": edition_id, "user_id": user_id}) if user_id and _has_table(db, "LibraryReadingProgress") else []
     if edition.get("format") == "COMIC":
         volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
         return {
             "readingUnits": [],
             "volumeSections": [_volume_section_view(volume, "COMIC", progress=_progress_for_volume(progresses, volume["id"])) for volume in volumes],
+            "readingUnitsPage": _empty_reading_units_page(resolved_page_size),
         }
     if edition.get("format") == "PDF":
         volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
         return {
             "readingUnits": [],
             "volumeSections": [_volume_section_view(volume, "PDF", progress=_progress_for_volume(progresses, volume["id"])) for volume in volumes],
+            "readingUnitsPage": _empty_reading_units_page(resolved_page_size),
         }
     volumes = _rows(db, "SELECT * FROM `LibraryVolume` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryVolume") else []
     if len(volumes) > 1:
         selected_volume = next((item for item in volumes if item["id"] == requested_volume_id), None) if requested_volume_id else None
         selected_volume = selected_volume or _choose_continue_volume(volumes, progresses) or volumes[0]
-        units = _rows(db, "SELECT * FROM `LibraryReadingUnit` WHERE `editionId` = :edition_id AND `volumeId` = :volume_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id, "volume_id": selected_volume["id"]}) if _has_table(db, "LibraryReadingUnit") else []
+        units, units_page = _reading_units_page(db, edition_id, chapter_page, resolved_page_size, selected_volume["id"])
         units_by_volume = {
             volume["id"]: _rows(db, "SELECT * FROM `LibraryReadingUnit` WHERE `editionId` = :edition_id AND `volumeId` = :volume_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id, "volume_id": volume["id"]})
             for volume in volumes
@@ -1935,9 +1963,10 @@ def _work_detail_navigation(db: Session, edition_id: str | None, user_id: str | 
         return {
             "readingUnits": [_reading_unit_view(unit) for unit in units],
             "volumeSections": [_volume_section_view(volume, "EPUB", progress=_progress_for_volume(progresses, volume["id"]), units=units_by_volume.get(volume["id"], [])) for volume in volumes],
+            "readingUnitsPage": units_page,
         }
-    units = _rows(db, "SELECT * FROM `LibraryReadingUnit` WHERE `editionId` = :edition_id ORDER BY `sortOrder` ASC", {"edition_id": edition_id}) if _has_table(db, "LibraryReadingUnit") else []
-    return {"readingUnits": [_reading_unit_view(unit) for unit in units], "volumeSections": []}
+    units, units_page = _reading_units_page(db, edition_id, chapter_page, resolved_page_size)
+    return {"readingUnits": [_reading_unit_view(unit) for unit in units], "volumeSections": [], "readingUnitsPage": units_page}
 
 
 @router.get("/editions/{edition_id}/progress")
